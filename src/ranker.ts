@@ -383,7 +383,8 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
 
   // Confidence: do we have a strong, specific anchor, or only diffuse lexical overlap?
   const top = ranked[0];
-  const anchored = top?.reasons.some((r) => /^(?:defines|path|error location|symbol )/.test(r)) ?? false;
+  const anchored =
+    top?.reasons.some((r) => /^(?:defines|path|error location)/.test(r) || (/^symbol /.test(r) && (r.split("~")[1] ?? "").split(",").length >= 2)) ?? false;
   const gap = ranked.length > 5 ? top.score / Math.max(ranked[5].score, 0.1) : 2;
   const confidence: RankResult["confidence"] = !top ? "low" : anchored && top.score >= 10 ? "high" : anchored || gap > 1.8 ? "medium" : "low";
 

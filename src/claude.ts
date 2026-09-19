@@ -144,9 +144,12 @@ export async function hookPrompt(p: Paths, stdin: string): Promise<string> {
       withProtocol: first,
       budget: first ? cfg.budget.initial : Math.round(cfg.budget.initial / 2),
     });
-    // Follow-up prompts: only inject if there is a confident, new anchor.
+    // Inject only with a confident anchor and real code to show. General questions ("how do I test
+    // this?") match on common words and would otherwise cost tokens for irrelevant context.
     const loaded = b.record.selected.filter((s) => s.level === "full" || s.level === "symbols");
-    if (!first && (b.record.confidence === "low" || loaded.length === 0)) {
+    const t = b.task;
+    const codeLike = t.identifiers.length > 0 || t.paths.length > 0 || t.locations.length > 0 || t.mentionsAction;
+    if (!codeLike || b.record.confidence === "low" || loaded.length === 0) {
       writeFileSync(sessFile, JSON.stringify(sess, null, 2), { mode: 0o600 });
       return "";
     }

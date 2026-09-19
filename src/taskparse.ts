@@ -11,6 +11,8 @@ export interface ParsedTask {
   locations: { path: string; line?: number }[];
   errors: string[];
   quoted: string[];
+  /** Asks for a change or reports a defect ("fix", "add", "crashes", …) rather than asking a general question. */
+  mentionsAction: boolean;
   mentionsTests: boolean;
   mentionsRecent: boolean;
 }
@@ -59,6 +61,8 @@ export function parseTask(text: string): ParsedTask {
     locations,
     errors: errors.slice(0, 10),
     quoted,
+    mentionsAction:
+      /\b(?:fix(?:es|ed)?|add(?:s|ed)?|implement|refactor|rename|remove|delete|update|change|create|write|debug|resolve|migrate|replace|extract|support|handle|throws?|thrown|fail(?:s|ed|ing|ure)?|crash(?:es|ed)?|bug|broken|regress(?:ion|ed)?|wrong|incorrect|error|exception|not working|doesn'?t work|no longer)\b/i.test(text),
     mentionsTests: /\b(?:tests?|specs?|vitest|jest|mocha|playwright|coverage|test suite)\b/i.test(text),
     mentionsRecent: /\b(?:recent(?:ly)?|since|regress(?:ion|ed)?|after (?:the )?(?:change|commit|update|upgrade|merge)|broke|started)\b/i.test(text),
   };

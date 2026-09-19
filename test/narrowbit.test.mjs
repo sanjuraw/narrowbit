@@ -297,6 +297,12 @@ describe("fixture repository", () => {
     const j = JSON.parse(hookOut);
     assert.equal(j.hookSpecificOutput.hookEventName, "UserPromptSubmit");
     assert.match(j.hookSpecificOutput.additionalContext, /refreshSession/);
+    const general = execFileSync(process.execPath, [BIN, "hook", "prompt"], {
+      cwd: root,
+      input: JSON.stringify({ session_id: "s2", prompt: "how do I test this and see what it saves in tokens overall?" }),
+      encoding: "utf8",
+    });
+    assert.equal(general.trim(), "", "general questions with no code anchor get no injection");
     const short = execFileSync(process.execPath, [BIN, "hook", "prompt"], { cwd: root, input: JSON.stringify({ session_id: "s1", prompt: "yes do it" }), encoding: "utf8" });
     assert.equal(short.trim(), "", "short follow-ups get no injection");
   });
