@@ -42,6 +42,8 @@ export interface BenchFile {
   /** Command run in each fresh worktree before the agent starts (e.g. "npm ci"). Default: symlink node_modules. */
   setup?: string;
   timeoutMinutes?: number;
+  /** Claude Code executable; defaults to $NARROWBIT_CLAUDE or `claude` on PATH. */
+  claudeBin?: string;
   maxBudgetUsd?: number;
 }
 
@@ -134,9 +136,9 @@ export function parseStream(jsonl: string) {
   };
 }
 
-function runClaude(cwd: string, args: string[], outFile: string, env: Record<string, string>, timeoutMs: number): Promise<number> {
+function runClaude(bin: string, cwd: string, args: string[], outFile: string, env: Record<string, string>, timeoutMs: number): Promise<number> {
   return new Promise((res) => {
-    const child = spawn("claude", args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(bin, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
     const chunks: Buffer[] = [];
     child.stdout.on("data", (d) => chunks.push(d));
     child.stderr.on("data", (d) => appendFileSync(outFile + ".stderr", d));
@@ -163,6 +165,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
   const head = sh("git", ["rev-parse", "HEAD"], p.root).stdout.trim();
   const out: RunMetrics[] = [];
   const baseArgs = spec.claudeArgs ?? ["--permission-mode", "acceptEdits"];
+  const claudeBin = spec.claudeBin ?? process.env.NARROWBIT_CLAUDE ?? "claude";
 
   for (const t of tasks) {
     const commit = sh("git", ["rev-parse", t.commit ?? head], p.root).stdout.trim();
@@ -221,7 +224,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
           const outFile = join(runDir, `${t.id}-${arm.name}-${r}.jsonl`);
           log(`${tag}: running claude…`);
           const t0 = Date.now();
-          const agentExit = await runClaude(wt, [...args, "--", t.prompt], outFile, env, (spec.timeoutMinutes ?? 30) * 60_000);
+          const agentExit = await runClaude(claudeBin, wt, [...args, "--", t.prompt], outFile, env, (spec.timeoutMinutes ?? 30) * 60_000);
           const rawStream = readFileSync(outFile, "utf8");
           const s = parseStream(rawStream);
           const stderr = existsSync(outFile + ".stderr") ? readFileSync(outFile + ".stderr", "utf8") : "";

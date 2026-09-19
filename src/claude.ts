@@ -51,7 +51,7 @@ export async function launchClaude(p: Paths, taskText: string, extraArgs: string
     return 0;
   }
   return new Promise((res) => {
-    const child = spawn("claude", args, { cwd: p.root, stdio: "inherit", env: { ...process.env, NARROWBIT_TASK: b.record.id } });
+    const child = spawn(process.env.NARROWBIT_CLAUDE ?? "claude", args, { cwd: p.root, stdio: "inherit", env: { ...process.env, NARROWBIT_TASK: b.record.id } });
     child.on("close", (code) => res(code ?? 0));
     child.on("error", (e) => {
       process.stderr.write(`narrowbit: failed to start claude: ${e.message}\n`);
