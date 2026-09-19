@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { NarrowbitConfig, Paths } from "./config.js";
 import { changedHunks } from "./git.js";
-import { Memory, renderMemory } from "./memory.js";
+import { Memory, openMemory, renderMemory } from "./memory.js";
 import { detectStack, rank, relatedTests, topLevelMap, type RankedFile, type RankResult, type SymbolHit } from "./ranker.js";
 import { redact } from "./redact.js";
 import type { Store } from "./store.js";
@@ -120,7 +120,7 @@ function pickSnippets(hits: SymbolHit[], max = 4): SymbolHit[] {
 export const AGENT_PROTOCOL = `Narrowbit pre-selected the context below for this task from a local index of the repository.
 - Start from these locations instead of exploring the repo; code shown is current on disk.
 - To edit a file you still need to Read it: Read only the line range you need (offset/limit), not the whole file.
-- Need more? Prefer narrowbit MCP tools over broad Glob/Grep: nb_symbol (definition by name), nb_refs (usages), nb_search (ranked search), nb_outline (file map), nb_expand (next most relevant context), nb_tests (tests for a file), nb_run (run a command, compressed output).
+- Need more? Prefer narrowbit MCP tools over broad Glob/Grep: nb_symbol (definition by name), nb_refs (usages), nb_grep (grep tagged with enclosing function), nb_search (ranked search), nb_outline (file map), nb_expand (next most relevant context), nb_tests (tests for a file), nb_run (run a command, compressed output).
 - Record durable knowledge with nb_remember: decisions made, constraints discovered, and approaches that FAILED (so they are not retried).`;
 
 export interface BuildOptions {
@@ -143,7 +143,7 @@ export function buildPackage(store: Store, p: Paths, cfg: NarrowbitConfig, taskT
   const t0 = Date.now();
   const budget = opts.budget ?? cfg.budget.initial;
   const task = parseTask(taskText);
-  const memory = new Memory(p);
+  const memory = openMemory(p);
   const ranking = rank(store, p.root, task, { noGit: opts.noGit, memory });
   const rankMs = Date.now() - t0;
   const exclude = opts.exclude ?? new Set<string>();

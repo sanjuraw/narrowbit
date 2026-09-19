@@ -158,10 +158,55 @@ function generic(lines: string[], exit: number): Compressed {
   return { kind: "generic", text: out.join("\n"), errorCount: exit === 0 ? 0 : Math.max(1, idx.length), summary: exit === 0 ? "ok" : `exit ${exit}` };
 }
 
+/** git diff: keep file headers and changed lines, drop index/mode noise, cap context and per-file size. */
+function gitDiff(lines: string[]): Compressed | null {
+  if (!lines.some((l) => l.startsWith("diff --git "))) return null;
+  const out: string[] = [];
+  let files = 0;
+  let added = 0;
+  let removed = 0;
+  let inFile = 0;
+  for (const l of lines) {
+    if (l.startsWith("diff --git ")) {
+      files++;
+      inFile = 0;
+      out.push(l.replace(/^diff --git a\/(.*) b\/.*$/, "FILE $1"));
+    } else if (/^(?:index |--- |\+\+\+ |new file mode|deleted file mode|similarity index|old mode|new mode)/.test(l)) continue;
+    else if (l.startsWith("@@")) out.push(l.replace(/^(@@ [^@]+ @@).*/, "$1"));
+    else if (l.startsWith("+") || l.startsWith("-")) {
+      l.startsWith("+") ? added++ : removed++;
+      if (++inFile <= 60) out.push(l.slice(0, 200));
+      else if (inFile === 61) out.push("  … more changes in this file omitted");
+    }
+  }
+  const summary = `${files} file(s) changed, +${added} -${removed}`;
+  return { kind: "generic", text: [summary, ...out].join("\n"), errorCount: 0, summary };
+}
+
+/** grep -rn / rg output: cap matches per file, dedupe identical lines. */
+function grepOut(lines: string[]): Compressed | null {
+  const re = /^([^\s:]+):(\d+):(.*)$/;
+  const hits = lines.filter((l) => re.test(l));
+  if (hits.length < 25 || hits.length < lines.length * 0.8) return null;
+  const per = new Map<string, string[]>();
+  for (const l of hits) {
+    const m = re.exec(l)!;
+    (per.get(m[1]) ?? per.set(m[1], []).get(m[1])!).push(`  L${m[2]} ${m[3].trim().slice(0, 140)}`);
+  }
+  const out = [`${hits.length} matches in ${per.size} files`];
+  for (const [f, ls] of per) out.push(f, ...ls.slice(0, 4), ...(ls.length > 4 ? [`  … ${ls.length - 4} more`] : []));
+  return { kind: "generic", text: out.slice(0, 120).join("\n"), errorCount: 0, summary: out[0] };
+}
+
 export function compressOutput(raw: string, exit: number): Compressed {
   const all = stripAnsi(raw).split("\n");
   const lines = collapse(all.filter((l) => !NOISE.some((re) => re.test(l))));
-  const r = tsc(lines) ?? tests(lines) ?? eslint(lines) ?? npm(lines) ?? generic(lines, exit);
+  const r = tsc(lines) ?? tests(lines) ?? eslint(lines) ?? gitDiff(lines) ?? grepOut(lines) ?? npm(lines) ?? generic(lines, exit);
+  // Fail-safe (from 9router's RTK): a compressor must never make things worse or hide everything.
+  if (r.text.length >= raw.length || !r.text.trim()) {
+    const t = redact(raw.length > 12_000 ? raw.slice(0, 12_000) + "\n… (truncated)" : raw);
+    return { kind: "generic", text: t, errorCount: r.errorCount, summary: r.summary };
+  }
   const text = r.text.length > 12_000 ? r.text.slice(0, 12_000) + "\n… (truncated)" : r.text;
   return { ...r, text: redact(text) };
 }

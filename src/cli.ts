@@ -8,9 +8,9 @@ import { evalHistory } from "./eval.js";
 import { changedSince } from "./git.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { serveMcp } from "./mcp.js";
-import { Memory, MEMORY_TYPES, renderMemory, type MemoryType } from "./memory.js";
+import { Memory, openMemory, MEMORY_TYPES, renderMemory, type MemoryType } from "./memory.js";
 import { buildPackage } from "./package.js";
-import { expandTask, outlineText, refsText, searchText, symbolText, testsText } from "./query.js";
+import { expandTask, grepText, outlineText, refsText, searchText, symbolText, testsText } from "./query.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
 import { fmtNum, now } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
@@ -56,7 +56,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
 
   narrowbit symbol <name>             definition source      narrowbit refs <name>     usages
   narrowbit outline <path>            file map                narrowbit tests <path>    mapped tests
-  narrowbit search "<query>"          ranked search
+  narrowbit search "<query>"          ranked search          narrowbit grep "<text>"   grep tagged with enclosing symbol
 
   narrowbit run -- <command>          run a command, print compressed output (raw kept in .narrowbit/logs)
   narrowbit verify [--full]           type-check, lint, focused tests for changed files
@@ -162,7 +162,7 @@ export async function main(argv: string[]): Promise<number> {
       const tasks = new Tasks(p);
       const cur = tasks.current();
       out(`tasks: ${tasks.list().length} recorded${cur ? `, current ${cur}` : ""}`);
-      out(`memory: ${new Memory(p).load().filter((e) => e.status === "active").length} active entries`);
+      out(`memory: ${openMemory(p).load().filter((e) => e.status === "active").length} active entries`);
       store.close();
       return 0;
     }
@@ -293,6 +293,7 @@ export async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case "symbol":
+    case "grep":
     case "refs":
     case "outline":
     case "search":
@@ -307,6 +308,7 @@ export async function main(argv: string[]): Promise<number> {
       indexRepo(p, store);
       const text =
         cmd === "symbol" ? symbolText(p, store, q)
+        : cmd === "grep" ? grepText(p, store, q, { regex: !!args.flags.regex })
         : cmd === "refs" ? refsText(store, q)
         : cmd === "outline" ? outlineText(store, q)
         : cmd === "tests" ? testsText(store, q)
@@ -349,7 +351,7 @@ export async function main(argv: string[]): Promise<number> {
     }
     case "memory": {
       ensureDirs(p);
-      const m = new Memory(p);
+      const m = openMemory(p);
       const sub = pos[0];
       if (sub === "add") {
         const type = pos[1] as MemoryType;

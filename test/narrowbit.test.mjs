@@ -19,8 +19,8 @@ const { Store } = await dist("store.js");
 const { indexRepo } = await dist("indexer.js");
 const { buildPackage } = await dist("package.js");
 const { parseTask } = await dist("taskparse.js");
-const { Memory } = await dist("memory.js");
-const { refsText, symbolText, expandTask } = await dist("query.js");
+const { Memory, toMarkdown, fromMarkdown } = await dist("memory.js");
+const { refsText, symbolText, expandTask, grepText } = await dist("query.js");
 const { parseStream } = await dist("bench.js");
 const { termsOf } = await dist("terms.js");
 
@@ -125,6 +125,16 @@ Found 3 errors in 2 files.`;
     assert.match(c.text, /L9 TS2304: Cannot find name 'foo'/);
   });
 
+  test("git diff is condensed; fail-safe never returns something larger than the input", () => {
+    const diff = "diff --git a/src/a.ts b/src/a.ts\nindex 83db48f..bf2a3c1 100644\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,3 +1,3 @@ function foo() {\n context\n-old line\n+new line\n context";
+    const c = compressOutput(diff.repeat(1), 0);
+    assert.ok(c.text.length <= diff.length);
+    assert.match(c.text, /FILE src\/a\.ts/);
+    assert.ok(!c.text.includes("index 83db48f"));
+    const tiny = "ok";
+    assert.equal(compressOutput(tiny, 0).text, "ok");
+  });
+
   test("successful noisy command collapses", () => {
     const raw = Array.from({ length: 3000 }, (_, i) => `compiled module ${i}`).join("\n") + "\nDone in 3.2s";
     const c = compressOutput(raw, 0);
@@ -223,6 +233,34 @@ describe("fixture repository", () => {
     const b = buildPackage(store, p, cfg, "session expires after refresh, fix expiration");
     assert.match(b.text, /FAILED APPROACH .*cookie TTL/);
     assert.ok(!b.text.includes("raw request body"), "unrelated decision should not be included");
+  });
+
+  test("memory is Obsidian-compatible Markdown; hand-written notes and external dirs are read", () => {
+    const m = new Memory(p);
+    const e = m.add({ type: "decision", text: "Store all timestamps in UTC", reason: "avoid regional drift: \"quoted\"", files: ["src/utils/time.ts"] });
+    assert.match(e.file, /memory\/decisions\/store-all-timestamps-in-utc\.md$/);
+    const md = readFileSync(e.file, "utf8");
+    assert.match(md, /^---\nid: "dec-/);
+    assert.match(md, /## Reason\navoid regional drift/);
+    const back = fromMarkdown(md, { id: "x" });
+    assert.equal(back.reason, 'avoid regional drift: "quoted"');
+    assert.deepEqual(back.files, ["src/utils/time.ts"]);
+    // A note written by hand in Obsidian: minimal frontmatter, type from folder.
+    writeFileSync(join(p.memory, "constraints", "no-schema-changes.md"), "---\ntags: [db, payments]\n---\n# No schema changes\nDo not modify the database schema without a migration review.\n");
+    const hand = m.load("constraint").find((x) => x.id === "no-schema-changes");
+    assert.ok(hand, "hand-written note loaded");
+    assert.deepEqual(hand.tags, ["db", "payments"]);
+    assert.equal(hand.text, "Do not modify the database schema without a migration review.");
+    assert.equal(m.setStatus(e.id, "superseded").status, "superseded");
+    assert.match(readFileSync(e.file, "utf8"), /status: "superseded"/);
+  });
+
+  test("nb_grep tags matches with the enclosing symbol and skips ignored files", () => {
+    const g = grepText(p, store, "markPaid");
+    assert.match(g, /src\/payments\/service\.ts \(\d+ lines\)\n\s+L\d+ \[PaymentService\.markPaid\]/);
+    assert.match(g, /src\/payments\/callback\.ts[\s\S]*\[handleWebhook\]/);
+    assert.ok(!grepText(p, store, "super_secret_value").includes(".env"), "ignored files never appear");
+    assert.match(grepText(p, store, "zzz-nothing-here"), /^no matches/);
   });
 
   test("symbol and refs lookups", () => {

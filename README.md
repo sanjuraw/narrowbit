@@ -46,7 +46,7 @@ narrowbit install claude     # .mcp.json (narrowbit MCP server) + UserPromptSubm
 | `benchmark init \| run <file> \| report` | paired A/B: native Claude Code vs Claude Code + Narrowbit |
 | `stats` | aggregates over recorded tasks |
 
-MCP tools (`narrowbit mcp`): `nb_context`, `nb_symbol`, `nb_refs`, `nb_outline`, `nb_search`, `nb_expand`, `nb_tests`, `nb_lines`, `nb_run`, `nb_verify`, `nb_remember`, `nb_memory`.
+MCP tools (`narrowbit mcp`): `nb_context`, `nb_symbol`, `nb_refs`, `nb_outline`, `nb_search`, `nb_grep`, `nb_expand`, `nb_tests`, `nb_lines`, `nb_run`, `nb_verify`, `nb_remember`, `nb_memory`.
 
 ## How selection works (`src/ranker.ts`, `src/package.ts`)
 
@@ -86,6 +86,16 @@ narrowbit benchmark report
 - **Report:** the north-star metric (successful tasks per million input tokens) and paired reductions. It gives the brief's GO/NO-GO verdict only once n ≥ 30 tasks.
 
 Add a "context hygiene" baseline arm via `arms[].appendSystemPrompt` to compare against a tuned native setup (brief §38).
+
+## Memory
+
+Markdown notes with frontmatter, one per entry, in `.narrowbit/memory/<type>s/` (decisions, constraints, failures, …). Open that folder as an Obsidian vault to browse and edit it; hand-written notes are picked up too. To also read notes you already keep elsewhere, add folders to `memoryDirs` in `.narrowbit/config.json`; these are read-only. Retrieval is deterministic keyword/file overlap, with no model calls. V0 JSON memory migrates automatically.
+
+## Ideas borrowed (MIT-licensed projects; ideas only, no code copied)
+
+- **jcode:** grep results that carry file structure → `nb_grep` (matches tagged with the enclosing function).
+- **9router (RTK):** lossless, fail-safe compression of tool output → `git diff` and grep condensers, plus a guard that never returns something larger than the raw output.
+- **Claude Code:** old tool output is the first thing to go when context fills, so Narrowbit keeps tool results small up front; the hook sends deltas only, to stay friendly to prompt caching.
 
 ## Layout
 

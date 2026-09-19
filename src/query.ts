@@ -4,7 +4,8 @@ import { rank, relatedTests } from "./ranker.js";
 import type { Store, SymbolRow } from "./store.js";
 import { parseTask } from "./taskparse.js";
 import type { TaskRecord } from "./tasks.js";
-import { estimateTokens } from "./util.js";
+import { redact } from "./redact.js";
+import { estimateTokens, sh } from "./util.js";
 
 /** Deterministic lookups served to agents (CLI + MCP). Each returns compact text. */
 
@@ -103,6 +104,51 @@ export function searchText(p: Paths, store: Store, query: string, limit = 10): s
       return `${f.path} [${f.score.toFixed(1)}] ${f.reasons.slice(0, 2).join("; ")}${syms}`;
     })
     .join("\n");
+}
+
+/**
+ * Structure-aware grep (idea from jcode's "agent grep"): matches grouped by file, each tagged with
+ * its enclosing function/method, so the agent can often skip reading the file at all.
+ */
+export function grepText(p: Paths, store: Store, pattern: string, opts: { glob?: string; limit?: number; regex?: boolean } = {}): string {
+  const limit = opts.limit ?? 40;
+  const args = ["grep", "-n", "-I", "--no-color", "-i", opts.regex ? "-E" : "-F", "-e", pattern, "--", ...(opts.glob ? [opts.glob] : [])];
+  const r = sh("git", args, p.root);
+  if (r.code > 1) return `grep failed: ${r.stderr.trim().split("\n")[0]}`;
+  const byFile = new Map<string, { line: number; text: string }[]>();
+  for (const l of r.stdout.split("\n")) {
+    const m = /^(.+?):(\d+):(.*)$/.exec(l);
+    if (!m || store.fileByPath(m[1]) === undefined) continue; // respects .narrowbitignore (secrets etc.)
+    (byFile.get(m[1]) ?? byFile.set(m[1], []).get(m[1])!).push({ line: Number(m[2]), text: m[3] });
+  }
+  if (!byFile.size) return `no matches for "${pattern}"`;
+  const total = [...byFile.values()].reduce((a, x) => a + x.length, 0);
+  const files = [...byFile.entries()].sort((a, b) => Number(/\.(?:test|spec)\./.test(a[0])) - Number(/\.(?:test|spec)\./.test(b[0])) || b[1].length - a[1].length);
+  const out: string[] = [`${total} match(es) in ${files.length} file(s)`];
+  let shown = 0;
+  for (const [path, hits] of files) {
+    if (shown >= limit) {
+      out.push(`… ${files.length - out.length + 1} more file(s); narrow with glob`);
+      break;
+    }
+    const f = store.fileByPath(path)!;
+    const syms = store.all<{ qualified: string; kind: string; start_line: number; end_line: number }>(
+      "SELECT qualified, kind, start_line, end_line FROM symbols WHERE file_id=? AND kind NOT IN ('suite') ORDER BY (end_line - start_line)",
+      f.id,
+    );
+    out.push(`${path} (${f.lines} lines)`);
+    const seenSym = new Set<string>();
+    for (const h of hits.slice(0, 6)) {
+      const enc = syms.find((s) => s.start_line <= h.line && s.end_line >= h.line);
+      const tag = enc ? ` [${enc.qualified}]` : "";
+      const repeat = enc && seenSym.has(enc.qualified);
+      if (enc) seenSym.add(enc.qualified);
+      out.push(`  L${h.line}${repeat ? "" : tag} ${redact(h.text.trim()).slice(0, 140)}`);
+      shown++;
+    }
+    if (hits.length > 6) out.push(`  … ${hits.length - 6} more in this file`);
+  }
+  return out.join("\n");
 }
 
 export function testsText(store: Store, path: string): string {

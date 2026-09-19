@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import type { Paths } from "./config.js";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { basename, isAbsolute, join, resolve } from "node:path";
+import { loadConfig, type Paths } from "./config.js";
 import { termsOf } from "./terms.js";
 import { now, shortId } from "./util.js";
 
@@ -22,59 +22,203 @@ export interface MemoryEntry {
   confidence?: "low" | "medium" | "high";
   status: "active" | "superseded" | "resolved";
   supersededBy?: string;
+  /** Where the note lives on disk (not serialised). */
+  file?: string;
+  /** Read-only notes from an external folder (e.g. an Obsidian vault). */
+  external?: boolean;
+}
+
+// ---------- Markdown + frontmatter (Obsidian-compatible) ----------
+
+const FM_KEYS = ["id", "type", "status", "date", "confidence", "files", "tags", "source", "supersededBy"] as const;
+const SECTIONS: [keyof MemoryEntry, string][] = [
+  ["reason", "Reason"],
+  ["attempt", "Attempt"],
+  ["result", "Result"],
+];
+
+/** YAML subset writer: scalars as JSON strings (valid YAML), lists as block sequences. */
+function yamlValue(v: unknown): string {
+  if (Array.isArray(v)) return v.length ? "\n" + v.map((x) => `  - ${JSON.stringify(String(x))}`).join("\n") : " []";
+  return " " + JSON.stringify(String(v));
+}
+
+export function toMarkdown(e: MemoryEntry): string {
+  const fm = FM_KEYS.filter((k) => e[k] !== undefined && e[k] !== "").map((k) => `${k}:${yamlValue(e[k])}`);
+  const body = [e.text.trim()];
+  for (const [key, title] of SECTIONS) if (e[key]) body.push(`## ${title}\n${String(e[key]).trim()}`);
+  return `---\n${fm.join("\n")}\n---\n\n${body.join("\n\n")}\n`;
+}
+
+function parseScalar(s: string): string {
+  s = s.trim();
+  if (!s) return "";
+  if (s.startsWith('"')) {
+    try {
+      return JSON.parse(s);
+    } catch {
+      return s.slice(1, -1);
+    }
+  }
+  if (s.startsWith("'") && s.endsWith("'")) return s.slice(1, -1).replace(/''/g, "'");
+  return s;
+}
+
+/** Parse a note written by us *or by hand* (Obsidian-style frontmatter subset). */
+export function fromMarkdown(md: string, fallback: { id: string; type?: MemoryType; date?: string }): MemoryEntry | null {
+  const fm: Record<string, unknown> = {};
+  let body = md;
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(md);
+  if (m) {
+    body = md.slice(m[0].length);
+    let listKey: string | null = null;
+    for (const line of m[1].split(/\r?\n/)) {
+      const item = /^\s+-\s+(.*)$/.exec(line);
+      if (item && listKey) {
+        (fm[listKey] as string[]).push(parseScalar(item[1]));
+        continue;
+      }
+      const kv = /^([A-Za-z_][\w-]*):\s*(.*)$/.exec(line);
+      if (!kv) continue;
+      listKey = null;
+      const [, k, v] = kv;
+      if (!v.trim()) {
+        fm[k] = [];
+        listKey = k;
+      } else if (v.trim().startsWith("[")) {
+        fm[k] = v
+          .trim()
+          .slice(1, -1)
+          .split(",")
+          .map(parseScalar)
+          .filter(Boolean);
+      } else fm[k] = parseScalar(v);
+    }
+  }
+  // Body: leading text until the first "## " heading; known headings map to fields.
+  const parts = body.split(/^##\s+/m);
+  const text = parts[0].replace(/^#\s+.*\n/, "").trim();
+  const e: MemoryEntry = {
+    id: String(fm.id ?? fallback.id),
+    type: (MEMORY_TYPES.includes(fm.type as MemoryType) ? fm.type : fallback.type ?? "fact") as MemoryType,
+    text,
+    date: String(fm.date ?? fallback.date ?? now()),
+    status: (["active", "superseded", "resolved"].includes(String(fm.status)) ? fm.status : "active") as MemoryEntry["status"],
+  };
+  for (const k of ["source", "supersededBy", "confidence"] as const) if (fm[k]) (e as any)[k] = String(fm[k]);
+  for (const k of ["files", "tags"] as const) if (Array.isArray(fm[k]) && (fm[k] as string[]).length) e[k] = fm[k] as string[];
+  for (const p of parts.slice(1)) {
+    const [title, ...rest] = p.split("\n");
+    const sec = SECTIONS.find(([, t]) => t.toLowerCase() === title.trim().toLowerCase());
+    if (sec) (e as any)[sec[0]] = rest.join("\n").trim();
+  }
+  if (!e.text && !e.reason && !e.attempt) return null;
+  if (!e.text) e.text = (e.attempt ?? e.reason ?? "").split("\n")[0];
+  return e;
+}
+
+function slug(text: string): string {
+  return (
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 60)
+      .replace(/-+$/, "") || "note"
+  );
 }
 
 /**
- * Durable project knowledge, stored as plain JSON (one file per type) so it
- * can be reviewed by humans and committed to the repository if desired.
+ * Durable project knowledge as Markdown notes with frontmatter, one note per entry,
+ * one folder per type: `.narrowbit/memory/decisions/raw-body-for-webhook-signatures.md`.
+ * The folder opens directly as an Obsidian vault; hand-written notes are picked up too.
+ * Extra read-only folders (e.g. project notes in an existing vault) come from config `memoryDirs`.
  */
 export class Memory {
-  constructor(private p: Paths) {}
+  constructor(
+    private p: Paths,
+    private extraDirs: string[] = [],
+  ) {
+    if (existsSync(p.memory)) {
+      // Visible structure for humans browsing the vault; hand-written notes get their type from the folder.
+      for (const t of MEMORY_TYPES) mkdirSync(this.dir(t), { recursive: true, mode: 0o700 });
+      this.migrateJson();
+    }
+  }
 
-  private file(type: MemoryType) {
-    return join(this.p.memory, `${type}s.json`);
+  private dir(type: MemoryType) {
+    return join(this.p.memory, `${type}s`);
+  }
+
+  /** One-time migration from the V0 JSON format. */
+  private migrateJson() {
+    if (!existsSync(this.p.memory)) return;
+    for (const t of MEMORY_TYPES) {
+      const f = join(this.p.memory, `${t}s.json`);
+      if (!existsSync(f)) continue;
+      try {
+        const list = JSON.parse(readFileSync(f, "utf8")) as MemoryEntry[];
+        for (const e of list) this.write(e);
+        renameSync(f, f + ".migrated");
+      } catch {
+        /* leave the file for manual inspection */
+      }
+    }
+  }
+
+  private write(e: MemoryEntry): string {
+    const dir = this.dir(e.type);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    let file = e.file;
+    if (!file) {
+      file = join(dir, `${slug(e.text)}.md`);
+      if (existsSync(file)) file = join(dir, `${slug(e.text)}-${e.id.split("-").pop()}.md`);
+    }
+    const { file: _f, external: _x, ...data } = e;
+    writeFileSync(file, toMarkdown(data as MemoryEntry), { mode: 0o600 });
+    return file;
+  }
+
+  private readDir(dir: string, type: MemoryType | undefined, external: boolean, out: MemoryEntry[], depth = 0) {
+    if (!existsSync(dir) || depth > 4) return;
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      if (ent.name.startsWith(".")) continue;
+      const abs = join(dir, ent.name);
+      if (ent.isDirectory()) {
+        const t = MEMORY_TYPES.find((x) => ent.name === `${x}s` || ent.name === x);
+        this.readDir(abs, t ?? type, external, out, depth + 1);
+      } else if (ent.name.endsWith(".md")) {
+        try {
+          const e = fromMarkdown(readFileSync(abs, "utf8"), { id: basename(ent.name, ".md"), type });
+          if (e) out.push({ ...e, file: abs, external });
+        } catch {
+          /* unreadable note: skip */
+        }
+      }
+    }
   }
 
   load(type?: MemoryType): MemoryEntry[] {
-    const types = type ? [type] : MEMORY_TYPES;
     const out: MemoryEntry[] = [];
-    for (const t of types) {
-      const f = this.file(t);
-      if (!existsSync(f)) continue;
-      try {
-        out.push(...(JSON.parse(readFileSync(f, "utf8")) as MemoryEntry[]));
-      } catch {
-        /* corrupted file: skip rather than crash the agent loop */
-      }
-    }
-    return out;
-  }
-
-  private save(type: MemoryType, entries: MemoryEntry[]) {
-    writeFileSync(this.file(type), JSON.stringify(entries, null, 2) + "\n", { mode: 0o600 });
+    this.readDir(this.p.memory, undefined, false, out);
+    for (const d of this.extraDirs) this.readDir(d, undefined, true, out);
+    return type ? out.filter((e) => e.type === type) : out;
   }
 
   add(e: Omit<MemoryEntry, "id" | "date" | "status"> & Partial<Pick<MemoryEntry, "status">>): MemoryEntry {
     if (!MEMORY_TYPES.includes(e.type)) throw new Error(`unknown memory type: ${e.type} (expected ${MEMORY_TYPES.join(", ")})`);
     const entry: MemoryEntry = { id: `${e.type.slice(0, 3)}-${shortId()}`, date: now(), status: "active", ...e };
-    const list = this.load(e.type);
-    list.push(entry);
-    this.save(e.type, list);
+    entry.file = this.write(entry);
     return entry;
   }
 
   setStatus(id: string, status: MemoryEntry["status"], supersededBy?: string): MemoryEntry | null {
-    for (const t of MEMORY_TYPES) {
-      const list = this.load(t);
-      const e = list.find((x) => x.id === id);
-      if (e) {
-        e.status = status;
-        if (supersededBy) e.supersededBy = supersededBy;
-        this.save(t, list);
-        return e;
-      }
-    }
-    return null;
+    const e = this.load().find((x) => x.id === id && !x.external);
+    if (!e) return null;
+    e.status = status;
+    if (supersededBy) e.supersededBy = supersededBy;
+    this.write(e);
+    return e;
   }
 
   /**
@@ -100,15 +244,21 @@ export class Memory {
         if (!whys.length) whys.push(`project-wide ${e.type}`);
       }
       if (e.type === "failure" && score > 0) score += 2; // dead ends are expensive to rediscover
+      if (e.external) score *= 0.8; // curated-for-humans notes are less targeted
       if (score >= 1.5) scored.push({ entry: e, score, why: whys.join("; ") });
     }
     return scored.sort((a, b) => b.score - a.score).slice(0, limit);
   }
 }
 
+export function openMemory(p: Paths): Memory {
+  const dirs = (loadConfig(p).memoryDirs ?? []).map((d) => (isAbsolute(d) ? d : resolve(p.root, d.replace(/^~(?=\/)/, process.env.HOME ?? "~"))));
+  return new Memory(p, dirs);
+}
+
 export function renderMemory(e: MemoryEntry): string {
   const head = e.type === "failure" ? "FAILED APPROACH" : e.type.toUpperCase();
-  const lines = [`${head} [${e.id}]: ${e.text}`];
+  const lines = [`${head} [${e.id}]: ${e.text.split("\n").slice(0, 3).join(" ").slice(0, 400)}`];
   if (e.attempt) lines.push(`  attempt: ${e.attempt}`);
   if (e.result) lines.push(`  result: ${e.result}`);
   if (e.reason) lines.push(`  reason: ${e.reason}`);

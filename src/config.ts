@@ -21,6 +21,8 @@ export interface NarrowbitConfig {
   maxInlineFileTokens: number;
   /** Skip parsing files larger than this many bytes. */
   maxFileBytes: number;
+  /** Extra read-only folders of Markdown notes used as project memory (e.g. a folder in an Obsidian vault). */
+  memoryDirs: string[];
 }
 
 export const DEFAULT_CONFIG: NarrowbitConfig = {
@@ -29,6 +31,7 @@ export const DEFAULT_CONFIG: NarrowbitConfig = {
   verify: {},
   maxInlineFileTokens: 1500,
   maxFileBytes: 1_000_000,
+  memoryDirs: [],
 };
 
 export const DEFAULT_IGNORE = `# Narrowbit exclusions (gitignore syntax subset). .gitignore is also respected.

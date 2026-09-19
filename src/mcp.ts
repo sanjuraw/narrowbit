@@ -2,9 +2,9 @@ import { createInterface } from "node:readline";
 import { loadConfig, type Paths } from "./config.js";
 import { runCommand } from "./compress.js";
 import { indexRepo, openStore } from "./indexer.js";
-import { Memory, MEMORY_TYPES, renderMemory, type MemoryType } from "./memory.js";
+import { Memory, openMemory, MEMORY_TYPES, renderMemory, type MemoryType } from "./memory.js";
 import { buildPackage } from "./package.js";
-import { expandTask, fileRangeText, outlineText, refsText, searchText, symbolText, testsText } from "./query.js";
+import { expandTask, fileRangeText, grepText, outlineText, refsText, searchText, symbolText, testsText } from "./query.js";
 import { Tasks } from "./tasks.js";
 import { estimateTokens, now } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
@@ -51,6 +51,16 @@ export const TOOLS: Tool[] = [
     name: "nb_expand",
     description: "Next most relevant context for the current task that has not been delivered yet. Use when the initial context was not enough.",
     inputSchema: { type: "object", properties: { budget: num("Approximate token budget for the expansion (default 4000)") } },
+  },
+  {
+    name: "nb_grep",
+    description:
+      "Grep the repo (case-insensitive, literal by default) with results grouped by file and tagged with the enclosing function/method, so you rarely need to open the file. Prefer over the Grep tool.",
+    inputSchema: {
+      type: "object",
+      properties: { pattern: str("Text to find (or a regex if regex=true)"), glob: str("Optional pathspec, e.g. 'src/**/*.ts'"), regex: { type: "boolean" }, limit: num("Max matches shown (default 40)") },
+      required: ["pattern"],
+    },
   },
   {
     name: "nb_tests",
@@ -101,7 +111,7 @@ export async function serveMcp(p: Paths): Promise<void> {
   const cfg = loadConfig(p);
   const store = openStore(p);
   const tasks = new Tasks(p);
-  const memory = new Memory(p);
+  const memory = openMemory(p);
   let lastIndex = 0;
   const refresh = () => {
     // The agent edits files between calls; keep line ranges honest with a cheap incremental re-index.
@@ -137,6 +147,9 @@ export async function serveMcp(p: Paths): Promise<void> {
       case "nb_search":
         refresh();
         return searchText(p, store, String(a.query), Number(a.limit ?? 10));
+      case "nb_grep":
+        refresh();
+        return grepText(p, store, String(a.pattern), { glob: a.glob, regex: !!a.regex, limit: a.limit ? Number(a.limit) : undefined });
       case "nb_tests":
         refresh();
         return testsText(store, String(a.path));
