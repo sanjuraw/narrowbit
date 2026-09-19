@@ -38,10 +38,10 @@ narrowbit install claude     # .mcp.json (narrowbit MCP server) + UserPromptSubm
 | `init`, `index [--force]`, `status` | incremental index (mtime/size fast-path, then content hash) |
 | `task "<text>" [--budget N] [--print] [--json] [--error-file f]` | compile a context package |
 | `inspect`, `context`, `expand`, `close [--success\|--failure]` | explain selection, show the package, get more context, record the outcome and selection recall against the files actually changed |
-| `symbol`, `refs`, `outline`, `search`, `tests` | deterministic lookups (the same ones are exposed over MCP) |
+| `symbol`, `refs`, `outline`, `search`, `grep`, `tests` | deterministic lookups (the same ones are exposed over MCP) |
 | `run -- <cmd>` | run a command and get compressed output (tsc, eslint, vitest/jest/mocha/node:test, npm, generic); raw log kept in `.narrowbit/logs` |
 | `verify [--full]` | type-check + lint + tests *focused on changed files*, reporting only the failures |
-| `memory add <type> "<text>"` … | decisions, constraints, conventions, facts, **failed approaches**; stored as JSON in `.narrowbit/memory` |
+| `memory add <type> "<text>"` … | decisions, constraints, conventions, facts, **failed approaches**; stored as Markdown notes in `.narrowbit/memory` |
 | `eval [--commits N]` | offline selection benchmark over git history |
 | `benchmark init \| run <file> \| report` | paired A/B: native Claude Code vs Claude Code + Narrowbit |
 | `stats` | aggregates over recorded tasks |
