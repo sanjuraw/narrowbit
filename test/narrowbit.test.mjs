@@ -1,0 +1,305 @@
+import { test, describe, before, after } from "node:test";
+import assert from "node:assert/strict";
+import { spawn, execFileSync } from "node:child_process";
+import { readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { makeFixture } from "./fixture.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const BIN = join(here, "..", "bin", "narrowbit.js");
+const dist = (m) => import(join(here, "..", "dist", m));
+
+const { parseSource } = await dist("parser.js");
+const { IgnoreMatcher } = await dist("files.js");
+const { compressOutput } = await dist("compress.js");
+const { redact } = await dist("redact.js");
+const { paths, ensureDirs, loadConfig } = await dist("config.js");
+const { Store } = await dist("store.js");
+const { indexRepo } = await dist("indexer.js");
+const { buildPackage } = await dist("package.js");
+const { parseTask } = await dist("taskparse.js");
+const { Memory } = await dist("memory.js");
+const { refsText, symbolText, expandTask } = await dist("query.js");
+const { parseStream } = await dist("bench.js");
+const { termsOf } = await dist("terms.js");
+
+const nb = (cwd, ...args) => execFileSync(process.execPath, [BIN, ...args], { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+
+describe("parser", () => {
+  test("extracts symbols, methods, routes, tests and imports", () => {
+    const src = `
+import { a as bee, c } from "./x";
+import * as ns from "../y";
+import type { T } from "./types";
+export { z } from "./z";
+const r = require("./legacy");
+/** Does the thing. */
+export async function doThing(x: number): Promise<number> { return bee(x) + c; }
+export const arrow = (s: string) => s.trim();
+export class Svc { run() { return doThing(1); } private helper = () => 2; }
+interface I { x: number }
+app.post("/webhooks/pay", handler);
+describe("suite", () => { it("works", () => {}); });
+const lazy = await import("./lazy");
+`;
+    const pf = parseSource("src/f.ts", src);
+    const q = pf.symbols.map((s) => `${s.kind}:${s.qualified}`);
+    for (const e of ["function:doThing", "function:arrow", "class:Svc", "method:Svc.run", "method:Svc.helper", "interface:I", "route:POST /webhooks/pay", "suite:suite", "test:suite > works"])
+      assert.ok(q.includes(e), `missing ${e} in ${q.join(", ")}`);
+    const doThing = pf.symbols.find((s) => s.name === "doThing");
+    assert.equal(doThing.doc, "Does the thing.");
+    assert.match(doThing.signature, /^export async function doThing\(x: number\): Promise<number>$/);
+    assert.ok(doThing.refs.includes("bee"));
+    const specs = pf.imports.map((i) => `${i.kind}:${i.spec}`);
+    for (const e of ["import:./x", "import:../y", "import:./types", "reexport:./z", "require:./legacy", "dynamic:./lazy"]) assert.ok(specs.includes(e), `missing ${e}`);
+    assert.deepEqual(pf.imports[0].bindings, [
+      { imported: "a", local: "bee" },
+      { imported: "c", local: "c" },
+    ]);
+    assert.equal(pf.imports.find((i) => i.spec === "./types").typeOnly, true);
+  });
+
+  test("identifier splitting and stemming", () => {
+    const t = termsOf("verifyPaymentSignature HTTPServer user_sessions");
+    for (const e of ["verify", "payment", "signature", "verifypaymentsignature", "http", "server", "user", "session"]) assert.ok(t.includes(e), `missing ${e}`);
+  });
+});
+
+describe("ignore + redaction", () => {
+  test("gitignore-style matcher", () => {
+    const m = new IgnoreMatcher("node_modules/\n*.pem\n/build\n.env.*\n!keep.pem\nsecret/**/x.ts");
+    assert.ok(m.ignores("node_modules/a/b.js"));
+    assert.ok(m.ignores("pkg/node_modules/a.js"));
+    assert.ok(m.ignores("certs/a.pem"));
+    assert.ok(!m.ignores("keep.pem"));
+    assert.ok(m.ignores("build/out.js"));
+    assert.ok(!m.ignores("src/build.ts"));
+    assert.ok(m.ignores(".env.local"));
+    assert.ok(m.ignores("secret/a/b/x.ts"));
+    assert.ok(!m.ignores("src/app.ts"));
+  });
+
+  test("redacts common secrets", () => {
+    const s = redact(`const apiKey = "abcd1234efgh5678";\nAKIAABCDEFGHIJKLMNOP\npostgres://user:hunter22@db/x\nconst k = "sk-ant-abcdefghijklmnopqrstuvwxyz0123";\nconst label = "not a secret";`);
+    assert.ok(!s.includes("abcd1234efgh5678"));
+    assert.ok(!s.includes("AKIAABCDEFGHIJKLMNOP"));
+    assert.ok(!s.includes("hunter22"));
+    assert.ok(!s.includes("sk-ant-abcdefghijklmnopqrstuvwxyz0123"));
+    assert.ok(s.includes("not a secret"));
+  });
+});
+
+describe("compression", () => {
+  test("vitest-style output keeps summary + failures, drops passing noise", () => {
+    const passing = Array.from({ length: 400 }, (_, i) => ` ✓ tests/mod${i}.test.ts > case ${i} 3ms`).join("\n");
+    const raw = `\x1b[32m RUN  v2.0.5 /repo\x1b[0m
+${passing}
+ FAIL  tests/payments/verify.test.ts > verifyPaymentSignature > accepts a valid signature
+AssertionError: expected false to be true
+ - Expected: true
+ + Received: false
+    at /repo/tests/payments/verify.test.ts:9:52
+    at file:///repo/node_modules/vitest/dist/runner.js:10:1
+
+ Test Files  1 failed | 40 passed (41)
+      Tests  1 failed | 400 passed (401)`;
+    const c = compressOutput(raw, 1);
+    assert.equal(c.kind, "tests");
+    assert.match(c.text, /Tests\s+1 failed \| 400 passed/);
+    assert.match(c.text, /AssertionError: expected false to be true/);
+    assert.match(c.text, /verify\.test\.ts:9:52/);
+    assert.ok(!c.text.includes("node_modules"));
+    assert.ok(c.text.split("\n").length < 20, c.text);
+  });
+
+  test("tsc errors grouped by file", () => {
+    const raw = `src/a.ts(3,5): error TS2322: Type 'string' is not assignable to type 'number'.
+src/a.ts(9,1): error TS2304: Cannot find name 'foo'.
+src/b.ts:4:10 - error TS7006: Parameter 'x' implicitly has an 'any' type.
+Found 3 errors in 2 files.`;
+    const c = compressOutput(raw, 2);
+    assert.equal(c.kind, "tsc");
+    assert.equal(c.errorCount, 3);
+    assert.match(c.text, /^3 type error\(s\) in 2 file\(s\)/);
+    assert.match(c.text, /L9 TS2304: Cannot find name 'foo'/);
+  });
+
+  test("successful noisy command collapses", () => {
+    const raw = Array.from({ length: 3000 }, (_, i) => `compiled module ${i}`).join("\n") + "\nDone in 3.2s";
+    const c = compressOutput(raw, 0);
+    assert.ok(c.text.split("\n").length <= 40);
+    assert.match(c.text, /Done in 3\.2s/);
+  });
+});
+
+describe("stream-json parsing (benchmark)", () => {
+  test("counts tools, reads and usage once per message", () => {
+    const lines = [
+      { type: "system", subtype: "init" },
+      { type: "assistant", message: { id: "m1", content: [{ type: "tool_use", name: "Read", input: { file_path: "/r/a.ts" } }], usage: { input_tokens: 10, cache_creation_input_tokens: 1000, cache_read_input_tokens: 0, output_tokens: 50 } } },
+      { type: "assistant", message: { id: "m1", content: [{ type: "tool_use", name: "Grep", input: {} }], usage: { input_tokens: 10, cache_creation_input_tokens: 1000, cache_read_input_tokens: 0, output_tokens: 50 } } },
+      { type: "assistant", message: { id: "m2", content: [{ type: "tool_use", name: "Read", input: { file_path: "/r/a.ts" } }], usage: { input_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 1000, output_tokens: 20 } } },
+      { type: "result", subtype: "success", is_error: false, num_turns: 3, duration_ms: 1234, total_cost_usd: 0.05 },
+    ].map((l) => JSON.stringify(l)).join("\n");
+    const s = parseStream(lines);
+    assert.equal(s.toolCalls.Read, 2);
+    assert.equal(s.toolCalls.Grep, 1);
+    assert.equal(s.filesRead, 1);
+    assert.equal(s.usage.cacheCreate, 1000);
+    assert.equal(s.usage.cacheRead, 1000);
+    assert.equal(s.usage.input, 15);
+    assert.equal(s.turns, 3);
+    assert.equal(s.costUsd, 0.05);
+    assert.equal(s.isError, false);
+  });
+});
+
+describe("fixture repository", () => {
+  let root, p, store, cfg;
+  before(() => {
+    root = makeFixture();
+    p = paths(root);
+    ensureDirs(p);
+    cfg = loadConfig(p);
+    store = new Store(p.db);
+    indexRepo(p, store);
+  });
+  after(() => {
+    store?.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("index excludes secrets and resolves imports incl. tsconfig paths", () => {
+    assert.equal(store.fileByPath(".env"), undefined);
+    const alias = store.get(
+      "SELECT t.path FROM imports i JOIN files f ON f.id=i.file_id JOIN files t ON t.id=i.target_id WHERE f.path='src/server.ts' AND i.spec='@/auth/session'",
+    );
+    assert.equal(alias?.path, "src/auth/session.ts");
+    const links = store.all("SELECT t.path test, s.path src FROM tests_map m JOIN files t ON t.id=m.test_id JOIN files s ON s.id=m.source_id");
+    assert.ok(links.some((l) => l.test === "tests/payments/verify.test.ts" && l.src === "src/payments/verify.ts"));
+    assert.ok(links.some((l) => l.test === "tests/auth/session.test.ts" && l.src === "src/auth/session.ts"));
+  });
+
+  test("incremental re-index only parses changed files", () => {
+    const s1 = indexRepo(p, store);
+    assert.equal(s1.parsed, 0);
+    const f = join(root, "src/utils/time.ts");
+    writeFileSync(f, readFileSync(f, "utf8") + "\nexport function tomorrowUtc(): number { return Date.now() + 86400000; }\n");
+    const s2 = indexRepo(p, store);
+    assert.equal(s2.parsed, 1);
+    assert.ok(store.get("SELECT 1 x FROM symbols WHERE name='tomorrowUtc'"));
+  });
+
+  test("brief example: Razorpay task selects payment files, not unrelated features", () => {
+    const b = buildPackage(store, p, cfg, "Fix Razorpay signature verification failing after payment callback");
+    const top3 = b.ranking.files.slice(0, 3).map((f) => f.path);
+    assert.ok(top3.includes("src/payments/verify.ts"), top3.join());
+    assert.ok(top3.includes("src/payments/callback.ts"), top3.join());
+    assert.ok(!b.ranking.files.slice(0, 8).some((f) => f.path.startsWith("src/features/")));
+    assert.ok(b.record.tests.includes("tests/payments/verify.test.ts"));
+    assert.match(b.text, /export function verifyPaymentSignature/);
+    assert.ok(b.record.packageTokens < b.record.stats.repoCodeTokens / 5, "package should be a small fraction of the repo");
+    assert.ok(!b.text.includes("super_secret_value"));
+  });
+
+  test("stack trace pins the failing function", () => {
+    const b = buildPackage(store, p, cfg, "TypeError: session expired\n    at refreshSession (src/auth/session.ts:11:45)");
+    assert.equal(b.ranking.files[0].path, "src/auth/session.ts");
+    assert.equal(b.ranking.files[0].symbols[0].name, "refreshSession");
+    assert.equal(b.record.confidence, "high");
+  });
+
+  test("vague symptom still reaches auth/session code", () => {
+    const b = buildPackage(store, p, cfg, "users are logged out too early after the token refresh");
+    const top4 = b.ranking.files.slice(0, 4).map((f) => f.path);
+    assert.ok(top4.includes("src/auth/session.ts") || top4.includes("src/auth/token.ts"), top4.join());
+  });
+
+  test("memory: failed approaches surface for related tasks", () => {
+    const m = new Memory(p);
+    m.add({ type: "failure", text: "Increasing cookie TTL did not fix server-side session expiration", attempt: "raise cookie maxAge", result: "still expired", files: ["src/auth/session.ts"] });
+    m.add({ type: "decision", text: "Webhook signature verification must use the raw request body", reason: "re-serialising JSON changes bytes" });
+    const b = buildPackage(store, p, cfg, "session expires after refresh, fix expiration");
+    assert.match(b.text, /FAILED APPROACH .*cookie TTL/);
+    assert.ok(!b.text.includes("raw request body"), "unrelated decision should not be included");
+  });
+
+  test("symbol and refs lookups", () => {
+    assert.match(symbolText(p, store, "PaymentService.retryPayment"), /async retryPayment\(orderId: string, attempts = 3\)/);
+    const refs = refsText(store, "verifyPaymentSignature");
+    assert.match(refs, /defined: src\/payments\/verify\.ts:6/);
+    assert.match(refs, /src\/payments\/callback\.ts:\d+-\d+ function handleWebhook/);
+    assert.match(refs, /verifyOrderSignature/);
+  });
+
+  test("expansion returns new material only", () => {
+    const b = buildPackage(store, p, cfg, "Fix Razorpay signature verification failing after payment callback", { budget: 1200 });
+    const e1 = expandTask(p, cfg, store, b.record, 1500);
+    assert.ok(e1.given.length > 0);
+    for (const g of e1.given) assert.ok(!b.record.given.includes(g), `re-delivered ${g}`);
+  });
+
+  test("CLI task/inspect/close and hook", () => {
+    nb(root, "task", "Fix Razorpay signature verification failing after payment callback");
+    const insp = nb(root, "inspect");
+    assert.match(insp, /CONTEXT SELECTED/);
+    assert.match(insp, /✓ src\/payments\/verify\.ts/);
+    // Simulate the agent fixing the bug, then close: recall should be 100%.
+    const f = join(root, "src/payments/callback.ts");
+    writeFileSync(f, readFileSync(f, "utf8").replace("JSON.stringify(req.body)", 'req.rawBody ?? ""'));
+    const closed = nb(root, "close", "--success");
+    assert.match(closed, /selection recall 100%/);
+
+    const hookOut = execFileSync(process.execPath, [BIN, "hook", "prompt"], {
+      cwd: root,
+      input: JSON.stringify({ session_id: "s1", prompt: "Why does refreshSession throw session expired for valid users?", hook_event_name: "UserPromptSubmit" }),
+      encoding: "utf8",
+    });
+    const j = JSON.parse(hookOut);
+    assert.equal(j.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+    assert.match(j.hookSpecificOutput.additionalContext, /refreshSession/);
+    const short = execFileSync(process.execPath, [BIN, "hook", "prompt"], { cwd: root, input: JSON.stringify({ session_id: "s1", prompt: "yes do it" }), encoding: "utf8" });
+    assert.equal(short.trim(), "", "short follow-ups get no injection");
+  });
+
+  test("MCP server speaks JSON-RPC over stdio", async () => {
+    const child = spawn(process.execPath, [BIN, "mcp", "--root", root], { stdio: ["pipe", "pipe", "pipe"] });
+    const responses = [];
+    let buf = "";
+    child.stdout.on("data", (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        responses.push(JSON.parse(buf.slice(0, i)));
+        buf = buf.slice(i + 1);
+      }
+    });
+    const send = (m) => child.stdin.write(JSON.stringify(m) + "\n");
+    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } });
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+    send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "nb_symbol", arguments: { name: "verifyPaymentSignature" } } });
+    send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "nb_run", arguments: { command: "node -e \"console.log('x\\n'.repeat(500)); process.exit(3)\"" } } });
+    send({ jsonrpc: "2.0", id: 5, method: "nope" });
+    const deadline = Date.now() + 15000;
+    while (responses.length < 5 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    child.stdin.end();
+    const byId = Object.fromEntries(responses.map((r) => [r.id, r]));
+    assert.equal(byId[1].result.serverInfo.name, "narrowbit");
+    assert.ok(byId[2].result.tools.some((t) => t.name === "nb_expand"));
+    assert.match(byId[3].result.content[0].text, /createHmac\("sha256", secret\)/);
+    assert.match(byId[4].result.content[0].text, /exit 3/);
+    assert.ok(byId[4].result.content[0].text.split("\n").length < 45);
+    assert.equal(byId[5].error.code, -32601);
+  });
+});
+
+test("task parser picks up locations, identifiers, errors", () => {
+  const t = parseTask("TypeError: Cannot read properties of undefined\n  at PaymentService.retryPayment (src/payments/service.ts:14:20)\nfix `verifySignature()` in payments/verify");
+  assert.deepEqual(t.locations[0], { path: "src/payments/service.ts", line: 14 });
+  assert.ok(t.identifiers.includes("PaymentService.retryPayment") || t.identifiers.includes("retryPayment"));
+  assert.ok(t.identifiers.includes("verifySignature"));
+  assert.ok(t.paths.includes("payments/verify"));
+  assert.ok(t.errors.length >= 1);
+});
