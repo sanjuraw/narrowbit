@@ -80,6 +80,16 @@ function out(s: string) {
   process.stdout.write(s.endsWith("\n") ? s : s + "\n");
 }
 
+/** Refuse to set up in a folder that isn't a project (e.g. $HOME): it would index unrelated files. */
+function requireProject(p: Paths, force: boolean) {
+  if (force) return;
+  const isProject = ["package.json", "tsconfig.json", "jsconfig.json"].some((f) => existsSync(join(p.root, f))) || existsSync(join(p.root, ".git"));
+  if (!isProject || p.root === process.env.HOME) {
+    process.stderr.write(`narrowbit: ${p.root} does not look like a project (no .git, package.json or tsconfig.json).\nRun this from inside your repository, or pass --force.\n`);
+    process.exit(2);
+  }
+}
+
 function requireInit(p: Paths) {
   if (!existsSync(p.db)) {
     process.stderr.write(`narrowbit: not initialised in ${p.root} — run \`narrowbit init\`\n`);
@@ -125,6 +135,7 @@ export async function main(argv: string[]): Promise<number> {
 
   switch (cmd) {
     case "init": {
+      requireProject(p, !!args.flags.force);
       ensureDirs(p);
       if (!existsSync(p.config)) {
         const cfg = loadConfig(p);
@@ -396,6 +407,7 @@ export async function main(argv: string[]): Promise<number> {
         process.stderr.write("usage: narrowbit install claude [--no-hook]\n");
         return 2;
       }
+      requireProject(p, !!args.flags.force);
       ensureDirs(p);
       for (const c of installClaude(p, { hook: !args.flags["no-hook"] })) out(`updated ${relative(process.cwd(), c) || c}`);
       out("restart Claude Code in this repo to pick up the narrowbit MCP server and hook.");

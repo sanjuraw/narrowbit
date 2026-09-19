@@ -2,3 +2,5 @@ node_modules/
 dist/
 .narrowbit/
 *.log
+.mcp.json
+.claude/settings.local.json
