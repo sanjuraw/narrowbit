@@ -11,7 +11,8 @@ Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens
 - **The core thesis is NOT yet proven**: ≥40% less effective context than native Claude Code at equal or better task success. Only the paired benchmark (`narrowbit benchmark`) measures it. It spends the user's Claude quota, so **ask before running it**. Never claim token savings until it has run.
 - Live smoke test done (2026-09-19, 1 task, Sonnet, this repo): narrowbit arm SUCCESS, native arm FAIL (it silently changed an unrelated output line); 293k vs 367k total input tokens (-20.2%), fresh input -6.4%, $0.29 vs $0.31. n=1 on a 32-file repo — an anecdote, not evidence. Confirmed working end to end: MCP server connects, all 13 nb_* tools load, usage parsing.
 - Known environment gotcha: the npm-installed `claude` on this machine is broken (native binary missing; stale `.claude-code-*` temp dir blocks reinstall). Benchmarks use `claudeBin` / `$NARROWBIT_CLAUDE` pointing at the desktop app's bundled binary.
-- Not done yet: the 30–50 task benchmark set, Codex and Antigravity integrations, automatic end-of-task memory extraction.
+- `scripts/build-tasks.mjs` mines a repo's history into a benchmark task set (start = parent + the fix's tests applied; success = those tests pass; `--verify-each` proves fail→pass). Verified working on this repo's own history; the Hono set still needs a run with its deps installed.
+- Not done yet: running the 30–50 task benchmark, Codex and Antigravity integrations, automatic end-of-task memory extraction.
 
 ## Product principles (from the brief)
 

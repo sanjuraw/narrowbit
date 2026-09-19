@@ -21,6 +21,8 @@ export interface BenchTask {
   category?: string;
   /** Files a correct solution is expected to touch (optional; enables selection recall). */
   expectedFiles?: string[];
+  /** Start state: check these paths out of another commit first (e.g. the fix's tests, which must fail). */
+  apply?: { from: string; paths: string[] };
 }
 
 export interface BenchArm {
@@ -192,6 +194,10 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
           } else if (existsSync(join(p.root, "node_modules")) && !existsSync(join(wt, "node_modules"))) {
             symlinkSync(join(p.root, "node_modules"), join(wt, "node_modules"));
           }
+          if (t.apply?.paths.length) {
+            const ap = sh("git", ["checkout", t.apply.from, "--", ...t.apply.paths], wt);
+            if (ap.code !== 0) throw new Error(`${tag}: could not apply ${t.apply.paths.join(", ")} from ${t.apply.from}: ${ap.stderr.trim()}`);
+          }
           const env: Record<string, string> = {};
           let packageTokens: number | null = null;
           let selectedPaths: string[] = [];
@@ -234,7 +240,8 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             : s.turns === 0 && !s.usage.input && stderr.trim() ? `claude failed to start: ${stderr.trim().split("\n")[0].slice(0, 200)}`
             : null;
           if (fatal) throw new Error(`${tag}: ${fatal} — aborting benchmark; nothing recorded for this run`);
-          const filesChanged = changedSince(wt, commit).filter((f) => !f.startsWith(".narrowbit/") && f !== "node_modules");
+          const applied = new Set(t.apply?.paths ?? []);
+          const filesChanged = changedSince(wt, commit).filter((f) => !f.startsWith(".narrowbit/") && f !== "node_modules" && !applied.has(f));
           writeFileSync(join(runDir, `${t.id}-${arm.name}-${r}.diff`), sh("git", ["diff", commit], wt).stdout);
           let verifyExit: number | null = null;
           if (t.verify) {

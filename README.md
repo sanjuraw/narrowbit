@@ -74,8 +74,16 @@ All emitted text is secret-redacted. `.env*`, keys and credentials are never ind
 
 ## Benchmarking
 
+Build a task set from a repository's own history (no model calls):
+
 ```bash
-narrowbit benchmark init            # writes benchmark.json; fill in 30–50 real tasks with verify commands
+node scripts/build-tasks.mjs --repo ../hono --out bench-hono.json --max 40 --verify-each --setup "npm ci"
+```
+
+Each commit that changed source *and* its tests becomes a task: the agent starts at the parent commit with the commit's **tests already applied** (so they fail) and must make them pass without touching the tests. `--verify-each` proves every task is winnable by checking fail→pass with the real fix. Add `--with-body` to include the commit body in the prompt (usually explains the fix, so off by default).
+
+```bash
+narrowbit benchmark init            # or hand-write benchmark.json
 narrowbit benchmark run benchmark.json --dry-run
 narrowbit benchmark run benchmark.json
 narrowbit benchmark report
