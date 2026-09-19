@@ -221,8 +221,16 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
           const outFile = join(runDir, `${t.id}-${arm.name}-${r}.jsonl`);
           log(`${tag}: running claude…`);
           const t0 = Date.now();
-          const agentExit = await runClaude(wt, [...args, t.prompt], outFile, env, (spec.timeoutMinutes ?? 30) * 60_000);
-          const s = parseStream(readFileSync(outFile, "utf8"));
+          const agentExit = await runClaude(wt, [...args, "--", t.prompt], outFile, env, (spec.timeoutMinutes ?? 30) * 60_000);
+          const rawStream = readFileSync(outFile, "utf8");
+          const s = parseStream(rawStream);
+          const stderr = existsSync(outFile + ".stderr") ? readFileSync(outFile + ".stderr", "utf8") : "";
+          // Harness/environment failures are not task failures: stop instead of recording a bogus result.
+          const fatal =
+            /"error":"authentication_failed"|Not logged in|Invalid API key/.test(rawStream + stderr) ? "claude CLI is not logged in (run `claude` then /login, or set ANTHROPIC_API_KEY)"
+            : s.turns === 0 && !s.usage.input && stderr.trim() ? `claude failed to start: ${stderr.trim().split("\n")[0].slice(0, 200)}`
+            : null;
+          if (fatal) throw new Error(`${tag}: ${fatal} — aborting benchmark; nothing recorded for this run`);
           const filesChanged = changedSince(wt, commit).filter((f) => !f.startsWith(".narrowbit/") && f !== "node_modules");
           writeFileSync(join(runDir, `${t.id}-${arm.name}-${r}.diff`), sh("git", ["diff", commit], wt).stdout);
           let verifyExit: number | null = null;

@@ -42,7 +42,7 @@ export async function launchClaude(p: Paths, taskText: string, extraArgs: string
   tasks.setCurrent(b.record.id);
   writeFileSync(join(p.tasks, `${b.record.id}.context.md`), b.text, { mode: 0o600 });
   const mcpFile = writeMcpConfigFile(p, b.record.id);
-  const args = ["--append-system-prompt", b.text, "--mcp-config", mcpFile, ...extraArgs, taskText];
+  const args = ["--append-system-prompt", b.text, "--mcp-config", mcpFile, ...extraArgs, "--", taskText];
   process.stderr.write(
     `narrowbit: task ${b.record.id} — ${b.record.selected.filter((s) => s.level !== "listed").length} files in context, ~${b.record.packageTokens} tokens est., confidence ${b.record.confidence}\n`,
   );
