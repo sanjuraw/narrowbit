@@ -448,6 +448,7 @@ export async function main(argv: string[]): Promise<number> {
       if (rr) {
         out(`\n  RE-RANKED by ${rr.model} (weight ${rr.weight}): recall@5 ${pct(rr.recallAt5)} (${rr.recallAt5 >= s.recallAt5 ? "+" : ""}${((rr.recallAt5 - s.recallAt5) * 100).toFixed(1)}pp)   recall@10 ${pct(rr.recallAt10)} (${((rr.recallAt10 - s.recallAt10) * 100).toFixed(1)}pp)   hit@1 ${pct(rr.hitAt1)} (${((rr.hitAt1 - s.hitAt1) * 100).toFixed(1)}pp)   MRR ${rr.mrr.toFixed(3)}`);
         out(`  cost: ${rr.calls} calls, ${rr.errors} error(s), ~${fmtNum(rr.inputTokens)} input tokens, ~$${rr.estCostUsd.toFixed(4)} (OpenRouter, not Claude quota)`);
+        if (rr.firstError) out(`  first error: ${rr.firstError}`);
       }
       out(`  details: ${relative(process.cwd(), r.file)}`);
       return 0;

@@ -41,6 +41,8 @@ const LEVELS = [
 export interface RerankStats {
   calls: number;
   errors: number;
+  /** First failure, verbatim — silent failures cost a whole eval run. */
+  firstError?: string;
   inputTokens: number;
   ms: number;
   estCostUsd: number;
@@ -150,8 +152,9 @@ export async function rerank(
       stats.calls++;
       stats.inputTokens += a.inputTokens;
       return a;
-    } catch {
+    } catch (e: any) {
       stats.errors++;
+      stats.firstError ??= String(e?.message ?? e).slice(0, 300);
       return { relevance: null, edit: null, inputTokens: 0 };
     }
   });

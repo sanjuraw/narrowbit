@@ -110,6 +110,7 @@ export async function evalHistory(p: Paths, opts: { commits?: number; budget?: n
       if (opts.rerank) {
         const rr = await rerank(store, c.msg, b.ranking.files, rrCfg);
         for (const k of ["calls", "errors", "inputTokens", "ms"] as const) rrStats[k] += rr.stats[k];
+        rrStats.firstError ??= rr.stats.firstError;
         rrStats.estCostUsd += rr.stats.estCostUsd;
         const order2 = rr.files.map((f) => f.path);
         const idx2 = order2.findIndex((f) => gold.includes(f));
