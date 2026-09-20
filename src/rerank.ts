@@ -188,6 +188,6 @@ export async function rerank(
   });
   scored.sort((a, b) => b.combined - a.combined || b.score - a.score);
   stats.ms = Date.now() - t0;
-  stats.estCostUsd = (stats.inputTokens / 1e6) * 0.042;
+  stats.estCostUsd = cfg.provider === "openrouter" ? (stats.inputTokens / 1e6) * 0.042 : 0; // only the OpenRouter rate is published
   return { files: [...scored, ...tail.map((f) => ({ ...f, modelScore: null, combined: 0 }))], stats };
 }

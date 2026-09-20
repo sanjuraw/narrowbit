@@ -140,6 +140,7 @@ export async function evalHistory(p: Paths, opts: { commits?: number; budget?: n
       ? {
           ...rrStats,
           model: rrCfg.model,
+          provider: rrCfg.provider,
           weight: rrCfg.weight,
           recallAt5: mean((c) => c.reranked?.recallAt5 ?? 0),
           recallAt10: mean((c) => c.reranked?.recallAt10 ?? 0),
