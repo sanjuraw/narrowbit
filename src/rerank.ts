@@ -22,10 +22,11 @@ export interface RerankConfig {
 }
 
 export const DEFAULT_RERANK: RerankConfig = {
-  model: "typesafe/jev-1.13",
-  provider: "openrouter",
+  // TypeSafe direct when a TYPESAFE_API_KEY exists, else OpenRouter's alpha decisions endpoint.
+  model: process.env.TYPESAFE_API_KEY ? "jev-latest" : "typesafe/jev-1.13",
+  provider: process.env.TYPESAFE_API_KEY ? "typesafe" : "openrouter",
   topN: 20,
-  concurrency: 4,
+  concurrency: 1,
   weight: 0.5,
   timeoutMs: 60_000,
 };
@@ -54,34 +55,46 @@ export interface RerankedFile extends RankedFile {
   combined: number;
 }
 
-/** Compact, content-free description of one candidate: path, size, why it was picked, signatures. */
-function describe(store: Store, f: RankedFile, task: string): string {
+/** One compact, content-free line per candidate: path, size, why shortlisted, a few signatures. */
+function describeCandidate(store: Store, f: RankedFile): string {
   const syms = store
-    .all<{ qualified: string; kind: string; signature: string; start_line: number }>(
-      "SELECT qualified, kind, signature, start_line FROM symbols WHERE file_id=? AND kind NOT IN ('test','suite') ORDER BY exported DESC, (end_line - start_line) DESC LIMIT 12",
+    .all<{ qualified: string; kind: string; signature: string }>(
+      "SELECT qualified, kind, signature FROM symbols WHERE file_id=? AND kind NOT IN ('test','suite') ORDER BY exported DESC, (end_line - start_line) DESC LIMIT 6",
       f.id,
     )
-    .map((s) => `  ${s.kind} ${s.qualified} — ${s.signature.slice(0, 120)}`);
-  const matched = f.symbols.slice(0, 5).map((s) => `${s.qualified} (${s.why})`);
-  return [
-    `TASK: ${task.slice(0, 800)}`,
-    ``,
-    `CANDIDATE FILE: ${f.path} (${f.lines} lines)`,
-    `Why the index suggested it: ${f.reasons.slice(0, 4).join("; ")}`,
-    matched.length ? `Matching symbols: ${matched.join(", ")}` : "",
-    syms.length ? `File contents (signatures only):\n${syms.join("\n")}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+    .map((x) => `${x.kind} ${x.qualified}`)
+    .join(", ");
+  const why = f.reasons.slice(0, 2).map((r) => r.replace(/\s*\(\+[\d.]+\)$/, "")).join("; ");
+  return `${f.path} (${f.lines} lines) — shortlisted because: ${why}${syms ? ` — defines: ${syms.slice(0, 300)}` : ""}`;
 }
 
-async function ask(state: string, cfg: RerankConfig, key: string): Promise<{ relevance: number | null; edit: number | null; inputTokens: number }> {
+interface ChoiceAnswer {
+  /** path → probability this is where the change belongs */
+  probs: Map<string, number>;
+  confidence: number | null;
+  inputTokens: number;
+}
+
+/**
+ * One request per task: Choice over the whole shortlist (up to 255 options), which returns a
+ * probability distribution we can rank by directly — cheaper and better calibrated than
+ * scoring each file in a separate call.
+ */
+async function askChoice(store: Store, task: string, head: RankedFile[], cfg: RerankConfig, key: string): Promise<ChoiceAnswer> {
+  // Opaque option ids keep paths out of the option keys and make the mapping back unambiguous.
+  const ids = head.map((_, i) => `c${i}`);
+  const criteria = Object.fromEntries(head.map((f, i) => [ids[i], describeCandidate(store, f)]));
+  const state = [
+    `A developer is working in a TypeScript repository. Their task:`,
+    task.slice(0, 2000),
+    ``,
+    `Candidate files were shortlisted by a local index. Decide where the change belongs.`,
+  ].join("\n");
   const body = {
-    model: cfg.provider === "openrouter" ? cfg.model : cfg.model.replace(/^typesafe\//, ""),
+    model: cfg.model,
     state,
     questions: {
-      relevance: { type: "score", instructions: "How likely is this file to be edited to complete the task?", criteria: LEVELS },
-      edit: { type: "noul", instructions: "Will completing this task require changing code in this file?" },
+      target: { type: "choice", instructions: "Which candidate file must be edited to complete this task?", criteria },
     },
   };
   const url = cfg.provider === "openrouter" ? "https://openrouter.ai/api/alpha/decisions" : "https://api.typesafe.ai/v1/systemone";
@@ -94,16 +107,21 @@ async function ask(state: string, cfg: RerankConfig, key: string): Promise<{ rel
       body: JSON.stringify(body),
       signal: ctl.signal,
     });
-    if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
+    if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 300)}`);
     const j: any = await res.json();
-    const a = j.answers ?? j;
-    const rawScore = a.relevance?.score;
-    const levels = Math.max(1, (a.relevance?.legend?.length ?? LEVELS.length) - 1);
-    return {
-      relevance: typeof rawScore === "number" ? rawScore / levels : null,
-      edit: typeof a.edit?.noul === "number" ? a.edit.noul : null,
-      inputTokens: j.usage?.input_tokens ?? j.usage?.prompt_tokens ?? 0,
-    };
+    const a = j.answers?.target ?? j.target ?? j.answers ?? {};
+    const probs = new Map<string, number>();
+    const dist = a.probabilities ?? {};
+    for (const [id, pr] of Object.entries(dist)) {
+      const i = ids.indexOf(id);
+      if (i >= 0 && typeof pr === "number") probs.set(head[i].path, pr);
+    }
+    // Fall back to the single top choice when no distribution is returned.
+    if (!probs.size && typeof a.choice === "string") {
+      const i = ids.indexOf(a.choice);
+      if (i >= 0) probs.set(head[i].path, 1);
+    }
+    return { probs, confidence: typeof a.confidence === "number" ? a.confidence : null, inputTokens: j.usage?.input_tokens ?? j.usage?.prompt_tokens ?? 0 };
   } finally {
     clearTimeout(timer);
   }
@@ -142,35 +160,34 @@ export async function rerank(
   const key = rerankKey(cfg);
   if (!key) throw new Error(`no API key: set ${cfg.provider === "openrouter" ? "OPENROUTER_API_KEY" : "TYPESAFE_API_KEY"}`);
   const t0 = Date.now();
-  const head = files.slice(0, cfg.topN);
-  const tail = files.slice(cfg.topN);
+  const head = files.slice(0, Math.min(cfg.topN, 255));
+  const tail = files.slice(head.length);
   const stats: RerankStats = { calls: 0, errors: 0, inputTokens: 0, ms: 0, estCostUsd: 0 };
 
-  const answers = await pool(head, cfg.concurrency, async (f) => {
+  let answer: ChoiceAnswer = { probs: new Map(), confidence: null, inputTokens: 0 };
+  if (head.length) {
     try {
-      const a = await ask(describe(store, f, task), cfg, key);
-      stats.calls++;
-      stats.inputTokens += a.inputTokens;
-      return a;
+      answer = await askChoice(store, task, head, cfg, key);
+      stats.calls = 1;
+      stats.inputTokens = answer.inputTokens;
     } catch (e: any) {
-      stats.errors++;
-      stats.firstError ??= String(e?.message ?? e).slice(0, 300);
-      return { relevance: null, edit: null, inputTokens: 0 };
+      stats.errors = 1;
+      stats.firstError = String(e?.message ?? e).slice(0, 300);
     }
-  });
+  }
 
   const maxRule = Math.max(...head.map((f) => f.score), 1);
-  const scored: RerankedFile[] = head.map((f, i) => {
-    const a = answers[i];
-    const model = a.relevance === null && a.edit === null ? null : 0.7 * (a.relevance ?? a.edit ?? 0) + 0.3 * (a.edit ?? a.relevance ?? 0);
+  const maxProb = Math.max(0, ...answer.probs.values()) || 1;
+  const w = Number.isFinite(cfg.weight) ? cfg.weight : DEFAULT_RERANK.weight;
+  const scored: RerankedFile[] = head.map((f) => {
+    const pr = answer.probs.get(f.path);
     const ruleNorm = f.score / maxRule;
-    // A failed call must not penalise the file: fall back to its rule score alone.
-    const w = Number.isFinite(cfg.weight) ? cfg.weight : DEFAULT_RERANK.weight;
-    const combined = model === null ? ruleNorm : (1 - w) * ruleNorm + w * model;
-    return { ...f, modelScore: model, combined };
+    // A missing answer must not penalise a file: it keeps its rule score alone.
+    const model = pr === undefined ? null : pr / maxProb;
+    return { ...f, modelScore: model, combined: model === null ? ruleNorm : (1 - w) * ruleNorm + w * model };
   });
   scored.sort((a, b) => b.combined - a.combined || b.score - a.score);
   stats.ms = Date.now() - t0;
-  stats.estCostUsd = (stats.inputTokens / 1e6) * 0.042; // OpenRouter listing: $0.042/M in, free out
+  stats.estCostUsd = (stats.inputTokens / 1e6) * 0.042;
   return { files: [...scored, ...tail.map((f) => ({ ...f, modelScore: null, combined: 0 }))], stats };
 }
