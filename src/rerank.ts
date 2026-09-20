@@ -162,7 +162,8 @@ export async function rerank(
     const model = a.relevance === null && a.edit === null ? null : 0.7 * (a.relevance ?? a.edit ?? 0) + 0.3 * (a.edit ?? a.relevance ?? 0);
     const ruleNorm = f.score / maxRule;
     // A failed call must not penalise the file: fall back to its rule score alone.
-    const combined = model === null ? ruleNorm : (1 - cfg.weight) * ruleNorm + cfg.weight * model;
+    const w = Number.isFinite(cfg.weight) ? cfg.weight : DEFAULT_RERANK.weight;
+    const combined = model === null ? ruleNorm : (1 - w) * ruleNorm + w * model;
     return { ...f, modelScore: model, combined };
   });
   scored.sort((a, b) => b.combined - a.combined || b.score - a.score);

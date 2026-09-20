@@ -72,7 +72,7 @@ export async function evalHistory(p: Paths, opts: { commits?: number; budget?: n
   const cfg = loadConfig(p);
   const store = new Store(wp.db);
   const cases: EvalCase[] = [];
-  const rrCfg: RerankConfig = { ...DEFAULT_RERANK, ...(opts.rerank ?? {}) };
+  const rrCfg: RerankConfig = { ...DEFAULT_RERANK, ...Object.fromEntries(Object.entries(opts.rerank ?? {}).filter(([, v]) => v !== undefined)) };
   const rrStats: RerankStats = { calls: 0, errors: 0, inputTokens: 0, ms: 0, estCostUsd: 0 };
   try {
     for (const c of cands) {
