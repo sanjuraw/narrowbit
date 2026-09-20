@@ -39,7 +39,7 @@ function parseArgs(argv: string[]): Args {
   return a;
 }
 
-const VALUE_FLAGS = new Set(["budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref"]);
+const VALUE_FLAGS = new Set(["budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top"]);
 
 const HELP = `narrowbit — minimum sufficient context for coding agents
 
@@ -69,7 +69,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit install claude [--no-hook]                        register MCP server + UserPromptSubmit hook in this repo
   narrowbit mcp                       MCP stdio server (used by agents)
 
-  narrowbit eval [--commits 40]       free offline selection benchmark over git history
+  narrowbit eval [--commits 40] [--rerank]   offline selection benchmark over git history (--rerank A/Bs a hosted decision model)
   narrowbit benchmark init            write a benchmark task template (benchmark.json)
   narrowbit benchmark run <file> [--only id,..] [--arms native,narrowbit] [--dry-run]
   narrowbit benchmark report [--run id]
@@ -433,7 +433,10 @@ export async function main(argv: string[]): Promise<number> {
     }
     case "eval": {
       requireInit(p);
-      const r = await evalHistory(p, { commits: args.flags.commits ? Number(args.flags.commits) : 40, budget: args.flags.budget ? Number(args.flags.budget) : undefined, ref: args.flags.ref as string | undefined });
+      const rerankOpt = args.flags.rerank
+        ? { weight: args.flags["rerank-weight"] ? Number(args.flags["rerank-weight"]) : undefined, topN: args.flags["rerank-top"] ? Number(args.flags["rerank-top"]) : undefined }
+        : undefined;
+      const r = await evalHistory(p, { rerank: rerankOpt as any, commits: args.flags.commits ? Number(args.flags.commits) : 40, budget: args.flags.budget ? Number(args.flags.budget) : undefined, ref: args.flags.ref as string | undefined });
       const s = r.summary;
       const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
       out(`\nSELECTION EVAL over ${s.cases} commits (commit message as task; lower bound)`);
@@ -441,6 +444,11 @@ export async function main(argv: string[]): Promise<number> {
       out(`  gold files loaded as code: ${pct(s.recallLoaded)}   in package (incl. outline): ${pct(s.recallInPackage)}`);
       out(`  mean package ~${fmtNum(Math.round(s.meanPackageTokens))} tokens est.`);
       out(`  by confidence: ${Object.entries(s.byConfidence).map(([k, v]: any) => `${k} n=${v.n}${v.recallInPackage !== null ? ` in-pkg ${pct(v.recallInPackage)}` : ""}`).join("; ")}`);
+      const rr: any = (s as any).rerank;
+      if (rr) {
+        out(`\n  RE-RANKED by ${rr.model} (weight ${rr.weight}): recall@5 ${pct(rr.recallAt5)} (${rr.recallAt5 >= s.recallAt5 ? "+" : ""}${((rr.recallAt5 - s.recallAt5) * 100).toFixed(1)}pp)   recall@10 ${pct(rr.recallAt10)} (${((rr.recallAt10 - s.recallAt10) * 100).toFixed(1)}pp)   hit@1 ${pct(rr.hitAt1)} (${((rr.hitAt1 - s.hitAt1) * 100).toFixed(1)}pp)   MRR ${rr.mrr.toFixed(3)}`);
+        out(`  cost: ${rr.calls} calls, ${rr.errors} error(s), ~${fmtNum(rr.inputTokens)} input tokens, ~$${rr.estCostUsd.toFixed(4)} (OpenRouter, not Claude quota)`);
+      }
       out(`  details: ${relative(process.cwd(), r.file)}`);
       return 0;
     }
