@@ -5,6 +5,7 @@ import { CODE_EXT, isTestPath } from "./files.js";
 import { indexRepo } from "./indexer.js";
 import { buildPackage } from "./package.js";
 import { Store } from "./store.js";
+import { loadWeights } from "./train.js";
 import { DEFAULT_RERANK, rerank, type RerankConfig, type RerankStats } from "./rerank.js";
 import { sh, shortId } from "./util.js";
 
@@ -32,7 +33,7 @@ export interface EvalCase {
   reranked?: { rankOfFirst: number | null; recallAt5: number; recallAt10: number };
 }
 
-export async function evalHistory(p: Paths, opts: { commits?: number; budget?: number; log?: (s: string) => void; ref?: string; rerank?: Partial<RerankConfig> } = {}) {
+export async function evalHistory(p: Paths, opts: { commits?: number; budget?: number; log?: (s: string) => void; ref?: string; rerank?: Partial<RerankConfig>; noWeights?: boolean } = {}) {
   const log = opts.log ?? ((s: string) => process.stderr.write(s + "\n"));
   const n = opts.commits ?? 40;
   const raw = sh("git", ["log", opts.ref ?? "HEAD", `-n${n * 4}`, "--no-merges", "--format=%x1e%H%x1f%P%x1f%s%x1f%b", "--name-status"], p.root).stdout;
@@ -71,6 +72,8 @@ export async function evalHistory(p: Paths, opts: { commits?: number; budget?: n
   const wp: Paths = { ...paths(wt), nb: evalNb, db: join(evalNb, "index.db"), memory: join(evalNb, "memory"), tasks: join(evalNb, "tasks") };
   const cfg = loadConfig(p);
   const store = new Store(wp.db);
+  // The eval worktree has its own state dir, so learned weights must come from the real repo.
+  const weights = opts.noWeights ? undefined : loadWeights(p);
   const cases: EvalCase[] = [];
   const rrCfg: RerankConfig = { ...DEFAULT_RERANK, ...Object.fromEntries(Object.entries(opts.rerank ?? {}).filter(([, v]) => v !== undefined)) };
   const rrStats: RerankStats = { calls: 0, errors: 0, inputTokens: 0, ms: 0, estCostUsd: 0 };
@@ -83,7 +86,7 @@ export async function evalHistory(p: Paths, opts: { commits?: number; budget?: n
       }
       sh("git", ["clean", "-fdq"], wt);
       indexRepo(wp, store);
-      const b = buildPackage(store, wp, cfg, c.msg, { noGit: true, budget: opts.budget, source: "eval", withProtocol: false });
+      const b = buildPackage(store, wp, cfg, c.msg, { noGit: true, budget: opts.budget, source: "eval", withProtocol: false, weights });
       const gold = c.modified.filter((g) => store.fileByPath(g));
       if (!gold.length) continue;
       const order = b.ranking.files.map((f) => f.path);
@@ -129,6 +132,7 @@ export async function evalHistory(p: Paths, opts: { commits?: number; budget?: n
   const mean = (f: (c: EvalCase) => number) => (cases.length ? cases.reduce((a, c) => a + f(c), 0) / cases.length : 0);
   const summary = {
     cases: cases.length,
+    weights: weights ?? null,
     recallAt5: mean((c) => c.recallAt5),
     recallAt10: mean((c) => c.recallAt10),
     recallLoaded: mean((c) => c.recallLoaded),

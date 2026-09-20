@@ -3,8 +3,9 @@ import { join } from "node:path";
 import type { NarrowbitConfig, Paths } from "./config.js";
 import { changedHunks } from "./git.js";
 import { Memory, openMemory, renderMemory } from "./memory.js";
-import { detectStack, rank, relatedTests, topLevelMap, type RankedFile, type RankResult, type SymbolHit } from "./ranker.js";
+import { detectStack, rank, relatedTests, topLevelMap, type FeatureVec, type RankedFile, type RankResult, type SymbolHit } from "./ranker.js";
 import { redact } from "./redact.js";
+import { loadWeights } from "./train.js";
 import type { Store } from "./store.js";
 import type { Level, SelectedItem, TaskRecord } from "./tasks.js";
 import { parseTask, type ParsedTask } from "./taskparse.js";
@@ -130,6 +131,8 @@ export interface BuildOptions {
   /** Items already delivered (for hooks within a running session). */
   exclude?: Set<string>;
   withProtocol?: boolean;
+  /** Explicit ranking weights (eval/benchmark); defaults to the repo's trained weights. */
+  weights?: FeatureVec;
 }
 
 export interface BuiltPackage {
@@ -144,7 +147,7 @@ export function buildPackage(store: Store, p: Paths, cfg: NarrowbitConfig, taskT
   const budget = opts.budget ?? cfg.budget.initial;
   const task = parseTask(taskText);
   const memory = openMemory(p);
-  const ranking = rank(store, p.root, task, { noGit: opts.noGit, memory });
+  const ranking = rank(store, p.root, task, { noGit: opts.noGit, memory, weights: opts.weights ?? loadWeights(p) });
   const rankMs = Date.now() - t0;
   const exclude = opts.exclude ?? new Set<string>();
   const given: string[] = [];

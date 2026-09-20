@@ -5,6 +5,7 @@ import { hookPrompt, installClaude, launchClaude } from "./claude.js";
 import { runCommand } from "./compress.js";
 import { DEFAULT_IGNORE, detectVerify, ensureDirs, findRoot, loadConfig, paths, saveConfig, type Paths } from "./config.js";
 import { evalHistory } from "./eval.js";
+import { train } from "./train.js";
 import { changedSince } from "./git.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { serveMcp } from "./mcp.js";
@@ -39,7 +40,7 @@ function parseArgs(argv: string[]): Args {
   return a;
 }
 
-const VALUE_FLAGS = new Set(["budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top"]);
+const VALUE_FLAGS = new Set(["budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip"]);
 
 const HELP = `narrowbit — minimum sufficient context for coding agents
 
@@ -69,6 +70,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit install claude [--no-hook]                        register MCP server + UserPromptSubmit hook in this repo
   narrowbit mcp                       MCP stdio server (used by agents)
 
+  narrowbit train [--commits 150] [--skip N]   learn ranking weights from this repo's history (local, no model calls)
   narrowbit eval [--commits 40] [--rerank]   offline selection benchmark over git history (--rerank A/Bs a hosted decision model)
   narrowbit benchmark init            write a benchmark task template (benchmark.json)
   narrowbit benchmark run <file> [--only id,..] [--arms native,narrowbit] [--dry-run]
@@ -431,12 +433,24 @@ export async function main(argv: string[]): Promise<number> {
       await serveMcp(p);
       return 0;
     }
+    case "train": {
+      requireInit(p);
+      const t = await train(p, { commits: args.flags.commits ? Number(args.flags.commits) : 150, skip: args.flags.skip ? Number(args.flags.skip) : 0 });
+      const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
+      out(`\nTRAINED on ${t.examples} examples from ${t.commits} commits (held-out 30%)`);
+      out(`  before: hit@1 ${pct(t.before.hitAt1)}  recall@5 ${pct(t.before.recallAt5)}  MRR ${t.before.mrr.toFixed(3)}`);
+      out(`  after:  hit@1 ${pct(t.after.hitAt1)}  recall@5 ${pct(t.after.recallAt5)}  MRR ${t.after.mrr.toFixed(3)}`);
+      out(`  weights: ${Object.entries(t.weights).map(([k, v]) => `${k} ${v}`).join(", ")}`);
+      out(t.after.mrr >= t.before.mrr ? `  saved to .narrowbit/weights.json (applied automatically)` : `  NOT applied: held-out ordering got worse`);
+      return 0;
+    }
     case "eval": {
       requireInit(p);
+      const noWeights = !!args.flags["no-weights"];
       const rerankOpt = args.flags.rerank
         ? { weight: args.flags["rerank-weight"] ? Number(args.flags["rerank-weight"]) : undefined, topN: args.flags["rerank-top"] ? Number(args.flags["rerank-top"]) : undefined }
         : undefined;
-      const r = await evalHistory(p, { rerank: rerankOpt as any, commits: args.flags.commits ? Number(args.flags.commits) : 40, budget: args.flags.budget ? Number(args.flags.budget) : undefined, ref: args.flags.ref as string | undefined });
+      const r = await evalHistory(p, { noWeights, rerank: rerankOpt as any, commits: args.flags.commits ? Number(args.flags.commits) : 40, budget: args.flags.budget ? Number(args.flags.budget) : undefined, ref: args.flags.ref as string | undefined });
       const s = r.summary;
       const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
       out(`\nSELECTION EVAL over ${s.cases} commits (commit message as task; lower bound)`);

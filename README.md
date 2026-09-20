@@ -42,7 +42,8 @@ narrowbit install claude     # .mcp.json (narrowbit MCP server) + UserPromptSubm
 | `run -- <cmd>` | run a command and get compressed output (tsc, eslint, vitest/jest/mocha/node:test, npm, generic); raw log kept in `.narrowbit/logs` |
 | `verify [--full]` | type-check + lint + tests *focused on changed files*, reporting only the failures |
 | `memory add <type> "<text>"` … | decisions, constraints, conventions, facts, **failed approaches**; stored as Markdown notes in `.narrowbit/memory` |
-| `eval [--commits N]` | offline selection benchmark over git history |
+| `train [--commits 150] [--skip N]` | learn ranking weights from this repo's history (local, no model calls) |
+| `eval [--commits N] [--rerank] [--no-weights]` | offline selection benchmark over git history |
 | `benchmark init \| run <file> \| report` | paired A/B: native Claude Code vs Claude Code + Narrowbit |
 | `stats` | aggregates over recorded tasks |
 

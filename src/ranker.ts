@@ -32,6 +32,23 @@ export const WEIGHTS = {
   generatedPenalty: 0.25,
 };
 
+/** Signal names; each contributes to a file's score and can be re-weighted by a learned model. */
+export const FEATURES = [
+  "lexical",
+  "symbolExact",
+  "symbolFuzzy",
+  "path",
+  "module",
+  "location",
+  "memory",
+  "dirty",
+  "recency",
+  "neighbor",
+  "caller",
+] as const;
+export type Feature = (typeof FEATURES)[number];
+export type FeatureVec = Partial<Record<Feature, number>>;
+
 export interface SymbolHit {
   id: number;
   name: string;
@@ -53,6 +70,10 @@ export interface RankedFile {
   score: number;
   reasons: string[];
   symbols: SymbolHit[];
+  /** Raw per-signal contributions before weighting — the input to `narrowbit train`. */
+  features: FeatureVec;
+  /** Multiplier applied for file kind (test/doc/config/generated). */
+  kindMult: number;
 }
 
 export interface RankResult {
@@ -80,6 +101,8 @@ export interface RankOptions {
   /** Disable git signals (used by history eval to avoid leaking the answer). */
   noGit?: boolean;
   memory?: Memory;
+  /** Learned per-signal multipliers (see `narrowbit train`); absent = all 1. */
+  weights?: FeatureVec;
 }
 
 /**
@@ -119,11 +142,17 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
   const score = new Map<number, number>();
   const reasons = new Map<number, string[]>();
   const symHits = new Map<number, SymbolHit[]>();
-  const add = (fid: number, s: number, why: string) => {
+  const feats = new Map<number, FeatureVec>();
+  const W = opts.weights ?? {};
+  const add = (fid: number, s: number, why: string, feature: Feature) => {
     if (!s || !byId.has(fid)) return;
-    score.set(fid, (score.get(fid) ?? 0) + s);
+    const fv = feats.get(fid) ?? {};
+    fv[feature] = (fv[feature] ?? 0) + s;
+    feats.set(fid, fv);
+    const weighted = s * (W[feature] ?? 1);
+    score.set(fid, (score.get(fid) ?? 0) + weighted);
     const r = reasons.get(fid) ?? [];
-    r.push(`${why} (+${s.toFixed(1)})`);
+    r.push(`${why} (+${weighted.toFixed(1)})`);
     reasons.set(fid, r);
   };
   const addSym = (fid: number, s: SymRow, sc: number, why: string) => {
@@ -163,7 +192,7 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
     if (max > 0)
       for (const [fid, v] of bm) {
         const s = (WEIGHTS.lexicalMax * v) / max;
-        if (s >= 0.4) add(fid, s, `terms: ${[...(matched.get(fid) ?? [])].slice(0, 6).join(", ")}`);
+        if (s >= 0.4) add(fid, s, `terms: ${[...(matched.get(fid) ?? [])].slice(0, 6).join(", ")}`, "lexical");
       }
   }
 
@@ -185,7 +214,7 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
     if (hits.length > 12) continue; // too generic to be a signal
     for (const s of hits) {
       const w = (exact.includes(s) ? WEIGHTS.symbolExact : WEIGHTS.symbolExact * 0.8) / Math.sqrt(hits.length);
-      add(s.file_id, w, `defines ${s.qualified}`);
+      add(s.file_id, w, `defines ${s.qualified}`, "symbolExact");
       addSym(s.file_id, s, w, "named in task");
       seedSyms.push({ fid: s.file_id, sym: s, score: w });
     }
@@ -209,7 +238,7 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
       if (!cur || cur.s < sc) bestPerFile.set(s.file_id, { s: sc, sym: s, hit });
     }
     for (const [fid, v] of bestPerFile) {
-      add(fid, v.s, `symbol ${v.sym.qualified} ~ ${v.hit.join(", ")}`);
+      add(fid, v.s, `symbol ${v.sym.qualified} ~ ${v.hit.join(", ")}`, "symbolFuzzy");
       if (v.s >= 3) seedSyms.push({ fid, sym: v.sym, score: v.s });
     }
   }
@@ -219,12 +248,12 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
     const m = mention.replace(/^\.?\//, "");
     const exact = byPath.get(m);
     if (exact) {
-      add(exact.id, WEIGHTS.pathExact, `path mentioned: ${m}`);
+      add(exact.id, WEIGHTS.pathExact, `path mentioned: ${m}`, "path");
       continue;
     }
     const cands = files.filter((f) => f.path.endsWith("/" + m) || f.path.startsWith(m + "/") || f.path.includes("/" + m + "/") || f.path.replace(/\.[^.]+$/, "").endsWith(m));
-    if (cands.length && cands.length <= 3) for (const f of cands) add(f.id, WEIGHTS.pathExact * 0.8, `path matches ${m}`);
-    else if (cands.length && cands.length <= 40) for (const f of cands) add(f.id, WEIGHTS.pathPartial, `under mentioned path ${m}`);
+    if (cands.length && cands.length <= 3) for (const f of cands) add(f.id, WEIGHTS.pathExact * 0.8, `path matches ${m}`, "path");
+    else if (cands.length && cands.length <= 40) for (const f of cands) add(f.id, WEIGHTS.pathPartial, `under mentioned path ${m}`, "path");
   }
   // Module names: a task word (or joined word pair: "trie router" → trie-router) equal to a
   // directory name or file stem, e.g. "the csrf middleware", "fix(accept): …".
@@ -250,14 +279,14 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
     const hit = segFiles.get(w);
     if (!hit || GENERIC_SEG.has(w) || hit.length > 40) continue;
     const perFile = (hit.some((h) => h.stem) ? 5 : 3.5) / Math.sqrt(hit.length);
-    for (const h of hit) add(h.id, Math.max(0.5, h.stem ? perFile * 1.3 : perFile), `module name "${w}"`);
+    for (const h of hit) add(h.id, Math.max(0.5, h.stem ? perFile * 1.3 : perFile), `module name "${w}"`, "module");
   }
 
   for (const loc of task.locations) {
     const p = loc.path.replace(/^\.?\//, "");
     const f = byPath.get(p) ?? files.find((x) => x.path.endsWith("/" + p) || p.endsWith("/" + x.path));
     if (!f) continue;
-    add(f.id, WEIGHTS.location, `error location ${p}${loc.line ? ":" + loc.line : ""}`);
+    add(f.id, WEIGHTS.location, `error location ${p}${loc.line ? ":" + loc.line : ""}`, "location");
     if (loc.line) {
       const inner = syms
         .filter((s) => s.file_id === f.id && s.start_line <= loc.line! && s.end_line >= loc.line!)
@@ -274,7 +303,7 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
   for (const mh of memoryHits)
     for (const mf of mh.entry.files ?? []) {
       const f = byPath.get(mf);
-      if (f) add(f.id, WEIGHTS.memoryFile, `referenced by ${mh.entry.type} ${mh.entry.id}`);
+      if (f) add(f.id, WEIGHTS.memoryFile, `referenced by ${mh.entry.type} ${mh.entry.id}`, "memory");
     }
 
   // ---------- 5. Git ----------
@@ -285,7 +314,7 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
       const f = byPath.get(d);
       if (!f) continue;
       const base = score.get(f.id) ?? 0;
-      if (base > 0) add(f.id, task.mentionsRecent ? WEIGHTS.dirtyRecent : WEIGHTS.dirty, "uncommitted changes");
+      if (base > 0) add(f.id, task.mentionsRecent ? WEIGHTS.dirtyRecent : WEIGHTS.dirty, "uncommitted changes", "dirty");
     }
     const rec = fileRecency(commits);
     for (const [path, r] of rec) {
@@ -294,7 +323,7 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
       // Bulk commits (initial import, mass renames) say little about any one file.
       if (r.spread > 30) continue;
       const w = ((task.mentionsRecent ? WEIGHTS.recencyRecent : WEIGHTS.recency) * Math.exp(-r.index / 8)) / Math.sqrt(Math.max(1, r.spread / 4));
-      if (w >= 0.2) add(f.id, w, `changed ${r.index === 0 ? "in last commit" : `${r.index + 1} commits ago`}: ${r.hash.slice(0, 7)} ${r.subject.slice(0, 50)}`);
+      if (w >= 0.2) add(f.id, w, `changed ${r.index === 0 ? "in last commit" : `${r.index + 1} commits ago`}: ${r.hash.slice(0, 7)} ${r.subject.slice(0, 50)}`, "recency");
     }
   }
 
@@ -326,7 +355,7 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
       }
     }
   }
-  for (const [fid, b] of bonus) add(fid, b.s, b.why);
+  for (const [fid, b] of bonus) add(fid, b.s, b.why, "neighbor");
 
   // Callers of seed symbols (reference by name, restricted to files that import the defining file).
   const seen = new Set<number>();
@@ -344,11 +373,12 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
       if (c.id === seed.sym.id || !importers.has(c.file_id)) continue;
       if (c.kind === "class" && callers.some((x) => x.kind === "method" && x.file_id === c.file_id && x.qualified.startsWith(c.name + "."))) continue;
       addSym(c.file_id, c, WEIGHTS.caller * 0.5, `uses ${seed.sym.name}`);
-      if (c.file_id !== seed.fid) add(c.file_id, WEIGHTS.caller, `calls ${seed.sym.name}`);
+      if (c.file_id !== seed.fid) add(c.file_id, WEIGHTS.caller, `calls ${seed.sym.name}`, "caller");
     }
   }
 
   // ---------- 7. Kind penalties ----------
+  const kindMults = new Map<number, number>();
   const mentionsDocs = /\b(?:readme|docs?|documentation|markdown)\b/i.test(task.text);
   for (const [fid, s] of score) {
     const f = byId.get(fid)!;
@@ -358,6 +388,7 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
     if (f.kind === "config" && !task.paths.some((p) => f.path.endsWith(p))) mult *= WEIGHTS.configPenalty;
     if (f.kind === "other") mult *= 0.3;
     if (isGeneratedPath(f.path)) mult *= WEIGHTS.generatedPenalty;
+    kindMults.set(fid, mult);
     if (mult !== 1) {
       score.set(fid, s * mult);
       reasons.get(fid)!.push(`×${mult.toFixed(2)} ${f.kind}${isGeneratedPath(f.path) ? "/generated" : ""} penalty`);
@@ -378,6 +409,8 @@ export function rank(store: Store, root: string, task: ParsedTask, opts: RankOpt
         score: Math.round(s * 100) / 100,
         reasons: reasons.get(fid) ?? [],
         symbols: (symHits.get(fid) ?? []).sort((a, b) => b.score - a.score),
+        features: feats.get(fid) ?? {},
+        kindMult: kindMults.get(fid) ?? 1,
       };
     });
 

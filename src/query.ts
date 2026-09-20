@@ -5,6 +5,7 @@ import type { Store, SymbolRow } from "./store.js";
 import { parseTask } from "./taskparse.js";
 import type { TaskRecord } from "./tasks.js";
 import { redact } from "./redact.js";
+import { loadWeights } from "./train.js";
 import { estimateTokens, sh } from "./util.js";
 
 /** Deterministic lookups served to agents (CLI + MCP). Each returns compact text. */
@@ -95,7 +96,7 @@ export function outlineText(store: Store, path: string): string {
 }
 
 export function searchText(p: Paths, store: Store, query: string, limit = 10): string {
-  const r = rank(store, p.root, parseTask(query), { noGit: true });
+  const r = rank(store, p.root, parseTask(query), { noGit: true, weights: loadWeights(p) });
   if (!r.files.length) return `no matches for "${query}"`;
   return r.files
     .slice(0, limit)
@@ -167,7 +168,7 @@ export function fileRangeText(p: Paths, path: string, start: number, end: number
  * Level ladder: symbol snippets of next files → complete files → neighbours/tests.
  */
 export function expandTask(p: Paths, cfg: NarrowbitConfig, store: Store, task: TaskRecord, budget = 4000): { text: string; given: string[] } {
-  const r = rank(store, p.root, parseTask(task.text), { noGit: false });
+  const r = rank(store, p.root, parseTask(task.text), { noGit: false, weights: loadWeights(p) });
   const given = new Set(task.given);
   const parts: string[] = [];
   const newly: string[] = [];
