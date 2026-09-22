@@ -12,8 +12,10 @@ import type { Store } from "./store.js";
  */
 export interface RerankConfig {
   model: string;
-  /** "openrouter" (OPENROUTER_API_KEY) or "typesafe" (TYPESAFE_API_KEY). */
-  provider: "openrouter" | "typesafe";
+  /** "openrouter"/"typesafe" (hosted Jev) or "local" (a Jev-shaped server on this machine, e.g. scripts/laya_server.py). */
+  provider: "openrouter" | "typesafe" | "local";
+  /** provider "local" only: base URL of the local server. */
+  localUrl?: string;
   topN: number;
   concurrency: number;
   /** 0 = rules only, 1 = model only. */
@@ -21,15 +23,14 @@ export interface RerankConfig {
   timeoutMs: number;
 }
 
-export const DEFAULT_RERANK: RerankConfig = {
-  // TypeSafe direct when a TYPESAFE_API_KEY exists, else OpenRouter's alpha decisions endpoint.
-  model: process.env.TYPESAFE_API_KEY ? "jev-latest" : "typesafe/jev-1.13",
-  provider: process.env.TYPESAFE_API_KEY ? "typesafe" : "openrouter",
-  topN: 20,
-  concurrency: 1,
-  weight: 0.5,
-  timeoutMs: 60_000,
-};
+function defaultRerank(): RerankConfig {
+  // Preference: an explicit local server > TypeSafe direct > OpenRouter.
+  const localUrl = process.env.NARROWBIT_LOCAL_DECIDER;
+  if (localUrl) return { model: "laya", provider: "local", localUrl, topN: 20, concurrency: 1, weight: 0.5, timeoutMs: 30_000 };
+  if (process.env.TYPESAFE_API_KEY) return { model: "jev-latest", provider: "typesafe", topN: 20, concurrency: 1, weight: 0.5, timeoutMs: 60_000 };
+  return { model: "typesafe/jev-1.13", provider: "openrouter", topN: 20, concurrency: 1, weight: 0.5, timeoutMs: 60_000 };
+}
+export const DEFAULT_RERANK: RerankConfig = defaultRerank();
 
 const LEVELS = [
   "unrelated to the task",
@@ -97,13 +98,18 @@ async function askChoice(store: Store, task: string, head: RankedFile[], cfg: Re
       target: { type: "choice", instructions: "Which candidate file must be edited to complete this task?", criteria },
     },
   };
-  const url = cfg.provider === "openrouter" ? "https://openrouter.ai/api/alpha/decisions" : "https://api.typesafe.ai/v1/systemone";
+  const url =
+    cfg.provider === "local"
+      ? `${(cfg.localUrl ?? "http://127.0.0.1:8721").replace(/\/$/, "")}/v1/systemone`
+      : cfg.provider === "openrouter"
+        ? "https://openrouter.ai/api/alpha/decisions"
+        : "https://api.typesafe.ai/v1/systemone";
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), cfg.timeoutMs);
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      headers: cfg.provider === "local" ? { "content-type": "application/json" } : { authorization: `Bearer ${key}`, "content-type": "application/json" },
       body: JSON.stringify(body),
       signal: ctl.signal,
     });
@@ -144,6 +150,7 @@ async function pool<T, R>(items: T[], n: number, fn: (x: T) => Promise<R>): Prom
 }
 
 export function rerankKey(cfg: RerankConfig): string | null {
+  if (cfg.provider === "local") return "local"; // no auth needed; a non-null sentinel just satisfies the "configured" check
   return (cfg.provider === "openrouter" ? process.env.OPENROUTER_API_KEY : process.env.TYPESAFE_API_KEY) ?? null;
 }
 
@@ -158,7 +165,12 @@ export async function rerank(
   cfg: RerankConfig = DEFAULT_RERANK,
 ): Promise<{ files: RerankedFile[]; stats: RerankStats }> {
   const key = rerankKey(cfg);
-  if (!key) throw new Error(`no API key: set ${cfg.provider === "openrouter" ? "OPENROUTER_API_KEY" : "TYPESAFE_API_KEY"}`);
+  if (!key)
+    throw new Error(
+      cfg.provider === "local"
+        ? `no local decider: set NARROWBIT_LOCAL_DECIDER (e.g. http://127.0.0.1:8721) and run scripts/laya_server.py`
+        : `no API key: set ${cfg.provider === "openrouter" ? "OPENROUTER_API_KEY" : "TYPESAFE_API_KEY"}`,
+    );
   const t0 = Date.now();
   const head = files.slice(0, Math.min(cfg.topN, 255));
   const tail = files.slice(head.length);
@@ -188,6 +200,6 @@ export async function rerank(
   });
   scored.sort((a, b) => b.combined - a.combined || b.score - a.score);
   stats.ms = Date.now() - t0;
-  stats.estCostUsd = cfg.provider === "openrouter" ? (stats.inputTokens / 1e6) * 0.042 : 0; // only the OpenRouter rate is published
+  stats.estCostUsd = cfg.provider === "openrouter" ? (stats.inputTokens / 1e6) * 0.042 : 0; // local and TypeSafe-direct have no published per-call rate
   return { files: [...scored, ...tail.map((f) => ({ ...f, modelScore: null, combined: 0 }))], stats };
 }
