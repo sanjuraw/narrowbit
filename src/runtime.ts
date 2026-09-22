@@ -3,8 +3,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { loadConfig, type Paths } from "./config.js";
 import { runCommand } from "./compress.js";
+import { project } from "./context.js";
 import { writeEvidence } from "./evidence.js";
-import { appendEvent } from "./events.js";
+import { appendEvent, fold, readEvents } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { callModel } from "./providers/claude-cli.js";
 import { readLines } from "./package.js";
@@ -16,16 +17,23 @@ import { verify } from "./verify.js";
  * Stage 2 milestone (CLAUDE.md "Handoff"): the smallest owned agent loop. One tool per step
  * (read/grep/search/edit/run/verify), no planning sophistication yet.
  *
- * One Claude Code session is kept alive for the whole task (`sessionId`/`resume` in
+ * One Claude Code session is kept alive across a task's steps (`sessionId`/`resume` in
  * providers/claude-cli.ts), not a fresh session per step: a bench.ts A/B on a real Hono task
  * showed a fresh-per-step design paying full, uncached price on every turn — worse on fresh
  * tokens than plain native Claude Code, which caches heavily across its own turns within one
  * session. Resuming lets ordinary Anthropic prompt caching apply the same way. The static
- * SYSTEM_INSTRUCTIONS are sent once (turn 0); each later turn's prompt is just that step's
+ * SYSTEM_INSTRUCTIONS are sent once per session; each later turn's prompt is just that step's
  * actual, capped tool result — the model sees its own prior turns natively via the resumed
  * conversation, so there is no need to re-derive and resend a state summary every turn.
- * events.ts/evidence.ts still log every call and action for the usage ledger and for evidence
- * handles, independent of what the model itself remembers in-session.
+ *
+ * Deterministic compaction (no LLM call, unlike Claude Code's own `/compact`): a session grows
+ * unboundedly if never retired, the same problem Claude Code solves by summarizing the transcript
+ * with a model call. Here, once a call's total context (input + cache-creation + cache-read)
+ * crosses `compactThreshold`, the NEXT call starts a brand-new session, seeded with a summary
+ * built purely from the already-logged event/evidence data (context.ts's project() over
+ * events.ts's fold()) — no summarization call needed, since every turn's result was already
+ * captured as a short summary at write time. events.ts/evidence.ts log every call and action for
+ * the usage ledger and for evidence handles, independent of what the model itself remembers.
  */
 
 const SYSTEM_INSTRUCTIONS = `You are driving a coding task through a tool-free reasoning interface. You cannot run tools yourself — instead, on every turn, respond with EXACTLY ONE JSON object (no markdown fences, no prose outside the JSON) describing the next action for the runtime to take on your behalf:
@@ -91,6 +99,10 @@ export interface RuntimeOptions {
   model?: string;
   claudeBin?: string;
   role?: string;
+  /** Context size (input + cache-creation + cache-read tokens, from the most recent call) above
+   * which the next call starts a fresh, deterministically-summarized session. Defaults to
+   * `cfg.budget.max`. */
+  compactThreshold?: number;
 }
 
 export interface RuntimeResult {
@@ -100,18 +112,21 @@ export interface RuntimeResult {
   steps: number;
   /** Count of executed actions by name (read/grep/search/edit/run/verify) — every one is Narrowbit's own, not Claude Code's. */
   actionCounts: Record<string, number>;
+  /** How many times the session was retired and restarted with a deterministic summary. */
+  compactions: number;
 }
 
 const MAX_PARSE_RETRIES = 3;
 
 export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions = {}): Promise<RuntimeResult> {
+  const cfg = loadConfig(p);
   const taskId = `rt-${shortId()}`;
   const store = openStore(p);
   indexRepo(p, store);
   const maxSteps = opts.maxSteps ?? 20;
   const role = opts.role ?? "execution";
   const model = opts.model ?? "sonnet";
-  const sessionId = randomUUID();
+  const compactThreshold = opts.compactThreshold ?? cfg.budget.max;
 
   appendEvent(p, taskId, { actor: "user", type: "decision", summary: "task received", meta: { goal: taskText } });
 
@@ -119,30 +134,33 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   let summary = "";
   let steps = 0;
   let parseRetries = 0;
+  let compactions = 0;
   const actionCounts: Record<string, number> = {};
-  // First call carries the static instructions + the task; every later call is just that step's
-  // result, since the resumed session already has the rest of the conversation natively.
-  let nextPrompt = `${SYSTEM_INSTRUCTIONS}\n\nTask: ${taskText}\n\nRespond with your first action as JSON.`;
-  let nextSystemPrompt: string | undefined = undefined;
+  let sessionId = randomUUID();
+  // true at the start of every session (the task's first, or right after a compaction): the next
+  // call must send SYSTEM_INSTRUCTIONS and must NOT resume, since there is nothing to resume yet.
+  let freshSessionPending = true;
+  let nextPrompt = `Task: ${taskText}\n\nRespond with your first action as JSON.`;
   // callModel's costUsd is Claude Code's CUMULATIVE cost for the whole resumed session, not a
   // per-call charge (confirmed by direct measurement: it strictly increases call over call, unlike
   // every other usage field, which the Anthropic API reports per-request). Track the running total
   // and log only each call's own delta, so summing costUsd across events (events.ts's fold()) stays
-  // correct instead of re-counting every prior call's cost on every later one.
+  // correct instead of re-counting every prior call's cost on every later one. Reset at each
+  // compaction, since a new session's costUsd is again cumulative from zero for that new session.
   let cumulativeCost = 0;
 
   for (; steps < maxSteps; steps++) {
     const res = await callModel({
       cwd: p.root,
-      systemPrompt: nextSystemPrompt,
+      systemPrompt: freshSessionPending ? SYSTEM_INSTRUCTIONS : undefined,
       prompt: nextPrompt,
       model,
       role,
       claudeBin: opts.claudeBin,
       sessionId,
-      resume: steps > 0,
+      resume: !freshSessionPending,
     });
-    nextSystemPrompt = undefined; // only the first call ever sends one — see providers/claude-cli.ts
+    freshSessionPending = false;
     const totalCost = res.costUsd ?? cumulativeCost;
     const callCost = Math.max(0, totalCost - cumulativeCost);
     cumulativeCost = totalCost;
@@ -195,18 +213,38 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
     }
 
     actionCounts[decision.action] = (actionCounts[decision.action] ?? 0) + 1;
+    let resultText: string;
     try {
-      const resultText = await executeAction(p, taskId, decision);
-      nextPrompt = `${resultText}\n\nWhat is the next action? Respond with JSON only.`;
+      resultText = await executeAction(p, taskId, decision);
     } catch (e: any) {
-      const errText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
-      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: errText });
-      nextPrompt = `${errText}\n\nWhat is the next action? Respond with JSON only.`;
+      resultText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
+      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
+    }
+
+    // Compact on the context the model just processed, not a fixed turn count: a task with big
+    // reads compacts sooner than one with small ones, and a cheap task may never compact at all.
+    const contextTokens = res.usage.input + res.usage.cacheCreate + res.usage.cacheRead;
+    if (contextTokens >= compactThreshold) {
+      const previousSessionId = sessionId;
+      sessionId = randomUUID();
+      freshSessionPending = true;
+      cumulativeCost = 0;
+      compactions++;
+      const digest = project(fold(taskId, readEvents(p, taskId)), { budget: cfg.budget.initial });
+      appendEvent(p, taskId, {
+        actor: "system",
+        type: "handoff",
+        summary: `compacted after ${steps + 1} turn(s), ~${contextTokens} context tokens — starting a new session`,
+        meta: { previousSessionId, contextTokens },
+      });
+      nextPrompt = `You are continuing this task after a context compaction. Nothing was lost, only compacted — use read/grep/search again for anything you need in full, rather than assuming what you remember is still current. Progress so far:\n\n${digest}\n\nMost recent result:\n${resultText}\n\nWhat is the next action? Respond with JSON only.`;
+    } else {
+      nextPrompt = `${resultText}\n\nWhat is the next action? Respond with JSON only.`;
     }
   }
 
   store.close();
-  return { taskId, outcome, summary, steps, actionCounts };
+  return { taskId, outcome, summary, steps, actionCounts, compactions };
 }
 
 /** Executes one action and returns the (capped) result text to feed back as the next turn's prompt. */
