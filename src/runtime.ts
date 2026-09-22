@@ -1,22 +1,31 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { loadConfig, type Paths } from "./config.js";
 import { runCommand } from "./compress.js";
-import { project } from "./context.js";
 import { writeEvidence } from "./evidence.js";
-import { appendEvent, fold, readEvents } from "./events.js";
+import { appendEvent } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { callModel } from "./providers/claude-cli.js";
 import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
-import { estimateTokens, now, shortId } from "./util.js";
+import { estimateTokens, shortId } from "./util.js";
 import { verify } from "./verify.js";
 
 /**
  * Stage 2 milestone (CLAUDE.md "Handoff"): the smallest owned agent loop. One tool per step
- * (read/grep/search/edit/run/verify), no planning sophistication yet. The model never sees a
- * transcript — every turn gets a fresh, budget-bounded projection (context.ts) built from the
- * event log (events.ts); every model call and tool execution is one attributable Event.
+ * (read/grep/search/edit/run/verify), no planning sophistication yet.
+ *
+ * One Claude Code session is kept alive for the whole task (`sessionId`/`resume` in
+ * providers/claude-cli.ts), not a fresh session per step: a bench.ts A/B on a real Hono task
+ * showed a fresh-per-step design paying full, uncached price on every turn — worse on fresh
+ * tokens than plain native Claude Code, which caches heavily across its own turns within one
+ * session. Resuming lets ordinary Anthropic prompt caching apply the same way. The static
+ * SYSTEM_INSTRUCTIONS are sent once (turn 0); each later turn's prompt is just that step's
+ * actual, capped tool result — the model sees its own prior turns natively via the resumed
+ * conversation, so there is no need to re-derive and resend a state summary every turn.
+ * events.ts/evidence.ts still log every call and action for the usage ledger and for evidence
+ * handles, independent of what the model itself remembers in-session.
  */
 
 const SYSTEM_INSTRUCTIONS = `You are driving a coding task through a tool-free reasoning interface. You cannot run tools yourself — instead, on every turn, respond with EXACTLY ONE JSON object (no markdown fences, no prose outside the JSON) describing the next action for the runtime to take on your behalf:
@@ -93,30 +102,41 @@ export interface RuntimeResult {
   actionCounts: Record<string, number>;
 }
 
+const MAX_PARSE_RETRIES = 3;
+
 export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions = {}): Promise<RuntimeResult> {
-  const cfg = loadConfig(p);
   const taskId = `rt-${shortId()}`;
   const store = openStore(p);
   indexRepo(p, store);
   const maxSteps = opts.maxSteps ?? 20;
-  const budget = opts.budget ?? cfg.budget.initial;
   const role = opts.role ?? "execution";
   const model = opts.model ?? "sonnet";
+  const sessionId = randomUUID();
 
   appendEvent(p, taskId, { actor: "user", type: "decision", summary: "task received", meta: { goal: taskText } });
 
   let outcome: RuntimeResult["outcome"] = "max_steps";
   let summary = "";
   let steps = 0;
+  let parseRetries = 0;
   const actionCounts: Record<string, number> = {};
+  // First call carries the static instructions + the task; every later call is just that step's
+  // result, since the resumed session already has the rest of the conversation natively.
+  let nextPrompt = `${SYSTEM_INSTRUCTIONS}\n\nTask: ${taskText}\n\nRespond with your first action as JSON.`;
+  let nextSystemPrompt: string | undefined = undefined;
 
   for (; steps < maxSteps; steps++) {
-    const state = fold(taskId, readEvents(p, taskId));
-    const projected = project(state, { budget });
-    const sys = `${SYSTEM_INSTRUCTIONS}\n\n${projected}`;
-    const prompt = steps === 0 ? `Task: ${taskText}\n\nRespond with your first action as JSON.` : "What is the next action? Respond with JSON only.";
-
-    const res = await callModel({ cwd: p.root, systemPrompt: sys, prompt, model, role, claudeBin: opts.claudeBin });
+    const res = await callModel({
+      cwd: p.root,
+      systemPrompt: nextSystemPrompt,
+      prompt: nextPrompt,
+      model,
+      role,
+      claudeBin: opts.claudeBin,
+      sessionId,
+      resume: steps > 0,
+    });
+    nextSystemPrompt = undefined; // only the first call ever sends one — see providers/claude-cli.ts
     appendEvent(p, taskId, {
       actor: "model",
       type: "model_call",
@@ -140,11 +160,17 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
 
     const decision = parseDecision(res.text);
     if (!decision) {
-      appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `could not parse a JSON action from the model's response: ${res.text.slice(0, 200)}` });
-      outcome = "error";
-      summary = "unparseable model response";
-      break;
+      parseRetries++;
+      appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `could not parse a JSON action from the model's response (attempt ${parseRetries}/${MAX_PARSE_RETRIES}): ${res.text.slice(0, 200)}` });
+      if (parseRetries >= MAX_PARSE_RETRIES) {
+        outcome = "error";
+        summary = "unparseable model response";
+        break;
+      }
+      nextPrompt = "Your last response was not valid JSON. Respond with EXACTLY one JSON object as instructed, nothing else — no prose, no markdown fences.";
+      continue;
     }
+    parseRetries = 0;
 
     if (decision.action === "done") {
       outcome = "done";
@@ -161,9 +187,12 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
 
     actionCounts[decision.action] = (actionCounts[decision.action] ?? 0) + 1;
     try {
-      await executeAction(p, taskId, decision);
+      const resultText = await executeAction(p, taskId, decision);
+      nextPrompt = `${resultText}\n\nWhat is the next action? Respond with JSON only.`;
     } catch (e: any) {
-      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `error: ${String(e?.message ?? e).slice(0, 300)}` });
+      const errText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
+      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: errText });
+      nextPrompt = `${errText}\n\nWhat is the next action? Respond with JSON only.`;
     }
   }
 
@@ -171,41 +200,46 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   return { taskId, outcome, summary, steps, actionCounts };
 }
 
-async function executeAction(p: Paths, taskId: string, d: Decision): Promise<void> {
+/** Executes one action and returns the (capped) result text to feed back as the next turn's prompt. */
+async function executeAction(p: Paths, taskId: string, d: Decision): Promise<string> {
   switch (d.action) {
     case "read": {
       const path = String(d.path ?? "");
       const abs = safeAbsPath(p, path);
       if (!abs || !existsSync(abs)) {
-        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `read ${path}: file not found`, meta: { path } });
-        return;
+        const text = `read ${path}: file not found`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
+        return text;
       }
       const lines = readFileSync(abs, "utf8").split("\n").length;
       const start = d.start ?? 1;
       const end = d.end ?? lines;
       const raw = readLines(p.root, path, start, end);
       const capped = capSummary(raw);
+      const text = `read ${path}:${start}-${end}\n${capped}`;
       const handle = writeEvidence(p, taskId, "file", raw, capped, path);
-      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `read ${path}:${start}-${end}\n${capped}`, evidenceRef: handle.id, meta: { path } });
-      return;
+      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, evidenceRef: handle.id, meta: { path } });
+      return text;
     }
     case "grep": {
       const store = openStore(p);
-      const text = grepText(p, store, String(d.pattern ?? ""), { glob: d.glob });
+      const raw = grepText(p, store, String(d.pattern ?? ""), { glob: d.glob });
       store.close();
-      const capped = capSummary(text);
-      const handle = writeEvidence(p, taskId, "other", text, capped);
-      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `grep "${d.pattern}":\n${capped}`, evidenceRef: handle.id });
-      return;
+      const capped = capSummary(raw);
+      const text = `grep "${d.pattern}":\n${capped}`;
+      const handle = writeEvidence(p, taskId, "other", raw, capped);
+      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, evidenceRef: handle.id });
+      return text;
     }
     case "search": {
       const store = openStore(p);
-      const text = searchText(p, store, String(d.query ?? ""));
+      const raw = searchText(p, store, String(d.query ?? ""));
       store.close();
-      const capped = capSummary(text);
-      const handle = writeEvidence(p, taskId, "other", text, capped);
-      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `search "${d.query}":\n${capped}`, evidenceRef: handle.id });
-      return;
+      const capped = capSummary(raw);
+      const text = `search "${d.query}":\n${capped}`;
+      const handle = writeEvidence(p, taskId, "other", raw, capped);
+      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, evidenceRef: handle.id });
+      return text;
     }
     case "edit": {
       const path = String(d.path ?? "");
@@ -213,14 +247,16 @@ async function executeAction(p: Paths, taskId: string, d: Decision): Promise<voi
       const oldText = d.old ?? "";
       const newText = d.new ?? "";
       if (!abs) {
-        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `edit ${path}: refused — path escapes repo root`, meta: { path } });
-        return;
+        const text = `edit ${path}: refused — path escapes repo root`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
+        return text;
       }
       const exists = existsSync(abs);
       if (!exists) {
         if (oldText !== "") {
-          appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `edit ${path}: file does not exist; "old" must be "" to create it`, meta: { path } });
-          return;
+          const text = `edit ${path}: file does not exist; "old" must be "" to create it`;
+          appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
+          return text;
         }
         mkdirSync(dirname(abs), { recursive: true });
         writeFileSync(abs, newText, "utf8");
@@ -228,16 +264,19 @@ async function executeAction(p: Paths, taskId: string, d: Decision): Promise<voi
         const current = readFileSync(abs, "utf8");
         const count = oldText ? current.split(oldText).length - 1 : 0;
         if (oldText === "") {
-          appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `edit ${path}: refused — "old" is empty but the file already exists; quote the exact text to replace`, meta: { path } });
-          return;
+          const text = `edit ${path}: refused — "old" is empty but the file already exists; quote the exact text to replace`;
+          appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
+          return text;
         }
         if (count === 0) {
-          appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `edit ${path}: "old" text not found — re-read the file and copy it exactly`, meta: { path } });
-          return;
+          const text = `edit ${path}: "old" text not found — re-read the file and copy it exactly`;
+          appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
+          return text;
         }
         if (count > 1) {
-          appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `edit ${path}: "old" text matches ${count} places — include more surrounding context to make it unique`, meta: { path } });
-          return;
+          const text = `edit ${path}: "old" text matches ${count} places — include more surrounding context to make it unique`;
+          appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
+          return text;
         }
         writeFileSync(abs, current.replace(oldText, newText), "utf8");
       }
@@ -245,15 +284,16 @@ async function executeAction(p: Paths, taskId: string, d: Decision): Promise<voi
       indexRepo(p, store);
       store.close();
       const deltaLines = Math.max(oldText.split("\n").length, newText.split("\n").length);
-      appendEvent(p, taskId, { actor: "system", type: "edit", summary: `edited ${path} (~${deltaLines} line(s) changed)`, meta: { path } });
-      return;
+      const text = `edited ${path} (~${deltaLines} line(s) changed)`;
+      appendEvent(p, taskId, { actor: "system", type: "edit", summary: text, meta: { path } });
+      return text;
     }
     case "run": {
       const r = await runCommand(p, String(d.command ?? ""));
       const capped = capSummary(r.rendered);
       const handle = writeEvidence(p, taskId, "command", r.rendered, capped);
       appendEvent(p, taskId, { actor: "system", type: "command", summary: capped, evidenceRef: handle.id, meta: { command: d.command, exit: r.exit } });
-      return;
+      return capped;
     }
     case "verify": {
       const cfg = loadConfig(p);
@@ -263,9 +303,12 @@ async function executeAction(p: Paths, taskId: string, d: Decision): Promise<voi
       const capped = capSummary(v.report);
       const handle = writeEvidence(p, taskId, "command", v.report, capped);
       appendEvent(p, taskId, { actor: "system", type: "verify", summary: capped, evidenceRef: handle.id, meta: { ok: v.ok } });
-      return;
+      return capped;
     }
-    default:
-      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `unknown action "${d.action}"; ignored` });
+    default: {
+      const text = `unknown action "${d.action}"; ignored`;
+      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text });
+      return text;
+    }
   }
 }

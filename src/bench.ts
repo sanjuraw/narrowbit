@@ -9,6 +9,8 @@ import { indexRepo, openStore } from "./indexer.js";
 import { buildPackage } from "./package.js";
 import { Tasks } from "./tasks.js";
 import { mcpServerConfig } from "./claude.js";
+import { fold, readEvents } from "./events.js";
+import { runTask } from "./runtime.js";
 import { sh, shortId, now } from "./util.js";
 
 export interface BenchTask {
@@ -32,6 +34,13 @@ export interface BenchArm {
    * tests whether on-demand tools alone (nb_symbol/nb_grep/nb_search/...) help, Serena-style,
    * without the fixed injection cost that lost the two `narrowbit: true` benchmark runs. */
   mcpOnly?: boolean;
+  /** Narrowbit's OWN agent loop (runtime.ts) drives the task end to end — no injected package,
+   * no MCP round-trip, no external `claude` subprocess for tool use. Only each model turn goes
+   * through the subscription CLI adapter (providers/claude-cli.ts), tool-free. Mutually exclusive
+   * with narrowbit/mcpOnly; `args`/`appendSystemPrompt` are ignored for this arm. */
+  runtime?: boolean;
+  /** runtime arm only: cap on loop steps (default 20). */
+  runtimeMaxSteps?: number;
   /** Extra args for `claude` in this arm. */
   args?: string[];
   /** Extra system prompt text (e.g. a "context hygiene" baseline arm). */
@@ -193,23 +202,59 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             args.push("--mcp-config", mcpFile, "--strict-mcp-config");
             if (!baseArgs.includes("--allowedTools") && !baseArgs.includes("--allowed-tools")) args.push("--allowedTools", "mcp__narrowbit");
             if (arm.appendSystemPrompt) args.push("--append-system-prompt", arm.appendSystemPrompt);
+          } else if (arm.runtime) {
+            // Index so read/grep/search work; `args` built above is irrelevant here, since this
+            // arm never spawns an external `claude` subprocess for tool use — see the branch below.
+            ensureDirs(wp);
+            const cfg = { ...loadConfig(p) };
+            cfg.verify = detectVerify(wt);
+            saveConfig(wp, cfg);
+            if (existsSync(p.memory)) sh("cp", ["-R", p.memory + "/.", wp.memory], p.root);
+            const store = openStore(wp);
+            indexRepo(wp, store);
+            store.close();
           } else {
             args.push("--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers: {} }));
             if (arm.appendSystemPrompt) args.push("--append-system-prompt", arm.appendSystemPrompt);
           }
-          const outFile = join(runDir, `${t.id}-${arm.name}-${r}.jsonl`);
-          log(`${tag}: running claude…`);
           const t0 = Date.now();
-          const agentExit = await runClaude(claudeBin, wt, [...args, "--", t.prompt], outFile, env, (spec.timeoutMinutes ?? 30) * 60_000);
-          const rawStream = readFileSync(outFile, "utf8");
-          const s = parseStream(rawStream);
-          const stderr = existsSync(outFile + ".stderr") ? readFileSync(outFile + ".stderr", "utf8") : "";
-          // Harness/environment failures are not task failures: stop instead of recording a bogus result.
-          const fatal =
-            /"error":"authentication_failed"|Not logged in|Invalid API key/.test(rawStream + stderr) ? "claude CLI is not logged in (run `claude` then /login, or set ANTHROPIC_API_KEY)"
-            : s.turns === 0 && !s.usage.input && stderr.trim() ? `claude failed to start: ${stderr.trim().split("\n")[0].slice(0, 200)}`
-            : null;
-          if (fatal) throw new Error(`${tag}: ${fatal} — aborting benchmark; nothing recorded for this run`);
+          let agentExit: number;
+          let s: ReturnType<typeof parseStream>;
+          if (arm.runtime) {
+            log(`${tag}: running narrowbit's own loop…`);
+            const result = await runTask(wp, t.prompt, { model: spec.model, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin });
+            const ledger = fold(result.taskId, readEvents(wp, result.taskId)).ledgerByRole;
+            const roles = Object.values(ledger);
+            const sum = (k: "inputTokens" | "cacheCreationTokens" | "cacheReadTokens" | "outputTokens") => roles.reduce((a, x) => a + x[k], 0);
+            const costUsd = roles.reduce((a, x) => a + x.costUsd, 0);
+            const toolCalls = Object.fromEntries(Object.entries(result.actionCounts).map(([action, n]) => [`nb_${action}`, n]));
+            agentExit = result.outcome === "error" ? 1 : 0;
+            // Every action here is Narrowbit's own, driven in-process — there is no separate subprocess
+            // transcript to parse, so this mirrors parseStream()'s shape directly instead of producing one.
+            s = {
+              toolCalls,
+              filesRead: result.actionCounts.read ?? 0,
+              turns: result.steps,
+              durationMs: Date.now() - t0,
+              costUsd: costUsd || null,
+              isError: result.outcome === "error",
+              usage: { input: sum("inputTokens"), cacheCreate: sum("cacheCreationTokens"), cacheRead: sum("cacheReadTokens"), output: sum("outputTokens") },
+            };
+            if (result.outcome === "error") log(`${tag}: runtime loop error — ${result.summary}`);
+          } else {
+            const outFile = join(runDir, `${t.id}-${arm.name}-${r}.jsonl`);
+            log(`${tag}: running claude…`);
+            agentExit = await runClaude(claudeBin, wt, [...args, "--", t.prompt], outFile, env, (spec.timeoutMinutes ?? 30) * 60_000);
+            const rawStream = readFileSync(outFile, "utf8");
+            s = parseStream(rawStream);
+            const stderr = existsSync(outFile + ".stderr") ? readFileSync(outFile + ".stderr", "utf8") : "";
+            // Harness/environment failures are not task failures: stop instead of recording a bogus result.
+            const fatal =
+              /"error":"authentication_failed"|Not logged in|Invalid API key/.test(rawStream + stderr) ? "claude CLI is not logged in (run `claude` then /login, or set ANTHROPIC_API_KEY)"
+              : s.turns === 0 && !s.usage.input && stderr.trim() ? `claude failed to start: ${stderr.trim().split("\n")[0].slice(0, 200)}`
+              : null;
+            if (fatal) throw new Error(`${tag}: ${fatal} — aborting benchmark; nothing recorded for this run`);
+          }
           const applied = new Set(t.apply?.paths ?? []);
           const filesChanged = changedSince(wt, commit).filter((f) => !f.startsWith(".narrowbit/") && f !== "node_modules" && !applied.has(f));
           writeFileSync(join(runDir, `${t.id}-${arm.name}-${r}.diff`), sh("git", ["diff", commit], wt).stdout);
@@ -244,8 +289,9 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             toolCalls: s.toolCalls,
             totalToolCalls: Object.values(s.toolCalls).reduce((a, b) => a + b, 0),
             filesRead: s.filesRead,
-            searches: (s.toolCalls.Grep ?? 0) + (s.toolCalls.Glob ?? 0) + (s.toolCalls.LS ?? 0),
-            narrowbitCalls: Object.entries(s.toolCalls).filter(([k]) => k.startsWith("mcp__narrowbit")).reduce((a, [, v]) => a + v, 0),
+            searches: arm.runtime ? (s.toolCalls.nb_grep ?? 0) + (s.toolCalls.nb_search ?? 0) : (s.toolCalls.Grep ?? 0) + (s.toolCalls.Glob ?? 0) + (s.toolCalls.LS ?? 0),
+            // Every action in the runtime arm is Narrowbit's own by construction (no Claude Code tool loop involved).
+            narrowbitCalls: arm.runtime ? Object.values(s.toolCalls).reduce((a, b) => a + b, 0) : Object.entries(s.toolCalls).filter(([k]) => k.startsWith("mcp__narrowbit")).reduce((a, [, v]) => a + v, 0),
             packageTokens,
             filesChanged,
             expectedRecall: expected.length ? expected.filter((f) => filesChanged.includes(f)).length / expected.length : null,

@@ -19,17 +19,35 @@ import { extractText, parseStream } from "../streamjson.js";
  * since each call is a fresh, non-persisted session. That's the exact fixed-injection-tax failure
  * the three benchmark runs diagnosed, reappearing at the CLI layer; `--safe-mode` avoids it while
  * leaving subscription auth, model selection and built-in tools working normally.
+ *
+ * Session persistence: a fresh, non-persisted call per step (the original design) pays full,
+ * uncached price on every single turn — measured directly in a bench.ts A/B (`narrowbit-runtime`
+ * vs `native`, one Hono task): native's 11 turns shared one session and were 96% cache reads;
+ * the fresh-per-step design had zero cache reads across 9 turns, actually *worse* on fresh tokens
+ * than native despite a much lower raw total. `sessionId`/`resume` let a caller keep one Claude
+ * Code session alive across an entire task's turns — first call passes `sessionId` (fresh),
+ * later calls pass the same id with `resume: true` and no `systemPrompt` (the CLI's
+ * `--system-prompt-snapshot`, on by default, replays the first call's system prompt verbatim on
+ * every resume, so it never needs resending) — so ordinary Anthropic prompt caching applies
+ * across a task's steps the same way it does for native Claude Code.
  */
 export interface ModelCallOptions {
   cwd: string;
-  /** Full system prompt override (context.ts's project() output) — not appended to Claude Code's default. */
-  systemPrompt: string;
+  /** Full system prompt override. Required on the first call of a session; omit on `resume` calls
+   * — it would be ignored anyway (see session-persistence note above) and just wastes an argument. */
+  systemPrompt?: string;
   prompt: string;
   model?: string;
   /** Usage-ledger attribution bucket, e.g. "planning" | "retrieval" | "execution" | "verification". */
   role: string;
   claudeBin?: string;
   timeoutMs?: number;
+  /** Keep one Claude Code session alive across calls instead of a fresh one per call. Omit both
+   * `sessionId`/`resume` for a one-off stateless call (uses `--no-session-persistence`, the
+   * original behavior). Pass `sessionId` alone to start a resumable session; pass it again with
+   * `resume: true` on later calls in the same task to continue it. */
+  sessionId?: string;
+  resume?: boolean;
 }
 
 export interface ModelCallResult {
@@ -43,15 +61,12 @@ export interface ModelCallResult {
 
 export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
   const bin = opts.claudeBin ?? process.env.NARROWBIT_CLAUDE ?? "claude";
-  const args = [
-    "-p",
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--no-session-persistence",
-    "--safe-mode", // disable Claude Code's own CLAUDE.md/skills/memory auto-load — see file header
-    "--system-prompt",
-    opts.systemPrompt,
+  const args = ["-p", "--output-format", "stream-json", "--verbose", "--safe-mode"];
+  if (opts.sessionId && opts.resume) args.push("--resume", opts.sessionId);
+  else if (opts.sessionId) args.push("--session-id", opts.sessionId);
+  else args.push("--no-session-persistence");
+  if (opts.systemPrompt !== undefined) args.push("--system-prompt", opts.systemPrompt);
+  args.push(
     "--model",
     opts.model ?? "sonnet",
     "--tools",
@@ -61,7 +76,7 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
     JSON.stringify({ mcpServers: {} }),
     "--",
     opts.prompt,
-  ];
+  );
   return new Promise((resolve) => {
     const child = spawn(bin, args, { cwd: opts.cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
     const chunks: Buffer[] = [];
