@@ -124,6 +124,12 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   // result, since the resumed session already has the rest of the conversation natively.
   let nextPrompt = `${SYSTEM_INSTRUCTIONS}\n\nTask: ${taskText}\n\nRespond with your first action as JSON.`;
   let nextSystemPrompt: string | undefined = undefined;
+  // callModel's costUsd is Claude Code's CUMULATIVE cost for the whole resumed session, not a
+  // per-call charge (confirmed by direct measurement: it strictly increases call over call, unlike
+  // every other usage field, which the Anthropic API reports per-request). Track the running total
+  // and log only each call's own delta, so summing costUsd across events (events.ts's fold()) stays
+  // correct instead of re-counting every prior call's cost on every later one.
+  let cumulativeCost = 0;
 
   for (; steps < maxSteps; steps++) {
     const res = await callModel({
@@ -137,6 +143,9 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       resume: steps > 0,
     });
     nextSystemPrompt = undefined; // only the first call ever sends one — see providers/claude-cli.ts
+    const totalCost = res.costUsd ?? cumulativeCost;
+    const callCost = Math.max(0, totalCost - cumulativeCost);
+    cumulativeCost = totalCost;
     appendEvent(p, taskId, {
       actor: "model",
       type: "model_call",
@@ -148,7 +157,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
         cacheCreationTokens: res.usage.cacheCreate,
         cacheReadTokens: res.usage.cacheRead,
         outputTokens: res.usage.output,
-        costUsd: res.costUsd ?? 0,
+        costUsd: callCost,
       },
     });
     if (res.isError) {
