@@ -7,9 +7,11 @@ import { project } from "./context.js";
 import { writeEvidence } from "./evidence.js";
 import { appendEvent, fold, readEvents } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
+import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./memory.js";
 import { callModel } from "./providers/claude-cli.js";
 import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
+import { termsOf } from "./terms.js";
 import { estimateTokens, shortId } from "./util.js";
 import { verify } from "./verify.js";
 
@@ -44,6 +46,8 @@ const SYSTEM_INSTRUCTIONS = `You are driving a coding task through a tool-free r
 {"action":"edit","path":"<repo-relative path>","old":"<exact existing text to replace, or \"\" only to create a new file>","new":"<replacement text>"}
 {"action":"run","command":"<shell command>"}
 {"action":"verify"}
+{"action":"recall","query":"<topic, e.g. the area of code or kind of problem>"}
+{"action":"remember","type":"fact"|"decision"|"constraint"|"convention"|"failure"|"bug"|"command"|"environment","text":"<durable knowledge, one or two sentences>","reason"?:"<why>","attempt"?:"<for failures: what was tried>","result"?:"<for failures: what happened>","files"?:["<path>"]}
 {"action":"done","summary":"<what changed and why it satisfies the task>"}
 {"action":"blocked","reason":"<what you need that you don't have>"}
 
@@ -51,7 +55,11 @@ Read before you edit. "old" must match the file's current text EXACTLY (includin
 exactly once — copy it verbatim from what you last read, quoting only as much surrounding context as needed to
 make it unique. Never restate the whole file: "old"/"new" should cover only the lines that actually change. If a
 previous edit is rejected, re-read the file before retrying — do not guess at the current content.
-Verify after you edit. Do not edit files the task tells you not to modify. Prefer the smallest edit that satisfies the task.`;
+Verify after you edit. Do not edit files the task tells you not to modify. Prefer the smallest edit that satisfies the task.
+Memory persists across tasks, not just this one — use "recall" early if the task touches an area you might have
+notes on, and "remember" for anything a future task would benefit from knowing: a failed approach (so it isn't
+retried), a non-obvious constraint or convention, or a decision and its reason. Don't remember routine facts
+already obvious from the code.`;
 
 interface Decision {
   action: string;
@@ -66,6 +74,11 @@ interface Decision {
   command?: string;
   summary?: string;
   reason?: string;
+  type?: string;
+  text?: string;
+  attempt?: string;
+  result?: string;
+  files?: string[];
 }
 
 export function parseDecision(text: string): Decision | null {
@@ -351,6 +364,37 @@ async function executeAction(p: Paths, taskId: string, d: Decision): Promise<str
       const handle = writeEvidence(p, taskId, "command", v.report, capped);
       appendEvent(p, taskId, { actor: "system", type: "verify", summary: capped, evidenceRef: handle.id, meta: { ok: v.ok } });
       return capped;
+    }
+    case "recall": {
+      const query = String(d.query ?? "");
+      const memory = openMemory(p);
+      const hits = query ? memory.relevant(termsOf(query), [], 8).map((h) => h.entry) : memory.load().filter((e) => e.status === "active").slice(-8);
+      const raw = hits.length ? hits.map(renderMemory).join("\n") : "no matching memory";
+      const capped = capSummary(raw);
+      const text = `recall "${query}":\n${capped}`;
+      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text });
+      return text;
+    }
+    case "remember": {
+      const type = String(d.type ?? "");
+      if (!MEMORY_TYPES.includes(type as MemoryType)) {
+        const text = `remember: refused — unknown type "${type}" (expected ${MEMORY_TYPES.join(", ")})`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text });
+        return text;
+      }
+      const memory = openMemory(p);
+      const e = memory.add({
+        type: type as MemoryType,
+        text: String(d.text ?? ""),
+        reason: d.reason,
+        attempt: d.attempt,
+        result: d.result,
+        files: d.files,
+        source: taskId,
+      });
+      const text = `remembered [${e.id}] (${type}): ${e.text.slice(0, 100)}`;
+      appendEvent(p, taskId, { actor: "system", type: "decision", summary: text, meta: { memoryId: e.id, memoryType: type } });
+      return text;
     }
     default: {
       const text = `unknown action "${d.action}"; ignored`;
