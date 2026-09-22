@@ -21,6 +21,12 @@ Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens
   - Trained weights + a *small* Laya nudge (weight 0.1-0.15): hit@1 60% → **65%** (+5pp), MRR 0.721 → 0.750-0.753 — the best local-only result so far, but a small, unvalidated-on-holdout edge; treat as noise until repeated on more commits or another repo.
   - For reference: hosted Jev alone reached 82.5%. A 421M encoder is not a substitute for Jev's judgement at this task; it's a free, offline, small improvement on top of trained weights only.
   - Default `rerank.ts` weight (0.5) is tuned for hosted Jev and is a poor default for Laya; if Laya is kept, its default weight should drop to ~0.1-0.15.
+- **`scripts/decider_server.py` + `decider` (Apache 2.0, github.com/Mapika/decider, Mapika/decider-2b) — a second local decider, installed direct from GitHub (its PyPI listing "decider" is unrelated/unaffiliated, no homepage/author — do not trust it).** This is the strongest local result so far, closing most of the gap to hosted Jev. Same hono/40-commit protocol, trained weights blended with decider-2b:
+  - Decider-2b alone (rules off): hit@1 25% → **65%** — already beats trained weights alone (60%) and Laya (40%).
+  - Trained weights + decider-2b, weight sweep: 0.15→67.5%, **0.2→72.5% (peak)**, 0.25→70%, 0.3→70%, 0.4→65%, 0.5→65%, 0.7→67.5%, 1.0→67.5% (only setting where recall@10 regressed, to 94.4%). 0.2 is a genuine local optimum (both neighbors lower), not a single lucky point — still n=40 on one repo, so treat as directional.
+  - Best local-only combo: hit@1 **72.5%**, recall@5 86.3%, MRR 0.802, recall@10 unaffected (97.5%) — closes ~56% of the gap from trained-weights-alone (60%) to hosted Jev (82.5%), fully offline.
+  - **Operational lesson:** fp32 on MPS for a 2B model got silently OOM-killed by macOS (no Python traceback, just process death — this machine has 16GB unified memory). bf16 on MPS fixed it (`torch.backends.mps` supports bf16) and is now `decider_server.py`'s default for non-CPU devices.
+  - Not yet tried: SemIf (github.com/TheoLeeCJ/SemIf, formerly OpenJev) — heavier (Qwen3.5-4B, ~9GB), CLI/batch-file oriented (`semif-score`, jsonl in/out) rather than a simple library call, added native Apple Silicon MPS/MLX support the same day this was tested (2026-09-22). Untried given decider-2b's local result is already close to Jev.
 - Not done yet: running the 30–50 task benchmark, Codex and Antigravity integrations, automatic end-of-task memory extraction.
 
 ## Product principles (from the brief)
