@@ -358,8 +358,8 @@ describe("owned-runtime ledger (events, evidence, context projection)", () => {
   test("events append in order and fold deterministically from the same log", () => {
     appendEvent(p, taskId, { actor: "system", type: "decision", summary: "goal set", meta: { goal: "fix the webhook signature check" } });
     appendEvent(p, taskId, { actor: "model", type: "plan", summary: "plan drafted", meta: { steps: [{ text: "read verify()", status: "done" }, { text: "add HMAC check", status: "active" }] } });
-    appendEvent(p, taskId, { actor: "model", type: "model_call", summary: "planning turn", tokens: { model: "claude-sonnet-5", role: "planning", promptTokens: 500, completionTokens: 120, costUsd: 0.01 } });
-    for (let i = 0; i < 10; i++) appendEvent(p, taskId, { actor: "system", type: "tool_call", summary: `nb_grep call ${i}`, tokens: { model: "claude-sonnet-5", role: "retrieval", promptTokens: 50, completionTokens: 10, costUsd: 0.001 } });
+    appendEvent(p, taskId, { actor: "model", type: "model_call", summary: "planning turn", tokens: { model: "claude-sonnet-5", role: "planning", inputTokens: 300, cacheCreationTokens: 200, cacheReadTokens: 0, outputTokens: 120, costUsd: 0.01 } });
+    for (let i = 0; i < 10; i++) appendEvent(p, taskId, { actor: "system", type: "tool_call", summary: `nb_grep call ${i}`, tokens: { model: "claude-sonnet-5", role: "retrieval", inputTokens: 10, cacheCreationTokens: 0, cacheReadTokens: 40, outputTokens: 10, costUsd: 0.001 } });
     appendEvent(p, taskId, { actor: "system", type: "edit", summary: "edited payments/verify.ts", meta: { path: "src/payments/verify.ts" } });
     appendEvent(p, taskId, { actor: "system", type: "blocker", summary: "focused tests need a fixture secret" });
     appendEvent(p, taskId, { actor: "model", type: "decision", summary: "blocker resolved", meta: { resolvesBlocker: true } });
@@ -381,8 +381,10 @@ describe("owned-runtime ledger (events, evidence, context projection)", () => {
     assert.ok(!state1.recent.some((e) => e.type === "model_call"), "model_call events never enter the recent-action window");
     assert.equal(state1.recent.length, 8, "recent window is capped at recentLimit");
     assert.equal(state1.ledgerByRole.planning.calls, 1);
-    assert.equal(state1.ledgerByRole.planning.promptTokens, 500);
+    assert.equal(state1.ledgerByRole.planning.inputTokens, 300);
+    assert.equal(state1.ledgerByRole.planning.cacheCreationTokens, 200);
     assert.equal(state1.ledgerByRole.retrieval.calls, 10);
+    assert.equal(state1.ledgerByRole.retrieval.cacheReadTokens, 400, "fresh vs cached stays separable per role, not collapsed into one number");
     assert.ok(Math.abs(state1.ledgerByRole.retrieval.costUsd - 0.01) < 1e-9);
   });
 

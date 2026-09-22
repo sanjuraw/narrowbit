@@ -89,6 +89,8 @@ export interface RuntimeResult {
   outcome: "done" | "blocked" | "max_steps" | "error";
   summary: string;
   steps: number;
+  /** Count of executed actions by name (read/grep/search/edit/run/verify) — every one is Narrowbit's own, not Claude Code's. */
+  actionCounts: Record<string, number>;
 }
 
 export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions = {}): Promise<RuntimeResult> {
@@ -106,6 +108,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   let outcome: RuntimeResult["outcome"] = "max_steps";
   let summary = "";
   let steps = 0;
+  const actionCounts: Record<string, number> = {};
 
   for (; steps < maxSteps; steps++) {
     const state = fold(taskId, readEvents(p, taskId));
@@ -118,7 +121,15 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       actor: "model",
       type: "model_call",
       summary: res.isError ? `step ${steps}: model call failed` : `step ${steps}: ${res.text.slice(0, 120)}`,
-      tokens: { model, role, promptTokens: res.usage.input + res.usage.cacheCreate + res.usage.cacheRead, completionTokens: res.usage.output, costUsd: res.costUsd ?? 0 },
+      tokens: {
+        model,
+        role,
+        inputTokens: res.usage.input,
+        cacheCreationTokens: res.usage.cacheCreate,
+        cacheReadTokens: res.usage.cacheRead,
+        outputTokens: res.usage.output,
+        costUsd: res.costUsd ?? 0,
+      },
     });
     if (res.isError) {
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `model call failed: ${res.errorMessage ?? "unknown error"}` });
@@ -148,6 +159,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       break;
     }
 
+    actionCounts[decision.action] = (actionCounts[decision.action] ?? 0) + 1;
     try {
       await executeAction(p, taskId, decision);
     } catch (e: any) {
@@ -156,7 +168,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   }
 
   store.close();
-  return { taskId, outcome, summary, steps };
+  return { taskId, outcome, summary, steps, actionCounts };
 }
 
 async function executeAction(p: Paths, taskId: string, d: Decision): Promise<void> {

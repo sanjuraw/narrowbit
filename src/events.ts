@@ -15,8 +15,12 @@ export interface TokenUsage {
   model: string;
   /** Attribution bucket for the usage ledger, e.g. "planning" | "retrieval" | "execution" | "verification". */
   role: string;
-  promptTokens: number;
-  completionTokens: number;
+  /** Kept separate, never collapsed into one "prompt tokens" number: fresh (input+cacheCreation) vs
+   * cached (cacheRead) is the single most important distinction this whole project's benchmarks turn on. */
+  inputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
   costUsd: number;
 }
 
@@ -78,7 +82,7 @@ export interface FoldedState {
   /** Non-model-call events, oldest first, capped to `recentLimit`. */
   recent: Event[];
   /** Token/cost totals per `tokens.role`, for the per-task usage ledger. */
-  ledgerByRole: Record<string, { promptTokens: number; completionTokens: number; costUsd: number; calls: number }>;
+  ledgerByRole: Record<string, { inputTokens: number; cacheCreationTokens: number; cacheReadTokens: number; outputTokens: number; costUsd: number; calls: number }>;
 }
 
 /**
@@ -97,9 +101,11 @@ export function fold(taskId: string, events: Event[], recentLimit = 8): FoldedSt
     if (e.type === "decision" && e.meta?.resolvesBlocker) state.blocker = null;
     if (e.type === "edit" && typeof e.meta?.path === "string") touched.add(e.meta.path);
     if (e.tokens) {
-      const bucket = (state.ledgerByRole[e.tokens.role] ??= { promptTokens: 0, completionTokens: 0, costUsd: 0, calls: 0 });
-      bucket.promptTokens += e.tokens.promptTokens;
-      bucket.completionTokens += e.tokens.completionTokens;
+      const bucket = (state.ledgerByRole[e.tokens.role] ??= { inputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 });
+      bucket.inputTokens += e.tokens.inputTokens;
+      bucket.cacheCreationTokens += e.tokens.cacheCreationTokens;
+      bucket.cacheReadTokens += e.tokens.cacheReadTokens;
+      bucket.outputTokens += e.tokens.outputTokens;
       bucket.costUsd += e.tokens.costUsd;
       bucket.calls += 1;
     }
