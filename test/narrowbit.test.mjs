@@ -2,7 +2,7 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeFixture } from "./fixture.mjs";
 
@@ -26,6 +26,7 @@ const { termsOf } = await dist("terms.js");
 const { appendEvent, readEvents, fold } = await dist("events.js");
 const { writeEvidence, readEvidence } = await dist("evidence.js");
 const { project } = await dist("context.js");
+const { parseDecision, capSummary, safeAbsPath } = await dist("runtime.js");
 
 const nb = (cwd, ...args) => execFileSync(process.execPath, [BIN, ...args], { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
 
@@ -409,6 +410,32 @@ describe("owned-runtime ledger (events, evidence, context projection)", () => {
     const back = readEvidence(p, taskId, handle.id);
     assert.doesNotMatch(back, /ghp_abcdefghijklmnopqrstuvwxyz012345/, "evidence on disk is redacted like every other emitted text");
     assert.throws(() => readEvidence(p, taskId, "does-not-exist"));
+  });
+});
+
+describe("runtime loop helpers (no model calls — keeps npm test free of Claude quota)", () => {
+  test("parseDecision accepts bare JSON and JSON wrapped in prose/fences, rejects garbage", () => {
+    assert.deepEqual(parseDecision('{"action":"done","summary":"ok"}'), { action: "done", summary: "ok" });
+    assert.deepEqual(parseDecision('sure, here:\n```json\n{"action":"read","path":"a.ts"}\n```'), { action: "read", path: "a.ts" });
+    assert.equal(parseDecision("not json at all"), null);
+    assert.equal(parseDecision('{"summary":"missing action field"}'), null);
+  });
+
+  test("capSummary passes short text through and truncates long text with a pointer to ask again", () => {
+    assert.equal(capSummary("short"), "short");
+    const long = "x".repeat(10_000);
+    const capped = capSummary(long, 100);
+    assert.ok(capped.length < long.length);
+    assert.match(capped, /truncated/);
+  });
+
+  test("safeAbsPath refuses paths that escape the repo root", () => {
+    const root = "/tmp/nb-safepath-test";
+    const p = { root };
+    assert.equal(safeAbsPath(p, "src/x.ts"), resolve(root, "src/x.ts"));
+    assert.equal(safeAbsPath(p, "../../etc/passwd"), null);
+    assert.equal(safeAbsPath(p, "/etc/passwd"), null);
+    assert.equal(safeAbsPath(p, "."), null);
   });
 });
 
