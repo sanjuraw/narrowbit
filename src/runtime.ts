@@ -24,20 +24,25 @@ const SYSTEM_INSTRUCTIONS = `You are driving a coding task through a tool-free r
 {"action":"read","path":"<repo-relative path>","start"?:<line>,"end"?:<line>}
 {"action":"grep","pattern":"<text>","glob"?:"<pathspec>"}
 {"action":"search","query":"<text>"}
-{"action":"edit","path":"<repo-relative path>","content":"<the full new file content>"}
+{"action":"edit","path":"<repo-relative path>","old":"<exact existing text to replace, or \"\" only to create a new file>","new":"<replacement text>"}
 {"action":"run","command":"<shell command>"}
 {"action":"verify"}
 {"action":"done","summary":"<what changed and why it satisfies the task>"}
 {"action":"blocked","reason":"<what you need that you don't have>"}
 
-Read before you edit. Verify after you edit. Prefer the smallest edit that satisfies the task.`;
+Read before you edit. "old" must match the file's current text EXACTLY (including whitespace) and must appear
+exactly once — copy it verbatim from what you last read, quoting only as much surrounding context as needed to
+make it unique. Never restate the whole file: "old"/"new" should cover only the lines that actually change. If a
+previous edit is rejected, re-read the file before retrying — do not guess at the current content.
+Verify after you edit. Do not edit files the task tells you not to modify. Prefer the smallest edit that satisfies the task.`;
 
 interface Decision {
   action: string;
   path?: string;
   start?: number;
   end?: number;
-  content?: string;
+  old?: string;
+  new?: string;
   pattern?: string;
   glob?: string;
   query?: string;
@@ -193,16 +198,42 @@ async function executeAction(p: Paths, taskId: string, d: Decision): Promise<voi
     case "edit": {
       const path = String(d.path ?? "");
       const abs = safeAbsPath(p, path);
+      const oldText = d.old ?? "";
+      const newText = d.new ?? "";
       if (!abs) {
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `edit ${path}: refused — path escapes repo root`, meta: { path } });
         return;
       }
-      mkdirSync(dirname(abs), { recursive: true });
-      writeFileSync(abs, d.content ?? "", "utf8");
+      const exists = existsSync(abs);
+      if (!exists) {
+        if (oldText !== "") {
+          appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `edit ${path}: file does not exist; "old" must be "" to create it`, meta: { path } });
+          return;
+        }
+        mkdirSync(dirname(abs), { recursive: true });
+        writeFileSync(abs, newText, "utf8");
+      } else {
+        const current = readFileSync(abs, "utf8");
+        const count = oldText ? current.split(oldText).length - 1 : 0;
+        if (oldText === "") {
+          appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `edit ${path}: refused — "old" is empty but the file already exists; quote the exact text to replace`, meta: { path } });
+          return;
+        }
+        if (count === 0) {
+          appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `edit ${path}: "old" text not found — re-read the file and copy it exactly`, meta: { path } });
+          return;
+        }
+        if (count > 1) {
+          appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `edit ${path}: "old" text matches ${count} places — include more surrounding context to make it unique`, meta: { path } });
+          return;
+        }
+        writeFileSync(abs, current.replace(oldText, newText), "utf8");
+      }
       const store = openStore(p);
       indexRepo(p, store);
       store.close();
-      appendEvent(p, taskId, { actor: "system", type: "edit", summary: `edited ${path} (${(d.content ?? "").split("\n").length} lines)`, meta: { path } });
+      const deltaLines = Math.max(oldText.split("\n").length, newText.split("\n").length);
+      appendEvent(p, taskId, { actor: "system", type: "edit", summary: `edited ${path} (~${deltaLines} line(s) changed)`, meta: { path } });
       return;
     }
     case "run": {
