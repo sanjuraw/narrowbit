@@ -28,6 +28,10 @@ export interface BenchTask {
 export interface BenchArm {
   name: string;
   narrowbit?: boolean;
+  /** Narrowbit's MCP tools attached, but NO predictive package injected into the system prompt —
+   * tests whether on-demand tools alone (nb_symbol/nb_grep/nb_search/...) help, Serena-style,
+   * without the fixed injection cost that lost the two `narrowbit: true` benchmark runs. */
+  mcpOnly?: boolean;
   /** Extra args for `claude` in this arm. */
   args?: string[];
   /** Extra system prompt text (e.g. a "context hygiene" baseline arm). */
@@ -223,6 +227,23 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             args.push("--append-system-prompt", (arm.appendSystemPrompt ? arm.appendSystemPrompt + "\n\n" : "") + b.text, "--mcp-config", mcpFile, "--strict-mcp-config");
             if (!baseArgs.includes("--allowedTools") && !baseArgs.includes("--allowed-tools")) args.push("--allowedTools", "mcp__narrowbit");
             env.NARROWBIT_TASK = b.record.id;
+          } else if (arm.mcpOnly) {
+            // Index so the tools work when called, but inject nothing — no package, no protocol
+            // text, no pre-created task. The agent must discover and choose to use nb_* itself,
+            // from the tool descriptions alone, exactly like it would decide to use any other tool.
+            ensureDirs(wp);
+            const cfg = { ...loadConfig(p) };
+            cfg.verify = detectVerify(wt);
+            saveConfig(wp, cfg);
+            if (existsSync(p.memory)) sh("cp", ["-R", p.memory + "/.", wp.memory], p.root);
+            const store = openStore(wp);
+            indexRepo(wp, store);
+            store.close();
+            const mcpFile = join(runDir, `${t.id}-${arm.name}-${r}.mcp.json`);
+            writeFileSync(mcpFile, JSON.stringify({ mcpServers: { narrowbit: mcpServerConfig(wp) } }));
+            args.push("--mcp-config", mcpFile, "--strict-mcp-config");
+            if (!baseArgs.includes("--allowedTools") && !baseArgs.includes("--allowed-tools")) args.push("--allowedTools", "mcp__narrowbit");
+            if (arm.appendSystemPrompt) args.push("--append-system-prompt", arm.appendSystemPrompt);
           } else {
             args.push("--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers: {} }));
             if (arm.appendSystemPrompt) args.push("--append-system-prompt", arm.appendSystemPrompt);
