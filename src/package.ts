@@ -118,11 +118,10 @@ function pickSnippets(hits: SymbolHit[], max = 4): SymbolHit[] {
   return chosen.sort((a, b) => a.start - b.start);
 }
 
-export const AGENT_PROTOCOL = `Narrowbit pre-selected the context below for this task from a local index of the repository.
-- Start from these locations instead of exploring the repo; code shown is current on disk.
-- To edit a file you still need to Read it: Read only the line range you need (offset/limit), not the whole file.
-- Need more? Prefer narrowbit MCP tools over broad Glob/Grep: nb_symbol (definition by name), nb_refs (usages), nb_grep (grep tagged with enclosing function), nb_search (ranked search), nb_outline (file map), nb_expand (next most relevant context), nb_tests (tests for a file), nb_run (run a command, compressed output).
-- Record durable knowledge with nb_remember: decisions made, constraints discovered, and approaches that FAILED (so they are not retried).`;
+// Kept short: this text is sent fresh (uncached) on every task. Tool names are self-describing
+// via their own MCP schemas, so they aren't re-listed here — see CLAUDE.md "fresh-token tax".
+export const AGENT_PROTOCOL = `Narrowbit pre-selected the context below from a local repo index; it is current on disk.
+Prefer the nb_* MCP tools over broad Glob/Grep/Bash for further lookups. Use nb_remember for decisions, constraints and failed approaches.`;
 
 export interface BuildOptions {
   budget?: number;
@@ -288,10 +287,9 @@ export function buildPackage(store: Store, p: Paths, cfg: NarrowbitConfig, taskT
     push(`RELEVANT TESTS\n${lines.join("\n")}`);
   }
 
-  if (listed.length) {
-    const more = listed.slice(0, 12).map((f) => `${f.path} [${f.score.toFixed(1)}] ${f.reasons[0] ?? ""}`);
-    push(`MORE CANDIDATES (not loaded; nb_expand or nb_outline)\n${more.join("\n")}`);
-  }
+  // Paths only, no scores/reasons: nb_expand/nb_search give detail on demand, cheaper than
+  // paying for it here on every task regardless of whether it's used.
+  if (listed.length) push(`MORE CANDIDATES (nb_expand/nb_search for detail)\n${listed.slice(0, 8).map((f) => f.path).join(", ")}`);
 
   const text = sections.join("\n\n");
   const packageTokens = estimateTokens(text);

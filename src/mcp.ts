@@ -20,89 +20,87 @@ interface Tool {
 const str = (description: string) => ({ type: "string", description });
 const num = (description: string) => ({ type: "number", description });
 
+// Descriptions are kept to one short clause: every word here is sent fresh (uncached) on
+// every task, since each benchmark/CLI session starts cold. See CLAUDE.md "fresh-token tax".
 export const TOOLS: Tool[] = [
   {
     name: "nb_context",
-    description:
-      "Build a task-specific context package (relevant code sections, tests, project memory, git signals) from the local Narrowbit index. Call once at the start of a task if no Narrowbit context was provided.",
-    inputSchema: { type: "object", properties: { task: str("The task description, including any error text or stack trace.") }, required: ["task"] },
+    description: "Build task context from the local index (once, if none was injected).",
+    inputSchema: { type: "object", properties: { task: str("Task description") }, required: ["task"] },
   },
   {
     name: "nb_symbol",
-    description: "Source of a function/class/method/type by name (e.g. `verifySignature` or `PaymentService.retry`). Cheaper than grepping and reading whole files.",
+    description: "Source of a function/class/method by name.",
     inputSchema: { type: "object", properties: { name: str("Symbol name or Class.method") }, required: ["name"] },
   },
   {
     name: "nb_refs",
-    description: "Where a symbol is defined and which functions/methods use it (import-aware).",
+    description: "Definition + callers of a symbol.",
     inputSchema: { type: "object", properties: { name: str("Symbol name") }, required: ["name"] },
   },
   {
     name: "nb_outline",
-    description: "Map of one file: symbols with line ranges and signatures, imports, importers, and related tests. Use before reading a large file.",
-    inputSchema: { type: "object", properties: { path: str("Repo-relative file path") }, required: ["path"] },
+    description: "File map: symbols, imports, importers, tests.",
+    inputSchema: { type: "object", properties: { path: str("File path") }, required: ["path"] },
   },
   {
     name: "nb_search",
-    description: "Ranked search over files and symbols using the Narrowbit index (identifiers, paths, comments). Returns files with matching symbol signatures and line ranges.",
-    inputSchema: { type: "object", properties: { query: str("What you are looking for"), limit: num("Max results (default 10)") }, required: ["query"] },
+    description: "Ranked file/symbol search over the index.",
+    inputSchema: { type: "object", properties: { query: str("Query"), limit: num("Max results") }, required: ["query"] },
   },
   {
     name: "nb_expand",
-    description: "Next most relevant context for the current task that has not been delivered yet. Use when the initial context was not enough.",
-    inputSchema: { type: "object", properties: { budget: num("Approximate token budget for the expansion (default 4000)") } },
+    description: "More context for the current task, not yet delivered.",
+    inputSchema: { type: "object", properties: { budget: num("Token budget") } },
   },
   {
     name: "nb_grep",
-    description:
-      "Grep the repo (case-insensitive, literal by default) with results grouped by file and tagged with the enclosing function/method, so you rarely need to open the file. Prefer over the Grep tool.",
+    description: "Grep tagged with enclosing function; prefer over Grep.",
     inputSchema: {
       type: "object",
-      properties: { pattern: str("Text to find (or a regex if regex=true)"), glob: str("Optional pathspec, e.g. 'src/**/*.ts'"), regex: { type: "boolean" }, limit: num("Max matches shown (default 40)") },
+      properties: { pattern: str("Text/regex"), glob: str("Pathspec"), regex: { type: "boolean" }, limit: num("Max matches") },
       required: ["pattern"],
     },
   },
   {
     name: "nb_tests",
-    description: "Test files mapped to a source file (by imports and naming).",
-    inputSchema: { type: "object", properties: { path: str("Repo-relative source file path") }, required: ["path"] },
+    description: "Tests mapped to a source file.",
+    inputSchema: { type: "object", properties: { path: str("Source path") }, required: ["path"] },
   },
   {
     name: "nb_lines",
-    description: "Exact lines of a file (redacted for secrets).",
-    inputSchema: { type: "object", properties: { path: str("file path"), start: num("first line"), end: num("last line") }, required: ["path", "start", "end"] },
+    description: "Exact file lines, redacted.",
+    inputSchema: { type: "object", properties: { path: str("Path"), start: num("First line"), end: num("Last line") }, required: ["path", "start", "end"] },
   },
   {
     name: "nb_run",
-    description:
-      "Run a shell command in the repo (tests, type-check, lint, build) and get COMPRESSED output: summaries, failing tests with assertion messages, type errors grouped by file. Raw output is saved locally. Prefer this over Bash for noisy commands.",
-    inputSchema: { type: "object", properties: { command: str("Shell command"), timeout_s: num("Timeout in seconds (default 600)") }, required: ["command"] },
+    description: "Run a command; compressed output. Prefer over Bash for noisy commands.",
+    inputSchema: { type: "object", properties: { command: str("Command"), timeout_s: num("Timeout") }, required: ["command"] },
   },
   {
     name: "nb_verify",
-    description: "Run the project's configured checks (type-check, lint, tests focused on changed files) and return only failures.",
-    inputSchema: { type: "object", properties: { full: { type: "boolean", description: "Run the full test suite instead of focused tests" } } },
+    description: "Type-check/lint/focused tests; failures only.",
+    inputSchema: { type: "object", properties: { full: { type: "boolean", description: "Full suite" } } },
   },
   {
     name: "nb_remember",
-    description:
-      "Record durable project knowledge outside the conversation: a decision (with reason), a constraint, a convention, a fact, or a FAILED approach (attempt + result) so future tasks do not retry it.",
+    description: "Record a decision, constraint, fact, or FAILED approach.",
     inputSchema: {
       type: "object",
       properties: {
         type: { type: "string", enum: [...MEMORY_TYPES] },
-        text: str("The knowledge, one or two sentences"),
-        reason: str("Why (for decisions/constraints)"),
-        attempt: str("What was tried (for failures)"),
-        result: str("What happened (for failures)"),
-        files: { type: "array", items: { type: "string" }, description: "Related repo paths" },
+        text: str("Knowledge"),
+        reason: str("Why"),
+        attempt: str("What was tried"),
+        result: str("Outcome"),
+        files: { type: "array", items: { type: "string" }, description: "Related paths" },
       },
       required: ["type", "text"],
     },
   },
   {
     name: "nb_memory",
-    description: "Active project memory relevant to a query (decisions, constraints, failed approaches).",
+    description: "Active project memory relevant to a query.",
     inputSchema: { type: "object", properties: { query: str("Topic") } },
   },
 ];
