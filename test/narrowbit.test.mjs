@@ -23,6 +23,9 @@ const { Memory, toMarkdown, fromMarkdown } = await dist("memory.js");
 const { refsText, symbolText, expandTask, grepText } = await dist("query.js");
 const { parseStream } = await dist("bench.js");
 const { termsOf } = await dist("terms.js");
+const { appendEvent, readEvents, fold } = await dist("events.js");
+const { writeEvidence, readEvidence } = await dist("evidence.js");
+const { project } = await dist("context.js");
 
 const nb = (cwd, ...args) => execFileSync(process.execPath, [BIN, ...args], { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
 
@@ -336,6 +339,76 @@ describe("fixture repository", () => {
     assert.match(byId[4].result.content[0].text, /exit 3/);
     assert.ok(byId[4].result.content[0].text.split("\n").length < 45);
     assert.equal(byId[5].error.code, -32601);
+  });
+});
+
+describe("owned-runtime ledger (events, evidence, context projection)", () => {
+  let root, p, taskId;
+  before(() => {
+    root = makeFixture();
+    p = paths(root);
+    ensureDirs(p);
+    taskId = "rt-test-task";
+  });
+  after(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("events append in order and fold deterministically from the same log", () => {
+    appendEvent(p, taskId, { actor: "system", type: "decision", summary: "goal set", meta: { goal: "fix the webhook signature check" } });
+    appendEvent(p, taskId, { actor: "model", type: "plan", summary: "plan drafted", meta: { steps: [{ text: "read verify()", status: "done" }, { text: "add HMAC check", status: "active" }] } });
+    appendEvent(p, taskId, { actor: "model", type: "model_call", summary: "planning turn", tokens: { model: "claude-sonnet-5", role: "planning", promptTokens: 500, completionTokens: 120, costUsd: 0.01 } });
+    for (let i = 0; i < 10; i++) appendEvent(p, taskId, { actor: "system", type: "tool_call", summary: `nb_grep call ${i}`, tokens: { model: "claude-sonnet-5", role: "retrieval", promptTokens: 50, completionTokens: 10, costUsd: 0.001 } });
+    appendEvent(p, taskId, { actor: "system", type: "edit", summary: "edited payments/verify.ts", meta: { path: "src/payments/verify.ts" } });
+    appendEvent(p, taskId, { actor: "system", type: "blocker", summary: "focused tests need a fixture secret" });
+    appendEvent(p, taskId, { actor: "model", type: "decision", summary: "blocker resolved", meta: { resolvesBlocker: true } });
+    appendEvent(p, taskId, { actor: "system", type: "verify", summary: "1 focused test passed", meta: { ok: true } });
+
+    const events = readEvents(p, taskId);
+    assert.equal(events.length, 17);
+    assert.ok(new Set(events.map((e) => e.id)).size === events.length, "event ids are unique");
+
+    const state1 = fold(taskId, events);
+    const state2 = fold(taskId, readEvents(p, taskId));
+    assert.deepEqual(state1, state2, "folding the same log twice must be deterministic");
+
+    assert.equal(state1.goal, "fix the webhook signature check");
+    assert.equal(state1.plan.length, 2);
+    assert.equal(state1.lastVerify.ok, true);
+    assert.equal(state1.blocker, null, "a later resolvesBlocker decision clears the blocker");
+    assert.deepEqual(state1.filesTouched, ["src/payments/verify.ts"]);
+    assert.ok(!state1.recent.some((e) => e.type === "model_call"), "model_call events never enter the recent-action window");
+    assert.equal(state1.recent.length, 8, "recent window is capped at recentLimit");
+    assert.equal(state1.ledgerByRole.planning.calls, 1);
+    assert.equal(state1.ledgerByRole.planning.promptTokens, 500);
+    assert.equal(state1.ledgerByRole.retrieval.calls, 10);
+    assert.ok(Math.abs(state1.ledgerByRole.retrieval.costUsd - 0.01) < 1e-9);
+  });
+
+  test("projection is bounded and never drops goal/plan/blocker/last-verify", () => {
+    const state = fold(taskId, readEvents(p, taskId));
+    const full = project(state, { budget: 10_000 });
+    assert.match(full, /GOAL: fix the webhook signature check/);
+    assert.match(full, /PLAN:/);
+    assert.match(full, /LAST VERIFY: PASSED/);
+    assert.match(full, /RECENT:/);
+
+    const tight = project(state, { budget: 5 });
+    assert.match(tight, /GOAL: fix the webhook signature check/, "goal survives even a tiny budget");
+    assert.match(tight, /LAST VERIFY: PASSED/, "last verify survives even a tiny budget");
+    assert.ok(tight.length < full.length, "a tight budget trims recent-action lines");
+  });
+
+  test("evidence is redacted, handle-addressed, and never re-enters context directly", () => {
+    const secretish = "token = ghp_abcdefghijklmnopqrstuvwxyz012345\nsome file content here";
+    const handle = writeEvidence(p, taskId, "file", secretish, "src/config.ts, 2 lines", "src/config.ts");
+    assert.ok(handle.id);
+    assert.equal(handle.kind, "file");
+    assert.equal(handle.path, "src/config.ts");
+    assert.ok(handle.tokens > 0);
+    const back = readEvidence(p, taskId, handle.id);
+    assert.doesNotMatch(back, /ghp_abcdefghijklmnopqrstuvwxyz012345/, "evidence on disk is redacted like every other emitted text");
+    assert.throws(() => readEvidence(p, taskId, "does-not-exist"));
   });
 });
 

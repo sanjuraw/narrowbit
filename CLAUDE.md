@@ -1,10 +1,30 @@
 # Narrowbit
 
-Context-efficiency engine for coding agents: **task + repository → minimum sufficient context**. It sits alongside Claude Code (later Codex, Antigravity, others) and does repo understanding, retrieval, memory and output compression locally, so the model spends fewer turns and tokens getting oriented.
+Local, context-managed coding-agent runtime: **task + repository + durable evidence → the smallest useful active context**. Narrowbit will own task state, memory, verification and model routing while using local or supported provider model adapters.
 
 Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens. If quality drops, Narrowbit has failed.
 
-## Handoff (2026-09-22, Claude Sonnet 5 → Codex)
+## Handoff (2026-09-22, strategy update)
+
+**Read all three benchmark records in Status before changing code.** The previous product predicted a context package and injected it into another coding agent. That mechanism failed twice because every fresh session paid the full, uncached injection cost. The on-demand-only MCP arm reached 20.2%, but it is a single noisy run, not a validated product claim.
+
+**Approved direction:** Narrowbit is becoming a provider-independent, context-managed coding-agent runtime. It should plan, explore, edit, run commands, verify, recover, persist work and continue with another model. Its differentiator is a durable, local task state that keeps models from repeatedly reading old conversations, broad repository output and stale evidence.
+
+**Why build a harness:** the original Claude Code sidecar could suggest context and expose MCP tools, but Claude Code retained control of the conversation, tool loop, compaction, delegation and provider session. Narrowbit therefore could not prevent repeated transcript reads, selectively project memory, route routine work to a cheaper model or create a reliable cross-provider handoff. The failed pre-injection runs showed that adding context outside that loop is expensive. An owned harness can control the active model-visible context and measure every automatic action; native Claude Code/Codex/Cursor remain useful integrations and baselines.
+
+**The runtime owns:** an append-only task/evidence log; a bounded active-context projection; Git/worktree state; verification; provider-neutral handoffs; and a per-task token/cost ledger. Raw transcripts, logs, diffs and file excerpts stay local behind retrievable evidence handles. A model receives only the active goal, plan, edits, latest checks, current blocker and evidence relevant to the next action.
+
+**Memory design:** keep four separate stores: working state, full evidence, versioned repository facts/decisions/failures, and routing history. Each durable fact needs provenance, a file hash or Git revision where applicable, confidence and invalidation. Store automatically; inject only on demonstrated relevance. Never recreate predictive pre-injection as default behavior.
+
+**Model policy:** use a Jev-like decision layer to select the smallest capable model, next tool, evidence and retrieval budget. It receives compact metadata (task, paths, signatures, test names, ledger state), never whole source trees by default. Configure model roles such as frontier planner, main executor, cheap explorer/summarizer/verifier and local fallback. Local Decider-2b is the strongest tested offline starting point; hosted Jev is experimental because it breaks local-first.
+
+**Provider boundary:** use officially supported APIs, CLIs, MCP and hooks. Claude Code, Codex and Cursor integrations can remain useful adapters, but their native loops remain theirs. A fully owned Narrowbit runtime needs provider APIs or compatible local endpoints. Do not scrape UIs, extract credentials or rotate accounts to evade service limits.
+
+**Do not start by cloning jcode.** User experience showed jcode could burn quota despite its adaptive grep/memory claims. Feature breadth, automatic memory injection, side agents and swarms are potential token multipliers. Build every automatic feature behind a visible usage ledger and an A/B test.
+
+**Next implementation sequence:** first validate the 20.2% `mcpOnly` signal with a contemporaneous native-vs-mcpOnly repeat. Then build a narrow vertical slice: one owned agent loop, durable task ledger, bounded context projection, on-demand local retrieval, command-output handles and verification. Add one API/local provider, prove successful-task cost, then add routing, handoff and further providers. A usable one-provider slice is roughly 4–6 weeks for one full-time engineer; a credible multi-model runtime is 3–5 months. Equal-success savings remain an experiment, not a promise.
+
+## Prior handoff (2026-09-22, Claude Sonnet 5 → Codex; retained as benchmark history)
 
 **What we were trying to do:** hit the brief's GO bar — ≥40% less effective context than native Claude Code at equal-or-better task success, on a real paired benchmark (n=40, honojs/hono, tasks mined from actual commits with `scripts/build-tasks.mjs --verify-each`). The original design (still the one described lower in this file under "Claude Code integration" and `package.ts`) was **predictive pre-injection**: index the repo, rank files, build a context package, and inject it into the system prompt on every task, alongside 13 `nb_*` MCP tools for on-demand lookups.
 
@@ -23,6 +43,7 @@ Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens
 
 ## Status (update this section as things change)
 
+- **Strategy decision (2026-09-22):** pivot from predictive context injection to a context-managed coding-agent runtime. No runtime implementation has started. Preserve the existing index, query, redaction, compression, task, verification and benchmark modules as candidate building blocks. The first gate remains a fresh, contemporaneous repeat of native vs `mcpOnly`; the current 20.2% result must not be treated as validated.
 - V0 CLI is built and pushed to a **private** GitHub repo: `sanjuraw/narrowbit` (branch `main`).
 - Offline selection eval on `honojs/hono` (40 commits, commit message as the task): recall@10 97.5%, 82% of changed files loaded as code, ~5.2k-token packages (estimated). Commit messages are weak prompts, so this is a lower bound.
 - **PAIRED BENCHMARK RUN (2026-09-22, hono, 40 tasks from `scripts/build-tasks.mjs --verify-each`, Sonnet, rule-based ranker only — trained weights and local-decider re-ranking were NOT wired into `buildPackage`/this run):**
@@ -75,7 +96,7 @@ Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens
 5. Use only officially supportable integration points (MCP, hooks, CLI flags). No scraping private UIs, patching binaries, or extracting credentials.
 6. Provider-independent core; integrations are thin.
 
-**Out of scope for V0:** GUI/Mac app, cloud, multi-provider router, account switching, vector DB/embeddings (add only if benchmarks show keyword matching fails), agent swarms.
+**Initial runtime scope:** one owned agent loop, a durable task/evidence ledger, bounded context projection, on-demand local retrieval, safe command-output handles and verification. Add one API or local-compatible provider first. Add model routing and provider handoff only after that vertical slice proves successful-task cost. GUI, cloud coordination, account switching, vector DB/embeddings and agent swarms remain deferred.
 
 **Kill/pivot criteria:** benchmark reduction under ~20%, quality materially worse, native harnesses already this efficient, or users constantly override the selection.
 
@@ -143,18 +164,20 @@ State lives in `.narrowbit/` in the target repo (self-gitignored, files `0600`):
 
 ## Borrowed ideas (MIT-licensed projects; ideas only, no code copied)
 
-- **jcode:** structure-aware grep → `nb_grep`.
+- **jcode:** structure-aware grep → `nb_grep`; its adaptive truncation and cache-awareness are useful references. Its automatic memory injection and swarm breadth are not defaults for Narrowbit because they can increase usage.
 - **9router (RTK):** lossless, fail-safe tool-output compression → git diff/grep condensers and the fail-safe.
 - **Claude Code:** clear old tool output first, keep prompt prefixes cache-friendly → keep tool results small; hook sends deltas.
-- Not adopted: 9router "caveman mode" (model-level), jcode embedding recall and multi-session swarm, DeepSeek Harness (nothing concrete found on context handling). Codex harness not yet researched.
+- **DeepSeek Harness:** append-only trajectories, plugin boundaries and replayable sessions are useful references for the owned runtime; it is developer-preview infrastructure, not a dependency.
+- Not adopted: 9router "caveman mode" (model-level), jcode embedding recall and multi-session swarm.
 
 ## Roadmap (in order)
 
-1. Smoke test: one task, native vs Narrowbit, on the fixture. Confirms the live MCP/hook/usage-parsing path.
-2. Build the 30–50 task benchmark set from a real TS repo's history (prompt, start commit, success command, expected files).
-3. Run the paired benchmark (ideally 2 repeats, plus a context-hygiene arm; consider Serena and repo-map tools as comparisons). Act on the verdict.
-4. If GO: automatic end-of-task memory extraction, staleness detection for memory tied to changed code, Codex integration, then Antigravity/Gemini.
-5. Only after that: polished UX (Mac app, VS Code extension, etc.).
+1. Repeat native vs `mcpOnly` on the same 40 Hono tasks with both arms contemporaneous; report paired aggregate/median/fresh-token/cost/success results.
+2. Design the runtime event schema and active-context projection. The raw event log remains durable; the projection is the only model-visible conversation state.
+3. Build the one-provider vertical slice: task loop, worktree/verification, task ledger, on-demand retrieval, evidence handles and safe output compression.
+4. Benchmark it against native Claude Code/Codex and `mcpOnly` on commit-derived tasks. Attribute token/cost usage to planning, retrieval, tool output, memory, execution and verification.
+5. Add a Jev-like policy layer for model/tool/evidence routing, then explicit provider handoff and local fallback. Each automation needs an ablation showing equal-or-better task success.
+6. Add wider provider integrations and polished UX only after the core runtime repeatedly beats realistic baselines.
 
 ## Competitors and comparisons to keep in mind
 
