@@ -55,7 +55,12 @@ Read before you edit. "old" must match the file's current text EXACTLY (includin
 exactly once — copy it verbatim from what you last read, quoting only as much surrounding context as needed to
 make it unique. Never restate the whole file: "old"/"new" should cover only the lines that actually change. If a
 previous edit is rejected, re-read the file before retrying — do not guess at the current content.
-Verify after you edit. Do not edit files the task tells you not to modify. Prefer the smallest edit that satisfies the task.
+Verify after you edit. Do not edit files the task tells you not to modify — if a task says tests currently fail
+and to make them pass, the fix belongs in the implementation file the tests exercise, never in the test file
+itself, even if that would be the easier edit. If verification keeps failing the same way after you've already
+edited something, that is a sign you edited the wrong file or the wrong thing — re-read the actual implementation
+before trying again, rather than re-running the same check hoping for a different result.
+Prefer the smallest edit that satisfies the task.
 Memory persists across tasks, not just this one — use "recall" early if the task touches an area you might have
 notes on, and "remember" for anything a future task would benefit from knowing: a failed approach (so it isn't
 retried), a non-obvious constraint or convention, or a decision and its reason. Don't remember routine facts
@@ -130,6 +135,8 @@ export interface RuntimeResult {
 }
 
 const MAX_PARSE_RETRIES = 3;
+/** Consecutive run/verify actions without an intervening edit before the loop nudges instead of letting it spin. */
+const STALL_THRESHOLD = 4;
 
 export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions = {}): Promise<RuntimeResult> {
   const cfg = loadConfig(p);
@@ -148,6 +155,11 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   let steps = 0;
   let parseRetries = 0;
   let compactions = 0;
+  // Anti-spin guard: counts run/verify/read/grep/search/recall actions since the last edit. A
+  // real failure observed on a real Hono task: the model re-ran the same failing test 13 times in
+  // a row instead of ever editing the actual implementation file, burning the whole step budget.
+  // Past STALL_THRESHOLD consecutive non-edit actions, the next prompt gets an explicit nudge.
+  let sinceLastEdit = 0;
   const actionCounts: Record<string, number> = {};
   let sessionId = randomUUID();
   // true at the start of every session (the task's first, or right after a compaction): the next
@@ -226,6 +238,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
     }
 
     actionCounts[decision.action] = (actionCounts[decision.action] ?? 0) + 1;
+    sinceLastEdit = decision.action === "edit" ? 0 : sinceLastEdit + 1;
     let resultText: string;
     try {
       resultText = await executeAction(p, taskId, decision);
@@ -233,6 +246,13 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       resultText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
       appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
     }
+    const stalling = sinceLastEdit >= STALL_THRESHOLD && (decision.action === "run" || decision.action === "verify");
+    if (stalling) {
+      appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `${sinceLastEdit} steps without an edit — nudging toward the implementation file` });
+    }
+    const nudge = stalling
+      ? `\n\nSTOP: you've taken ${sinceLastEdit} steps without editing anything. Re-running the same check will not fix it. Read the actual implementation file the test exercises (not the test file) and make a real change before checking again.`
+      : "";
 
     // Compact on the context the model just processed, not a fixed turn count: a task with big
     // reads compacts sooner than one with small ones, and a cheap task may never compact at all.
@@ -250,9 +270,9 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
         summary: `compacted after ${steps + 1} turn(s), ~${contextTokens} context tokens — starting a new session`,
         meta: { previousSessionId, contextTokens },
       });
-      nextPrompt = `You are continuing this task after a context compaction. Nothing was lost, only compacted — use read/grep/search again for anything you need in full, rather than assuming what you remember is still current. Progress so far:\n\n${digest}\n\nMost recent result:\n${resultText}\n\nWhat is the next action? Respond with JSON only.`;
+      nextPrompt = `You are continuing this task after a context compaction. Nothing was lost, only compacted — use read/grep/search again for anything you need in full, rather than assuming what you remember is still current. Progress so far:\n\n${digest}\n\nMost recent result:\n${resultText}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
     } else {
-      nextPrompt = `${resultText}\n\nWhat is the next action? Respond with JSON only.`;
+      nextPrompt = `${resultText}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
     }
   }
 
