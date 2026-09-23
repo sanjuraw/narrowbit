@@ -645,7 +645,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       Object.keys(S.providers).forEach(function (prov) {
         var P = S.providers[prov];
         if ((P.kind === "api" ? (P.free ? "free" : "paid") : P.kind) !== group) return;
-        var o = el("option", { value: prov, text: P.label + " — " + P.pricing });
+        var o = el("option", { value: prov, text: P.label + " — " + P.pricing + (P.unavailable ? " (needs setup)" : "") });
         if (prov === draft.provider) o.selected = true;
         g.appendChild(o);
       });

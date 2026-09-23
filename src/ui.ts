@@ -227,6 +227,10 @@ export function startUi(opts: UiOptions) {
     }
     // Model lists are fetched separately (/api/models): some are network calls, and only the
     // provider on screen needs one.
+    // Codex's login state can't be checked synchronously here (it's a subprocess call) — reuse
+    // whatever the limits refresh already learned (GET /api/limits keeps it fresh, ~2min TTL) so
+    // the provider picker can say "not logged in" up front instead of only failing mid-task.
+    const codexLoginError = readLimits().codex?.error;
     const providers = Object.fromEntries(
       PROVIDERS.map((prov) => {
         const info = PROVIDER_INFO[prov];
@@ -241,7 +245,7 @@ export function startUi(opts: UiOptions) {
             baseUrl: ep?.baseUrl ?? null,
             needsKey: ep?.needsKey ?? false,
             keySource: info.kind === "subscription" ? null : keySource(prov, cfg.agent?.endpoints?.[prov]?.keyEnv ?? info.keyEnv),
-            unavailable: unavailableReason(s, cfg.agent),
+            unavailable: prov === "codex" && codexLoginError?.includes("not logged in") ? "Codex isn't logged in — run `codex login` in a terminal, then try again." : unavailableReason(s, cfg.agent),
           },
         ];
       }),
