@@ -28,6 +28,7 @@ const { writeEvidence, readEvidence } = await dist("evidence.js");
 const { project } = await dist("context.js");
 const { parseDecision, parseDecisions, capSummary, safeAbsPath } = await dist("runtime.js");
 const { parseCodexStream } = await dist("providers/codex-cli.js");
+const { parseClaudeAuth } = await dist("readiness.js");
 const { listSkills, getSkill, saveSkill, removeSkill, renameSkill, slugify } = await dist("skills.js");
 const { resolveSelection, DEFAULT_TIERS } = await dist("providers/models.js");
 
@@ -549,6 +550,15 @@ describe("codex stream parsing (providers/codex-cli.ts — no model calls, no co
   test("empty or garbage output is an error, not a silent empty success", () => {
     assert.equal(parseCodexStream("").isError, true);
     assert.equal(parseCodexStream("not json\nalso not json").isError, true);
+  });
+});
+
+describe("readiness parsing (readiness.ts — no subprocess, no login needed)", () => {
+  test("parseClaudeAuth reads loggedIn from `claude auth status` JSON and treats anything else as logged out", () => {
+    assert.equal(parseClaudeAuth('{\n  "loggedIn": true,\n  "authMethod": "claude.ai"\n}'), true);
+    assert.equal(parseClaudeAuth('{"loggedIn": false}'), false);
+    assert.equal(parseClaudeAuth("Not logged in"), false);
+    assert.equal(parseClaudeAuth(""), false);
   });
 });
 

@@ -256,6 +256,16 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .drawer h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); margin: 12px 0 6px; }
 .drawer h3:first-child { margin-top: 0; }
 .drawer h3 small { display: block; text-transform: none; letter-spacing: normal; font-weight: 400; color: var(--muted); margin-top: 2px; }
+.gs { border: 1px solid var(--line); background: var(--panel); border-radius: 14px; padding: 16px 18px; margin: 0 0 16px; }
+.gs h2 { font-family: var(--serif); font-weight: 400; font-size: 19px; margin: 0 0 4px; }
+.gs .gs-sub { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+.gs .gs-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.gs .gs-row .gs-name { font-weight: 600; min-width: 92px; }
+.gs .gs-row .gs-note { flex: 1; color: var(--muted); min-width: 0; }
+.gs .gs-row input { flex: 1; min-width: 0; font-size: 12.5px; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); }
+.gs .gs-row select { font-size: 12.5px; padding: 5px 6px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); }
+.gs .gs-ok { color: var(--ok); }
+.gs code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
 .connector-form { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
 .connector-form input { font-size: 12.5px; padding: 7px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); }
 .connector-form button { align-self: flex-start; }
@@ -337,6 +347,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
           <p>Narrowbit plans with your strongest model, does the work with cheaper ones, and asks before running commands. You review the diff before anything is committed.</p>
           <div class="examples" id="examples"></div>
         </div>
+        <div class="gs hidden" id="getStarted"></div>
         <div class="setup hidden" id="setupCard">
           <strong>Narrowbit isn't set up in this repository yet.</strong>
           <p class="muted" style="margin:6px 0 12px">This creates a local <span class="mono">.narrowbit/</span> folder (git-ignored) and indexes the code. Nothing leaves your Mac.</p>
@@ -509,7 +520,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (!S.root) { show($("welcome"), true); show($("setupCard"), false); if (S.providers) { draft = { root: null, provider: S.selection.provider, effort: S.selection.effort }; renderSettings(); renderConnectors(); } renderComposer(); return; }
     if (!draft || draft.root !== S.root) draft = { root: S.root, provider: S.selection.provider, effort: S.selection.effort };
     run.active = S.running; if (S.running) run.taskId = S.runningTask;
-    renderSessions(); renderSettings(); renderComposer(); renderSkills(); renderConnectors();
+    renderSessions(); renderSettings(); renderComposer(); renderSkills(); renderConnectors(); renderGetStarted();
     show($("setupCard"), !S.initialized);
     if (first) {
       if (S.running && S.runningTask) openSession(S.runningTask);
@@ -594,6 +605,47 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       .then(function (st) { apply(st); show($("skillOverlay"), false); })
       .catch(function (e) { var n = $("skillErr"); n.textContent = e.message; show(n, true); });
   };
+
+  // ---------- first-run: what can I use right now? ----------
+  var R = null;
+  function loadReadiness(refresh) {
+    return api("/api/readiness" + (refresh ? "?refresh=1" : "")).then(function (r) { R = r; renderGetStarted(); }).catch(function () {});
+  }
+  function renderGetStarted() {
+    var box = $("getStarted");
+    var P = S && S.root && S.providers ? S.providers[S.selection.provider] : null;
+    var notReady = !!(R && P && (P.unavailable || R.ready.indexOf(S.selection.provider) < 0));
+    show(box, notReady);
+    if (!notReady) return;
+    clear(box);
+    box.appendChild(el("h2", { text: "Let's get a model ready" }));
+    box.appendChild(el("p", { cls: "gs-sub", text: (P.unavailable || P.label + " isn't ready yet.") + " Pick anything below that works for you." }));
+    function row(name, note, action) {
+      var r = el("div", { cls: "gs-row" }, el("span", { cls: "gs-name", text: name }), el("span", { cls: "gs-note", text: note }));
+      if (action) r.appendChild(action);
+      box.appendChild(r);
+    }
+    function useBtn(prov) { return el("button", { cls: "primary", text: "Use", onclick: function () { draft.provider = prov; saveModels(S.providers[prov].tiers).then(function () { if (S.providers[prov].unavailable) openDrawer(); }); } }); }
+    row("Claude", R.claude.loggedIn ? "Signed in — uses your Claude plan." : R.claude.detail, R.claude.loggedIn ? useBtn("claude") : null);
+    row("Codex", R.codex.loggedIn ? "Signed in — uses your ChatGPT plan." : R.codex.detail, R.codex.loggedIn ? useBtn("codex") : null);
+    if (R.local.ollama.running) row("Ollama", R.local.ollama.models + " local model(s) running — free, offline.", el("button", { text: "Choose models", onclick: function () { draft.provider = "ollama"; saveModels(S.providers.ollama.tiers).then(openDrawer); } }));
+    if (R.local.lmstudio.running) row("LM Studio", R.local.lmstudio.models + " local model(s) running — free, offline.", el("button", { text: "Choose models", onclick: function () { draft.provider = "lmstudio"; saveModels(S.providers.lmstudio.tiers).then(openDrawer); } }));
+    var free = ["gemini", "groq", "openrouter"].filter(function (p) { return S.providers[p]; });
+    var sel = el("select", { "aria-label": "Provider" });
+    free.forEach(function (p) { sel.appendChild(el("option", { value: p, text: S.providers[p].label })); });
+    var key = el("input", { type: "password", placeholder: "Paste a free API key", autocomplete: "off" });
+    var save = el("button", { text: "Save key", onclick: function () {
+      if (!key.value.trim()) return;
+      draft.provider = sel.value;
+      api("/api/key", { provider: sel.value, key: key.value }).then(function (st) {
+        apply(st); return saveModels(S.providers[sel.value].tiers);
+      }).then(function () { openDrawer(); loadReadiness(true); }).catch(function (e) { banner("bad", e.message); });
+    } });
+    var kr = el("div", { cls: "gs-row" }, el("span", { cls: "gs-name", text: "Free API" }), sel, key, save);
+    box.appendChild(kr);
+    var again = el("div", { cls: "gs-row" }, el("span", { cls: "gs-note", text: "Signed in or started something in a terminal?" }), el("button", { text: "Check again", onclick: function () { loadReadiness(true); } }));
+    box.appendChild(again);
+  }
 
   // ---------- connectors (MCP servers the agent can call out to) ----------
   function renderConnectors() {
@@ -1204,6 +1256,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   };
   loadLimits();
   setInterval(loadLimits, 60000);
+  loadReadiness(false);
 
   load();
 })();

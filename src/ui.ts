@@ -11,6 +11,7 @@ import { listConnectorTools } from "./mcpClient.js";
 import { initProject } from "./project.js";
 import { keySource, setKey } from "./keys.js";
 import { readLimits, refreshClaude, refreshCodex } from "./limits.js";
+import { checkReadiness } from "./readiness.js";
 import {
   availableModels,
   DEFAULT_TIERS,
@@ -388,6 +389,8 @@ export function startUi(opts: UiOptions) {
         });
         return;
       }
+
+      if (route === "GET /api/readiness") return json(res, 200, await checkReadiness(url.searchParams.has("refresh")));
 
       if (route === "GET /api/limits") {
         // Codex's check is free, so refresh it when stale; Claude's updates with every call.

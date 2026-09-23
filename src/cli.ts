@@ -17,6 +17,7 @@ import { expandTask, grepText, outlineText, refsText, searchText, symbolText, te
 import { availableModels, DEFAULT_TIERS, EFFORT_LEVELS, isProvider, PHASES, PROVIDER_INFO, PROVIDERS, resolveSelection, unavailableReason, type Phase, type ProviderName, type Selection } from "./providers/models.js";
 import { keySource, setKey } from "./keys.js";
 import { fmtLimits, readLimits, refreshClaude, refreshCodex } from "./limits.js";
+import { checkReadiness, formatReadiness } from "./readiness.js";
 import { runTask } from "./runtime.js";
 import { getConnector, listConnectors, removeConnector, saveConnector } from "./connectors.js";
 import { listConnectorTools } from "./mcpClient.js";
@@ -90,6 +91,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit models set provider <claude|codex>     narrowbit models set effort <level>
   narrowbit models reset [--provider <name>]   back to the built-in defaults
   narrowbit models endpoint <provider> <base-url|default> [--key-env NAME]   point an API/local provider elsewhere
+  narrowbit doctor                    what can run right now: Claude/Codex login, local servers, API keys
   narrowbit limits [--refresh]        Claude and Codex subscription usage: 5-hour and weekly windows
   narrowbit keys [list]               which API keys are set    narrowbit keys set|remove <provider>
       providers: claude, codex (subscriptions); openrouter (free & paid), groq, gemini (free tiers),
@@ -767,6 +769,10 @@ export async function main(argv: string[]): Promise<number> {
       }
       const list = m.load(sub && MEMORY_TYPES.includes(sub as MemoryType) ? (sub as MemoryType) : undefined).filter((e) => args.flags.all || e.status === "active");
       out(list.length ? list.map(renderMemory).join("\n") : "no memory entries");
+      return 0;
+    }
+    case "doctor": {
+      out(formatReadiness(await checkReadiness(true)));
       return 0;
     }
     case "connectors": {
