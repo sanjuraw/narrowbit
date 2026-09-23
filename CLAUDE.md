@@ -115,6 +115,7 @@ Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens
 - **Model routing (2026-09-23):** per direction to use the current three-tier lineup (Opus, Sonnet, Haiku) at `--effort medium` instead of one fixed model. `runtime.ts` gained `ModelTiers {explore, execute, escalate}` (default Haiku/Sonnet/Opus) — Haiku before any edit has happened, Sonnet once editing/verifying, Opus one turn before the stall-guard nudge fires. `providers/claude-cli.ts` gained `effort`; verified live that `--model` can change mid-`--resume` session (not locked to whichever model started it). Verified on the fixture: routing landed exactly as designed (haiku → haiku → sonnet → sonnet across a 4-call task), cost $0.018, cheaper than the equivalent all-Sonnet run.
   - **Tested directly against the actual gap it was meant to close (`7792f5dc`, `63bbcf50`) — did not fix it.** Both still failed at the 20-step cap with Opus escalation active, at higher cost ($0.27, $0.66 — Opus is pricier, no better outcome). Good cost optimization on typical tasks; does not address the diagnosed structural limit. Reinforces that Code Mode-style batching, not a stronger model, is the real candidate fix — a smarter model in the same one-action-per-turn structure was tested directly and did not help.
   - Codex/ChatGPT provider (not yet built): when it exists, model lineup is GPT-6 Sol / GPT-5.6 Terra / GPT-6 Luna, per direction — noted for whenever that integration is scoped, no code yet.
+- **`narrowbit agent "<task>"` (2026-09-23): the owned runtime is finally reachable from the CLI.** Until now `runtime.ts` only ran from benchmark harnesses and scratch scripts — validated (STRONG GO on cost at n=40) but nothing a user could actually point at their own repo. `runTask()` gained a `log` callback for live per-step progress (matches `bench.ts`'s existing convention); the new command runs directly in the current working tree (not an isolated worktree — edits are real) and refuses to start on a dirty git tree unless `--force`. Verified through the actual built CLI binary on a throwaway fixture: `narrowbit init` then `narrowbit agent "..."` correctly read, edited, verified and reported DONE with accurate usage numbers; a second run without `--force` on the now-dirty tree correctly refused (exit 2). This is the first point in the project where a user, not just a benchmark, can run the thing.
 
 ## Product principles (from the brief)
 
@@ -168,6 +169,12 @@ Requires Node ≥ 22.13 (uses `node:sqlite`). Only runtime dependency: `typescri
 | `bench.ts` | Paired A/B benchmark harness (git worktrees, `claude -p --output-format stream-json`), report and verdict |
 | `eval.ts` | Free offline selection eval over git history |
 | `redact.ts` | Secret redaction applied to all emitted text |
+| `events.ts` | Owned-runtime append-only event ledger (`.narrowbit/runtime/<taskId>/events.jsonl`) + `fold()` |
+| `evidence.ts` | Redacted, handle-addressed storage for large content (file/diff/command output) |
+| `context.ts` | `project()`: budget-bounded, summary-first render of a folded state; used at compaction boundaries |
+| `providers/claude-cli.ts` | Model adapter: `claude` CLI under the user's subscription, tool-free per-turn calls, session resume, model routing |
+| `runtime.ts` | `narrowbit agent`'s loop: read/grep/search/edit/run/verify/recall/remember, one JSON action per model turn |
+| `streamjson.ts` | Shared `claude -p --output-format stream-json` parser (usage/turns/cost/tool calls), used by `bench.ts` and `providers/claude-cli.ts` |
 
 State lives in `.narrowbit/` in the target repo (self-gitignored, files `0600`): `index.db`, `config.json`, `memory/`, `tasks/`, `logs/`, `benchmarks/`, `sessions/`.
 
