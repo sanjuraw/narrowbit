@@ -259,6 +259,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .upd { display: flex; align-items: center; gap: 10px; flex: none; padding: 8px 16px; background: var(--accent-soft); border-bottom: 1px solid var(--line); font-size: 13px; }
 .upd .u-msg { flex: 1; min-width: 0; }
 .upd .u-list { color: var(--muted); font-size: 12px; }
+.ver { font-size: 11px; color: var(--faint); padding: 0 6px; }
+.about { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; font-size: 13px; }
 .gs { border: 1px solid var(--line); background: var(--panel); border-radius: 14px; padding: 16px 18px; margin: 0 0 16px; }
 .gs h2 { font-family: var(--serif); font-weight: 400; font-size: 19px; margin: 0 0 4px; }
 .gs .gs-sub { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
@@ -326,6 +328,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <div class="side-foot">
       <button class="settings" id="settingsBtn"><span style="font-size:16px">⚙</span><span style="min-width:0"><span>Models &amp; settings</span><span class="sub" id="settingsSub"></span></span></button>
       <button class="limits" id="limits" title="Subscription usage"></button>
+      <div class="ver" id="verLine"></div>
     </div>
   </aside>
 
@@ -413,6 +416,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <button id="addConnector">Add connector</button>
     </div>
     <div class="note hidden" id="connectorErr" style="color:var(--bad)"></div>
+
+    <h3>About</h3>
+    <div class="about" id="aboutInfo"></div>
   </div>
 </div>
 
@@ -519,9 +525,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var first = !S;
     S = state;
     renderRepo();
+    renderVersion();
     show($("repoOverlay"), false);
     showRepoBar(!S.root);
-    if (!S.root) { show($("welcome"), true); show($("setupCard"), false); if (S.providers) { draft = { root: null, provider: S.selection.provider, effort: S.selection.effort }; renderSettings(); renderConnectors(); } renderComposer(); return; }
+    if (!S.root) { show($("welcome"), true); show($("setupCard"), false); if (S.providers) { draft = { root: null, provider: S.selection.provider, effort: S.selection.effort }; renderSettings(); renderConnectors(); renderGetStarted(); } renderComposer(); return; }
     if (!draft || draft.root !== S.root) draft = { root: S.root, provider: S.selection.provider, effort: S.selection.effort };
     run.active = S.running; if (S.running) run.taskId = S.runningTask;
     renderSessions(); renderSettings(); renderComposer(); renderSkills(); renderConnectors(); renderGetStarted();
@@ -610,12 +617,24 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       .catch(function (e) { var n = $("skillErr"); n.textContent = e.message; show(n, true); });
   };
 
+  function renderVersion() {
+    var v = S && S.version;
+    var line = v && v.version ? "Narrowbit v" + v.version + (v.commit ? " · " + v.commit : "") : "";
+    $("verLine").textContent = line;
+    var a = clear($("aboutInfo"));
+    a.appendChild(el("div", { text: line || "Version unknown" }));
+    var msg = !U ? "Checking for updates…" : U.canApply ? "Update available (" + U.behind + " new change" + (U.behind === 1 ? "" : "s") + ") — use the banner at the top." : U.behind > 0 ? (U.reason || "A newer version is available.") : U.supported ? "Up to date." : (U.reason || "Update check unavailable.");
+    a.appendChild(el("div", { cls: "muted", style: "font-size:12.5px", text: msg }));
+    a.appendChild(el("button", { text: "Check now", onclick: function () { loadUpdate(true); } }));
+  }
+
   // ---------- updates from GitHub (one click) ----------
   var U = null;
   function loadUpdate(refresh) {
     return api("/api/update" + (refresh ? "?refresh=1" : "")).then(function (u) { U = u; renderUpdate(); }).catch(function () {});
   }
   function renderUpdate() {
+    renderVersion();
     var bar = $("updBar");
     var show_ = !!(U && U.canApply && store("dismissedUpdate") !== U.latest);
     show(bar, show_);
@@ -639,19 +658,20 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   }
   function renderGetStarted() {
     var box = $("getStarted");
-    var P = S && S.root && S.providers ? S.providers[S.selection.provider] : null;
+    var P = S && S.providers ? S.providers[S.selection.provider] : null;
+    var hasRoot = !!(S && S.root);
     var notReady = !!(R && P && (P.unavailable || R.ready.indexOf(S.selection.provider) < 0));
     show(box, notReady);
     if (!notReady) return;
     clear(box);
     box.appendChild(el("h2", { text: "Let's get a model ready" }));
-    box.appendChild(el("p", { cls: "gs-sub", text: (P.unavailable || P.label + " isn't ready yet.") + " Pick anything below that works for you." }));
+    box.appendChild(el("p", { cls: "gs-sub", text: (P.unavailable || P.label + " isn't ready yet.") + " Pick anything below that works for you." + (hasRoot ? "" : " (Choose a folder first to save your choice.)") }));
     function row(name, note, action) {
       var r = el("div", { cls: "gs-row" }, el("span", { cls: "gs-name", text: name }), el("span", { cls: "gs-note", text: note }));
       if (action) r.appendChild(action);
       box.appendChild(r);
     }
-    function useBtn(prov) { return el("button", { cls: "primary", text: "Use", onclick: function () { draft.provider = prov; saveModels(S.providers[prov].tiers).then(function () { if (S.providers[prov].unavailable) openDrawer(); }); } }); }
+    function useBtn(prov) { if (!hasRoot) return null; return el("button", { cls: "primary", text: "Use", onclick: function () { draft.provider = prov; saveModels(S.providers[prov].tiers).then(function () { if (S.providers[prov].unavailable) openDrawer(); }); } }); }
     row("Claude", R.claude.loggedIn ? "Signed in — uses your Claude plan." : R.claude.detail, R.claude.loggedIn ? useBtn("claude") : null);
     row("Codex", R.codex.loggedIn ? "Signed in — uses your ChatGPT plan." : R.codex.detail, R.codex.loggedIn ? useBtn("codex") : null);
     if (R.local.ollama.running) row("Ollama", R.local.ollama.models + " local model(s) running — free, offline.", el("button", { text: "Choose models", onclick: function () { draft.provider = "ollama"; saveModels(S.providers.ollama.tiers).then(openDrawer); } }));
@@ -662,10 +682,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var key = el("input", { type: "password", placeholder: "Paste a free API key", autocomplete: "off" });
     var save = el("button", { text: "Save key", onclick: function () {
       if (!key.value.trim()) return;
-      draft.provider = sel.value;
       api("/api/key", { provider: sel.value, key: key.value }).then(function (st) {
-        apply(st); return saveModels(S.providers[sel.value].tiers);
-      }).then(function () { openDrawer(); loadReadiness(true); }).catch(function (e) { banner("bad", e.message); });
+        apply(st);
+        if (!hasRoot) { flash($("savedMsg"), "Key saved — choose a folder, then pick this provider."); return loadReadiness(true); }
+        draft.provider = sel.value;
+        return saveModels(S.providers[sel.value].tiers).then(function () { openDrawer(); return loadReadiness(true); });
+      }).catch(function (e) { banner("bad", e.message); });
     } });
     var kr = el("div", { cls: "gs-row" }, el("span", { cls: "gs-name", text: "Free API" }), sel, key, save);
     box.appendChild(kr);

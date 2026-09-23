@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,12 +32,29 @@ export interface UpdateInfo {
 }
 
 function git(args: string[], timeoutMs = 20_000) {
-  const r = spawnSync("git", args, { cwd: INSTALL_ROOT, encoding: "utf8", timeout: timeoutMs, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+  const r = spawnSync("git", ["-c", `safe.directory=${INSTALL_ROOT}`, ...args], { cwd: INSTALL_ROOT, encoding: "utf8", timeout: timeoutMs, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
   return { code: r.status ?? 1, out: (r.stdout ?? "").trim(), err: (r.stderr ?? "").trim() };
 }
 
 function unsupported(reason: string): UpdateInfo {
   return { supported: false, reason, behind: 0, ahead: 0, dirty: false, changes: [], canApply: false, checkedAt: new Date().toISOString() };
+}
+
+export interface VersionInfo {
+  version: string;
+  commit: string;
+}
+
+let versionCache: VersionInfo | null = null;
+export function readVersion(): VersionInfo {
+  if (versionCache) return versionCache;
+  try {
+    const v = JSON.parse(readFileSync(join(INSTALL_ROOT, "dist", "version.json"), "utf8"));
+    versionCache = { version: String(v.version ?? ""), commit: String(v.commit ?? "") };
+  } catch {
+    versionCache = { version: "", commit: "" };
+  }
+  return versionCache;
 }
 
 function writable(): boolean {
@@ -64,6 +81,27 @@ async function compute(): Promise<UpdateInfo> {
   if (head.code !== 0) return unsupported("Can't read this copy's git state (it may belong to another user account).");
   const branch = head.out;
   if (branch !== BRANCH) return unsupported(`Updates follow ${BRANCH}; this copy is on "${branch}".`);
+  if (!writable()) {
+    // Can't write .git here (another account owns this install), so don't fetch: just ask GitHub
+    // what the latest commit is and compare it with what's checked out.
+    const remote = await exec("git", ["ls-remote", "origin", `refs/heads/${BRANCH}`], 30_000);
+    const latest = remote.code === 0 ? remote.out.split(/\s+/)[0] : "";
+    if (!latest) return unsupported("Couldn't reach GitHub to check for updates from this account.");
+    const local = git(["rev-parse", "HEAD"]).out;
+    const behind = latest !== local ? 1 : 0;
+    return {
+      supported: true,
+      current: local.slice(0, 7),
+      latest: latest.slice(0, 7),
+      behind,
+      ahead: 0,
+      dirty: false,
+      changes: [],
+      canApply: false,
+      reason: behind ? "A newer version is on GitHub. This copy belongs to another user account — update it from that account." : undefined,
+      checkedAt: new Date().toISOString(),
+    };
+  }
   // Async so a slow network never freezes the app's server while it waits.
   const fetched = await exec("git", ["fetch", "--quiet", "origin", BRANCH], 30_000);
   if (fetched.code !== 0) return unsupported(`Couldn't reach GitHub (${(fetched.out.split("\n")[0] || "fetch failed").slice(0, 120)}).`);
@@ -94,7 +132,7 @@ async function compute(): Promise<UpdateInfo> {
 function exec(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number; out: string }> {
   return new Promise((resolveP) => {
     let out = "";
-    const child = spawn(cmd, args, { cwd: INSTALL_ROOT, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cmd, cmd === "git" ? ["-c", `safe.directory=${INSTALL_ROOT}`, ...args] : args, { cwd: INSTALL_ROOT, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, stdio: ["ignore", "pipe", "pipe"] });
     const timer = setTimeout(() => child.kill(), timeoutMs);
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (out += d));

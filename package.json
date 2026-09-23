@@ -11,7 +11,7 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/stamp-version.mjs",
     "dev": "tsc -p tsconfig.json --watch",
     "test": "npm run build && node --disable-warning=ExperimentalWarning --test --test-reporter=spec test/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"

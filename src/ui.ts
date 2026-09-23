@@ -27,7 +27,7 @@ import {
   type ProviderName,
 } from "./providers/models.js";
 import { runTask, safeAbsPath } from "./runtime.js";
-import { applyUpdate, checkUpdate } from "./update.js";
+import { applyUpdate, checkUpdate, readVersion } from "./update.js";
 import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
 import { sh } from "./util.js";
@@ -248,7 +248,7 @@ export function startUi(opts: UiOptions) {
       // No repository yet: settings are per-repo so nothing can be saved, but the provider/model
       // lists must still render or the picker looks empty on a fresh profile.
       const selection = resolveSelection(undefined);
-      return { root: null, recent: loadRecent(), selection, providers: buildProviders(undefined), phases: PHASES, efforts: EFFORT_LEVELS, lead: true, connectors: listConnectors(), skills: [], history: [] };
+      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(undefined), phases: PHASES, efforts: EFFORT_LEVELS, lead: true, connectors: listConnectors(), skills: [], history: [] };
     }
     const p = paths(root);
     const initialized = existsSync(p.db);
@@ -265,6 +265,7 @@ export function startUi(opts: UiOptions) {
     const providers = buildProviders(cfg.agent);
     return {
       root,
+      version: readVersion(),
       name: basename(root),
       recent: loadRecent(),
       initialized,
