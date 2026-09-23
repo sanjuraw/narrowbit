@@ -85,8 +85,19 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .repo-btn:hover { background: var(--panel-2); }
 .repo-btn .rn { font-weight: 600; font-size: 13px; }
 .repo-btn .rb { font-size: 11.5px; color: var(--muted); }
-.side-label { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .07em; padding: 8px 18px 4px; }
+.side-label { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .07em; padding: 8px 18px 4px; display: flex; align-items: center; justify-content: space-between; }
+.side-label .add-skill { border: 0; background: transparent; color: var(--faint); font-size: 14px; line-height: 1; padding: 2px 6px; border-radius: 5px; text-transform: none; letter-spacing: normal; }
+.side-label .add-skill:hover { background: var(--panel-2); color: var(--text); }
 .sessions { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
+.skills { flex: none; max-height: 160px; overflow-y: auto; padding: 0 8px 8px; }
+.skill-row { display: flex; align-items: center; gap: 2px; }
+.skill-row .skill { flex: 1; min-width: 0; text-align: left; border: 0; background: transparent; padding: 7px 10px; border-radius: 8px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-row .skill:hover { background: var(--panel-2); }
+.skill-row .skill-del { flex: none; opacity: 0; border: 0; background: transparent; color: var(--faint); padding: 4px 7px; border-radius: 6px; font-size: 13px; }
+.skill-row:hover .skill-del { opacity: 1; }
+.skill-row .skill-del:hover { background: var(--panel-2); color: var(--bad); }
+.skill-form { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
+.skill-form input, .skill-form textarea { font-size: 13px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); font-family: inherit; resize: vertical; }
 .sess { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 7px 10px; border-radius: 8px; margin-bottom: 1px; }
 .sess:hover { background: var(--panel-2); }
 .sess.on { background: var(--panel); box-shadow: var(--shadow); }
@@ -113,6 +124,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .topbar { height: 48px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid transparent; }
 .topbar.scrolled { border-bottom-color: var(--line); }
 .topbar .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.crumb { display: flex; align-items: center; gap: 5px; flex: none; padding: 4px 10px; border-radius: 7px; background: var(--panel-2); font-size: 12.5px; font-weight: 600; max-width: 240px; }
+.crumb:hover { background: var(--line); }
+.crumb .ci { font-size: 12px; }
+.crumb #crumbName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .repo-bar { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .repo-bar .rb-label { font-weight: 600; white-space: nowrap; flex: none; }
 .repo-bar .rb-recent { display: flex; align-items: center; gap: 4px; overflow-x: auto; flex: none; }
@@ -283,6 +298,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <button class="repo-btn" id="repoBtn" title="Switch repository"><span class="rn" id="repoName">No repository</span><span class="rb" id="repoBranch"></span></button>
     <div class="side-label">Sessions</div>
     <div class="sessions" id="sessions"></div>
+    <div class="side-label">Skills<button class="add-skill" id="addSkillBtn" title="New skill">+</button></div>
+    <div class="skills" id="skillsList"></div>
     <div class="side-foot">
       <button class="settings" id="settingsBtn"><span style="font-size:16px">⚙</span><span style="min-width:0"><span>Models &amp; settings</span><span class="sub" id="settingsSub"></span></span></button>
       <button class="limits" id="limits" title="Subscription usage"></button>
@@ -292,6 +309,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   <main>
     <div class="topbar" id="topbar">
       <button class="ghost" id="menuBtn" aria-label="Menu">☰</button>
+      <button class="crumb hidden" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button>
       <div class="repo-bar hidden" id="repoBar">
         <span class="rb-label">Choose a folder to get started</span>
         <div class="rb-recent" id="repoBarRecent"></div>
@@ -377,6 +395,20 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   </div>
 </div>
 
+<div class="overlay hidden" id="skillOverlay">
+  <div class="modal">
+    <h1>New skill</h1>
+    <p class="muted" style="margin:0">A reusable set of instructions you can apply to any task, without retyping it.</p>
+    <div class="skill-form">
+      <input type="text" id="skillName" placeholder="Name (e.g. Bug Fix)">
+      <input type="text" id="skillDesc" placeholder="Description (optional)">
+      <textarea id="skillBody" rows="6" placeholder="Instructions…"></textarea>
+    </div>
+    <div class="note hidden" id="skillErr" style="color:var(--bad)"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px"><button class="link" id="closeSkill">Cancel</button><button class="primary" id="saveSkill">Save</button></div>
+  </div>
+</div>
+
 <script>
 (function () {
   "use strict";
@@ -456,7 +488,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (!S.root) { show($("welcome"), true); show($("setupCard"), false); renderComposer(); return; }
     if (!draft || draft.root !== S.root) draft = { root: S.root, provider: S.selection.provider, effort: S.selection.effort };
     run.active = S.running; if (S.running) run.taskId = S.runningTask;
-    renderSessions(); renderSettings(); renderComposer();
+    renderSessions(); renderSettings(); renderComposer(); renderSkills();
     show($("setupCard"), !S.initialized);
     if (first) {
       if (S.running && S.runningTask) openSession(S.runningTask);
@@ -480,6 +512,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     $("repoName").textContent = S && S.root ? S.name : "No repository";
     $("repoBranch").textContent = S && S.git && S.git.branch ? S.git.branch + (S.git.head ? " · " + S.git.head : "") : "";
     $("welcomeTitle").textContent = S && S.root ? "What should we work on in " + S.name + "?" : "What should we work on?";
+    // Persistent breadcrumb above the chat, not just the sidebar — visible in every view (idle or
+    // mid-session), so which repo you're in never depends on remembering to check the sidebar.
+    show($("crumb"), !!(S && S.root));
+    if (S && S.root) $("crumbName").textContent = S.name + (S.git && S.git.branch ? " · " + S.git.branch : "");
     var t = $("treePill");
     if (S && S.git && S.git.isRepo) {
       var n = S.git.changed.length + S.git.untracked.filter(function (f) { return f !== ".narrowbitignore"; }).length;
@@ -500,6 +536,43 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       box.appendChild(b);
     });
   }
+
+  // ---------- skills ----------
+  function renderSkills() {
+    var box = clear($("skillsList"));
+    var list = (S && S.skills) || [];
+    if (!list.length) { box.appendChild(el("div", { cls: "muted", style: "font-size:12.5px;padding:6px 10px", text: "No skills yet." })); return; }
+    list.forEach(function (sk) {
+      box.appendChild(el("div", { cls: "skill-row" },
+        el("button", { cls: "skill", title: sk.description || sk.name, onclick: function () { useSkill(sk); } }, sk.name),
+        el("button", { cls: "skill-del", title: "Remove skill", onclick: function (e) { e.stopPropagation(); deleteSkill(sk.name); } }, "×")));
+    });
+  }
+  function useSkill(sk) {
+    input.value = sk.body;
+    autosize(); input.focus();
+    input.setSelectionRange(sk.body.length, sk.body.length);
+    closeSide();
+  }
+  function deleteSkill(name) {
+    api("/api/skills/delete", { name: name }).then(apply).catch(function (e) { banner("bad", e.message); });
+  }
+  function openSkillModal() {
+    if (!S || !S.root) return;
+    $("skillName").value = ""; $("skillDesc").value = ""; $("skillBody").value = "";
+    show($("skillErr"), false);
+    show($("skillOverlay"), true);
+    $("skillName").focus();
+  }
+  $("addSkillBtn").onclick = openSkillModal;
+  $("closeSkill").onclick = function () { show($("skillOverlay"), false); };
+  $("saveSkill").onclick = function () {
+    var name = $("skillName").value.trim(), desc = $("skillDesc").value.trim(), bodyText = $("skillBody").value.trim();
+    if (!name || !bodyText) { var n = $("skillErr"); n.textContent = "Name and instructions are both required."; show(n, true); return; }
+    api("/api/skills", { name: name, description: desc, body: bodyText })
+      .then(function (st) { apply(st); show($("skillOverlay"), false); })
+      .catch(function (e) { var n = $("skillErr"); n.textContent = e.message; show(n, true); });
+  };
 
   // ---------- settings drawer ----------
   var KIND = { subscription: "Subscriptions", free: "APIs with a free tier", paid: "Paid APIs", local: "Local models — free, offline" };
@@ -1026,6 +1099,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     });
   }
   $("repoBtn").onclick = function () { openRepoPicker(!!(S && S.root)); };
+  $("crumb").onclick = function () { openRepoPicker(!!(S && S.root)); };
   $("closeRepo").onclick = function () { show($("repoOverlay"), false); };
   $("openRepo").onclick = function () { var v = $("repoPath").value.trim(); if (v) openRepo(v); };
   $("repoPath").addEventListener("keydown", function (e) { if (e.key === "Enter") $("openRepo").click(); });
