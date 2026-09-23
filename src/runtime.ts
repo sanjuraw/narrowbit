@@ -383,8 +383,16 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     let res = await call(callOpts);
     // A non-fatal error (timeout, killed process, no result event) is presumed transient, not a
     // real problem with the request — retry the identical call before giving up on the task.
+    // One exception: a fresh (non-resumed) session-id that Claude Code reports as already in use
+    // would fail identically on every retry with the same id — observed once in a 40-task run
+    // (cause unconfirmed; regenerating is a cheap, safe guard either way) — so that specific error
+    // gets a new random id before the retry instead of repeating the same doomed call.
     for (let transientRetries = 0; res.isError && !res.fatal && transientRetries < MAX_TRANSIENT_RETRIES; transientRetries++) {
       appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `step ${steps}: model call failed (${res.errorMessage ?? "no result"}), retrying (${transientRetries + 1}/${MAX_TRANSIENT_RETRIES})` });
+      if (freshSessionPending && /session id .* already in use/i.test(res.errorMessage ?? "")) {
+        sessionId = randomUUID();
+        callOpts.sessionId = sessionId;
+      }
       res = await call(callOpts);
     }
     freshSessionPending = false;
