@@ -57,6 +57,11 @@ export interface ModelCallResult {
   turns: number;
   isError: boolean;
   errorMessage?: string;
+  /** True only for errors a retry cannot fix (not logged in). Any other isError — a timeout, a
+   * killed process, no result event — is presumed transient and worth retrying; observed directly
+   * in a 25-task batch run: 2 failures, both a bare "model call failed" with empty stderr (no
+   * result event, most likely the default timeout under sustained load), not an auth problem. */
+  fatal: boolean;
 }
 
 export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
@@ -83,7 +88,7 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
     let stderr = "";
     child.stdout.on("data", (d) => chunks.push(d));
     child.stderr.on("data", (d) => (stderr += d));
-    const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? 120_000);
+    const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? 180_000);
     child.on("close", () => {
       clearTimeout(timer);
       const raw = Buffer.concat(chunks).toString("utf8");
@@ -96,8 +101,9 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
         turns: s.turns,
         isError: s.isError || fatal,
         errorMessage: fatal ? "claude CLI is not logged in to your subscription (run `claude` then /login)" : s.isError ? stderr.trim().slice(0, 500) || undefined : undefined,
+        fatal,
       });
     });
-    child.on("error", (e) => resolve({ text: "", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: null, turns: 0, isError: true, errorMessage: String((e as Error).message ?? e) }));
+    child.on("error", (e) => resolve({ text: "", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: null, turns: 0, isError: true, errorMessage: String((e as Error).message ?? e), fatal: false }));
   });
 }

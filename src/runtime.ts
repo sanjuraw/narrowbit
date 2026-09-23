@@ -137,6 +137,8 @@ export interface RuntimeResult {
 const MAX_PARSE_RETRIES = 3;
 /** Consecutive run/verify actions without an intervening edit before the loop nudges instead of letting it spin. */
 const STALL_THRESHOLD = 4;
+/** Retries for a non-fatal model-call failure (timeout, killed process) before giving up on the task. */
+const MAX_TRANSIENT_RETRIES = 2;
 
 export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions = {}): Promise<RuntimeResult> {
   const cfg = loadConfig(p);
@@ -175,7 +177,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   let cumulativeCost = 0;
 
   for (; steps < maxSteps; steps++) {
-    const res = await callModel({
+    let res = await callModel({
       cwd: p.root,
       systemPrompt: freshSessionPending ? SYSTEM_INSTRUCTIONS : undefined,
       prompt: nextPrompt,
@@ -185,6 +187,21 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       sessionId,
       resume: !freshSessionPending,
     });
+    // A non-fatal error (timeout, killed process, no result event) is presumed transient, not a
+    // real problem with the request — retry the identical call before giving up on the task.
+    for (let transientRetries = 0; res.isError && !res.fatal && transientRetries < MAX_TRANSIENT_RETRIES; transientRetries++) {
+      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `step ${steps}: model call failed (${res.errorMessage ?? "no result"}), retrying (${transientRetries + 1}/${MAX_TRANSIENT_RETRIES})` });
+      res = await callModel({
+        cwd: p.root,
+        systemPrompt: freshSessionPending ? SYSTEM_INSTRUCTIONS : undefined,
+        prompt: nextPrompt,
+        model,
+        role,
+        claudeBin: opts.claudeBin,
+        sessionId,
+        resume: !freshSessionPending,
+      });
+    }
     freshSessionPending = false;
     const totalCost = res.costUsd ?? cumulativeCost;
     const callCost = Math.max(0, totalCost - cumulativeCost);
