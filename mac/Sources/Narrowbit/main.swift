@@ -55,6 +55,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         p.arguments = ["-lc", "exec \(bin) ui --app"]
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        // Tells the server this window relaunches it on exit code 75, so a self-update can restart it.
+        // Older windows lack this, and the server then asks the user to reopen the app instead.
+        env["NARROWBIT_SHELL_RESTART"] = "1"
         p.environment = env
         p.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
 
@@ -87,13 +90,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 // Exit code 75 = "updated, please restart me": relaunch the server and reload the window.
                 if proc.terminationStatus == 75 {
                     self.loaded = false
+                    self.showMessage("Narrowbit was updated", detail: "Restarting…")
                     self.startServer()
                     return
                 }
                 let why = self.stderrText.isEmpty ? "exit code \(proc.terminationStatus)" : self.stderrText
                 self.showMessage(
                     "Narrowbit's engine stopped",
-                    detail: "\(why)\n\nThe app runs the `narrowbit` command. If it isn't installed, run `npm link` in the Narrowbit repository (or set NARROWBIT_BIN), then reopen the app.")
+                    detail: "\(why)\n\nQuit Narrowbit (⌘Q) and reopen it. If it keeps stopping, run `narrowbit doctor` in Terminal — the app runs the `narrowbit` command, so it must be installed (`npm link` in the Narrowbit folder, or set NARROWBIT_BIN).")
             }
         }
         do {

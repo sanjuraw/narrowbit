@@ -625,7 +625,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var go = el("button", { cls: "primary", text: "Update now", onclick: function () {
       go.disabled = true; later.disabled = true; go.textContent = "Updating…";
       api("/api/update/apply", {}).then(function (r) {
-        clear(bar).appendChild(el("span", { cls: "u-msg", text: r.restarting ? "Updated " + r.from + " → " + r.to + ". Restarting…" : "Updated " + r.from + " → " + r.to + ". Quit and reopen Narrowbit (or restart narrowbit ui) to use it." }));
+        clear(bar).appendChild(el("span", { cls: "u-msg", text: r.restarting ? "Updated " + r.from + " → " + r.to + ". Restarting…" : "Updated " + r.from + " → " + r.to + ". Quit Narrowbit (⌘Q) and reopen it to use the new version." }));
       }).catch(function (e) { go.disabled = false; later.disabled = false; go.textContent = "Update now"; banner("bad", e.message); });
     } });
     var later = el("button", { cls: "link", text: "Later", onclick: function () { store("dismissedUpdate", U.latest); renderUpdate(); } });
