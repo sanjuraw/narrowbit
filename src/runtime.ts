@@ -147,6 +147,9 @@ export interface RuntimeOptions {
    * which the next call starts a fresh, deterministically-summarized session. Defaults to
    * `cfg.budget.max`. */
   compactThreshold?: number;
+  /** Called with one line per step as the loop runs, for live CLI progress. Optional — the
+   * event log (events.ts) is always the durable record regardless of whether this is set. */
+  log?: (line: string) => void;
 }
 
 const DEFAULT_MODEL_TIERS: Required<ModelTiers> = { explore: "haiku", execute: "sonnet", escalate: "opus" };
@@ -178,6 +181,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   const tiers = opts.model ? { explore: opts.model, execute: opts.model, escalate: opts.model } : { ...DEFAULT_MODEL_TIERS, ...opts.models };
   const effort = opts.effort ?? "medium";
   const compactThreshold = opts.compactThreshold ?? cfg.budget.max;
+  const log = opts.log ?? (() => {});
   let hasEdited = false;
 
   appendEvent(p, taskId, { actor: "user", type: "decision", summary: "task received", meta: { goal: taskText } });
@@ -250,6 +254,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `model call failed: ${res.errorMessage ?? "unknown error"}` });
       outcome = "error";
       summary = res.errorMessage ?? "model call failed";
+      log(`[${steps}] model call failed: ${summary}`);
       break;
     }
 
@@ -257,6 +262,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
     if (!decision) {
       parseRetries++;
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `could not parse a JSON action from the model's response (attempt ${parseRetries}/${MAX_PARSE_RETRIES}): ${res.text.slice(0, 200)}` });
+      log(`[${steps}] (${turnModel}) unparseable response, retry ${parseRetries}/${MAX_PARSE_RETRIES}`);
       if (parseRetries >= MAX_PARSE_RETRIES) {
         outcome = "error";
         summary = "unparseable model response";
@@ -271,18 +277,21 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       outcome = "done";
       summary = decision.summary ?? "done";
       appendEvent(p, taskId, { actor: "model", type: "decision", summary: `done: ${summary}` });
+      log(`[${steps}] (${turnModel}) done: ${summary}`);
       break;
     }
     if (decision.action === "blocked") {
       outcome = "blocked";
       summary = decision.reason ?? "blocked";
       appendEvent(p, taskId, { actor: "model", type: "blocker", summary });
+      log(`[${steps}] (${turnModel}) blocked: ${summary}`);
       break;
     }
 
     actionCounts[decision.action] = (actionCounts[decision.action] ?? 0) + 1;
     sinceLastEdit = decision.action === "edit" ? 0 : sinceLastEdit + 1;
     if (decision.action === "edit") hasEdited = true;
+    log(`[${steps}] (${turnModel}) ${decision.action}${decision.path ? ` ${decision.path}` : decision.query ? ` "${decision.query}"` : decision.pattern ? ` "${decision.pattern}"` : ""}`);
     let resultText: string;
     try {
       resultText = await executeAction(p, taskId, decision);
@@ -290,9 +299,11 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       resultText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
       appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
     }
+    log(`      → ${resultText.split("\n")[0].slice(0, 100)}`);
     const stalling = sinceLastEdit >= STALL_THRESHOLD && (decision.action === "run" || decision.action === "verify");
     if (stalling) {
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `${sinceLastEdit} steps without an edit — nudging toward the implementation file` });
+      log(`      ! stalling (${sinceLastEdit} steps without an edit) — nudging`);
     }
     const nudge = stalling
       ? `\n\nSTOP: you've taken ${sinceLastEdit} steps without editing anything. Re-running the same check will not fix it. Read the actual implementation file the test exercises (not the test file) and make a real change before checking again.`
@@ -314,12 +325,14 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
         summary: `compacted after ${steps + 1} turn(s), ~${contextTokens} context tokens — starting a new session`,
         meta: { previousSessionId, contextTokens },
       });
+      log(`      ~ compacted (${contextTokens} context tokens) — new session`);
       nextPrompt = `You are continuing this task after a context compaction. Nothing was lost, only compacted — use read/grep/search again for anything you need in full, rather than assuming what you remember is still current. Progress so far:\n\n${digest}\n\nMost recent result:\n${resultText}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
     } else {
       nextPrompt = `${resultText}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
     }
   }
 
+  if (outcome === "max_steps") log(`[${steps}] hit the step budget (${maxSteps}) without finishing`);
   store.close();
   return { taskId, outcome, summary, steps, actionCounts, compactions };
 }

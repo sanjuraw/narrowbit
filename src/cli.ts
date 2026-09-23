@@ -6,12 +6,14 @@ import { runCommand } from "./compress.js";
 import { DEFAULT_IGNORE, detectVerify, ensureDirs, findRoot, loadConfig, paths, saveConfig, type Paths } from "./config.js";
 import { evalHistory } from "./eval.js";
 import { train } from "./train.js";
-import { changedSince } from "./git.js";
+import { changedSince, gitState } from "./git.js";
+import { fold, readEvents } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { serveMcp } from "./mcp.js";
 import { Memory, openMemory, MEMORY_TYPES, renderMemory, type MemoryType } from "./memory.js";
 import { buildPackage } from "./package.js";
 import { expandTask, grepText, outlineText, refsText, searchText, symbolText, testsText } from "./query.js";
+import { runTask } from "./runtime.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
 import { fmtNum, now } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
@@ -40,7 +42,10 @@ function parseArgs(argv: string[]): Args {
   return a;
 }
 
-const VALUE_FLAGS = new Set(["budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip"]);
+const VALUE_FLAGS = new Set([
+  "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip",
+  "max-steps", "model", "effort", "claude-bin", "compact-threshold",
+]);
 
 const HELP = `narrowbit — minimum sufficient context for coding agents
 
@@ -61,6 +66,11 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
 
   narrowbit run -- <command>          run a command, print compressed output (raw kept in .narrowbit/logs)
   narrowbit verify [--full]           type-check, lint, focused tests for changed files
+
+  narrowbit agent "<task>"            Narrowbit's own agent loop: reads, edits, runs commands,
+      [--max-steps N] [--model X] [--effort low|medium|high|xhigh|max] [--force]
+      verifies and remembers, driving the task end to end in THIS working tree (not a worktree —
+      edits are real). Refuses to run on a dirty git tree unless --force.
 
   narrowbit memory add <type> "<text>" [--reason ..] [--attempt ..] [--result ..] [--files a,b]
       types: ${MEMORY_TYPES.join(", ")}
@@ -361,6 +371,44 @@ export async function main(argv: string[]): Promise<number> {
       if (t) tasks.update(t.id, (x) => (x.verify = verifyRecord(v)));
       out(v.report);
       return v.ok ? 0 : 1;
+    }
+    case "agent": {
+      requireInit(p);
+      const text = pos.join(" ");
+      if (!text) {
+        process.stderr.write('usage: narrowbit agent "<task>" [--max-steps N] [--model X] [--effort medium] [--force]\n');
+        return 2;
+      }
+      const g = gitState(root);
+      if (g.isRepo && (g.dirty.length || g.staged.length) && !args.flags.force) {
+        process.stderr.write(
+          `narrowbit: working tree has uncommitted changes (${g.dirty.length + g.staged.length} file(s)) — commit or stash first, or pass --force to let the agent's edits mix with them.\n`,
+        );
+        return 2;
+      }
+      const headBefore = g.head;
+      out(`narrowbit agent: ${text}`);
+      out(`models: explore=haiku execute=sonnet escalate=opus (override with --model)  effort=${args.flags.effort ?? "medium"}\n`);
+      const result = await runTask(p, text, {
+        maxSteps: args.flags["max-steps"] ? Number(args.flags["max-steps"]) : undefined,
+        model: typeof args.flags.model === "string" ? args.flags.model : undefined,
+        effort: typeof args.flags.effort === "string" ? args.flags.effort : undefined,
+        claudeBin: typeof args.flags["claude-bin"] === "string" ? args.flags["claude-bin"] : undefined,
+        compactThreshold: args.flags["compact-threshold"] ? Number(args.flags["compact-threshold"]) : undefined,
+        log: (line) => process.stderr.write(line + "\n"),
+      });
+      const changed = headBefore ? changedSince(root, headBefore).filter((f) => !f.startsWith(".narrowbit/")) : [];
+      const label = result.outcome === "done" ? "DONE" : result.outcome === "blocked" ? "BLOCKED" : result.outcome === "error" ? "ERROR" : "STOPPED (step budget)";
+      out(`\n${label}: ${result.summary}`);
+      out(`${result.steps} step(s)${result.compactions ? `, ${result.compactions} compaction(s)` : ""} — files changed: ${changed.length ? changed.join(", ") : "(none)"}`);
+      const state = fold(result.taskId, readEvents(p, result.taskId));
+      const roles = Object.values(state.ledgerByRole);
+      const totalTok = roles.reduce((a, r) => a + r.inputTokens + r.cacheCreationTokens + r.cacheReadTokens + r.outputTokens, 0);
+      const totalCost = roles.reduce((a, r) => a + r.costUsd, 0);
+      out(`usage: ~${fmtNum(totalTok)} tokens, ~$${totalCost.toFixed(3)} notional (subscription usage — nothing is billed per token)`);
+      out(`task: ${result.taskId}  (full log: .narrowbit/runtime/${result.taskId}/events.jsonl)`);
+      if (result.outcome !== "done") out(`tip: review the diff before trusting this — the task did not report a clean completion.`);
+      return result.outcome === "done" ? 0 : result.outcome === "blocked" ? 1 : 2;
     }
     case "memory": {
       ensureDirs(p);
