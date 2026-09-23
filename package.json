@@ -1,18 +1,49 @@
 {
   "name": "narrowbit",
   "version": "0.1.0",
-  "description": "Context-efficiency engine for coding agents: task + repository -> minimum sufficient context.",
+  "description": "Local, context-managed coding agent: plans, edits, runs and verifies with any model, keeping a durable local log so models only see the context they need.",
   "type": "module",
-  "bin": { "narrowbit": "bin/narrowbit.js", "nb": "bin/narrowbit.js" },
-  "engines": { "node": ">=22.13" },
+  "bin": {
+    "narrowbit": "bin/narrowbit.js",
+    "nb": "bin/narrowbit.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
     "test": "npm run build && node --disable-warning=ExperimentalWarning --test --test-reporter=spec test/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": { "typescript": "^5.9.0" },
-  "devDependencies": { "@types/node": "^22.10.0" },
-  "license": "UNLICENSED",
-  "private": true
+  "dependencies": {
+    "typescript": "^5.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0"
+  },
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sanjuraw/narrowbit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sanjuraw/narrowbit/issues"
+  },
+  "homepage": "https://github.com/sanjuraw/narrowbit#readme",
+  "keywords": [
+    "coding-agent",
+    "llm",
+    "mcp",
+    "claude",
+    "codex",
+    "local-first"
+  ],
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ]
 }

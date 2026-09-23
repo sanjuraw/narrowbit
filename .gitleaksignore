@@ -1,0 +1,3 @@
+# Deliberately fake secrets in the redaction test fixture (test/narrowbit.test.mjs)
+4a5b935d6ecd85e5034953b92a232e00a3c051fc:test/narrowbit.test.mjs:aws-access-token:86
+4a5b935d6ecd85e5034953b92a232e00a3c051fc:test/narrowbit.test.mjs:generic-api-key:84
