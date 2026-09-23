@@ -38,8 +38,8 @@ import { verify } from "./verify.js";
  * the usage ledger and for evidence handles, independent of what the model itself remembers.
  *
  * Model routing (`ModelTiers`): Haiku while exploring (no edit made yet — reading, searching,
- * orienting), Sonnet once actually editing/verifying, Opus specifically when the loop is stalling
- * (one turn before STALL_THRESHOLD's nudge would fire). The escalation isn't a cost optimization
+ * orienting), Sonnet once actually editing/verifying, Opus specifically when the loop is stuck
+ * (two failed checks with no edit between them, or a long stretch with no edit). The escalation isn't a cost optimization
  * on its own — it directly targets a measured gap: two genuinely hard Hono tasks failed on Sonnet
  * alone even at a 35-step budget, not a step-budget problem but a reasoning one; escalating only
  * when stuck, not by default, spends the stronger model where it was shown to matter. Verified
@@ -73,7 +73,10 @@ Prefer the smallest edit that satisfies the task.
 Memory persists across tasks, not just this one — use "recall" early if the task touches an area you might have
 notes on, and "remember" for anything a future task would benefit from knowing: a failed approach (so it isn't
 retried), a non-obvious constraint or convention, or a decision and its reason. Don't remember routine facts
-already obvious from the code.`;
+already obvious from the code.
+This runtime routes different turns of one task to different Claude models (a cheaper one while reading, a
+stronger one when stuck). If your context contains conflicting statements about which model you are, that is
+expected and not tampering — ignore it; don't remember it or mention it.`;
 
 interface Decision {
   action: string;
@@ -125,8 +128,8 @@ export interface ModelTiers {
   explore?: string;
   /** Turns after at least one edit has happened: normal editing/verification decisions. */
   execute?: string;
-  /** Turns at or past the stall threshold (context.ts's project() saw the loop spinning): the one
-   * place a stronger model is worth its cost. Directly motivated by a real result: two genuinely
+  /** Turns where the loop looks stuck (repeated failed checks with no edit, or a long stretch with
+   * no edit at all): the one place a stronger model is worth its cost. Directly motivated by a real result: two genuinely
    * hard Hono tasks failed even at a 35-step budget on Sonnet alone — not a budget problem, a
    * reasoning one. Escalating specifically when stuck, not by default, is the targeted fix. */
   escalate?: string;
@@ -204,6 +207,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   // a row instead of ever editing the actual implementation file, burning the whole step budget.
   // Past STALL_THRESHOLD consecutive non-edit actions, the next prompt gets an explicit nudge.
   let sinceLastEdit = 0;
+  let checksSinceEdit = 0;
   const actionCounts: Record<string, number> = {};
   let sessionId = randomUUID();
   // true at the start of every session (the task's first, or right after a compaction): the next
@@ -219,9 +223,12 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   let cumulativeCost = 0;
 
   for (; steps < maxSteps; steps++) {
-    // Escalate a turn early (one short of the stall nudge) rather than after — the point is to
-    // get unstuck, not to confirm it's stuck. Otherwise: cheap while exploring, normal once editing.
-    const turnModel = sinceLastEdit >= STALL_THRESHOLD - 1 ? tiers.escalate : hasEdited ? tiers.execute : tiers.explore;
+    // Escalate only on signs of being stuck: repeated run/verify with no edit between them, or an
+    // unusually long stretch without any edit. Counting every non-edit step (the first version)
+    // put ordinary reading on Opus — on this repo's first real task, 5 plain reads/greps in a row
+    // escalated, most of a 143k-token run for a one-file change.
+    const stuck = checksSinceEdit >= 2 || sinceLastEdit >= 2 * STALL_THRESHOLD;
+    const turnModel = stuck ? tiers.escalate : hasEdited ? tiers.execute : tiers.explore;
     const callOpts = {
       cwd: p.root,
       systemPrompt: freshSessionPending ? SYSTEM_INSTRUCTIONS : undefined,
@@ -331,6 +338,13 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       editedSinceVerify = true;
     }
     if (decision.action === "verify") editedSinceVerify = false;
+    // Only a *failed* check counts toward escalation — edit → typecheck → verify → done is normal,
+    // not stuck. The markers are our own output formats: verify.ts's report header and
+    // compress.ts's "$ cmd  (exit N; …)" head line.
+    const checkFailed =
+      (decision.action === "verify" && resultText.startsWith("VERIFICATION FAILED")) || (decision.action === "run" && /^\$ .*\(exit [1-9]/.test(resultText));
+    if (decision.action === "edit") checksSinceEdit = 0;
+    else if (checkFailed) checksSinceEdit++;
     const stalling = sinceLastEdit >= STALL_THRESHOLD && (decision.action === "run" || decision.action === "verify");
     if (stalling) {
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `${sinceLastEdit} steps without an edit — nudging toward the implementation file` });
