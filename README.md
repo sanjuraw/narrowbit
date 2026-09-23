@@ -24,7 +24,7 @@ scripts/build-mac-app.sh --install            # optional: native window (needs X
 
 Then in any project folder: `narrowbit init`, and either `narrowbit ui` (browser/app) or `narrowbit agent "fix the failing test in src/foo.ts"`.
 
-**Updating:** there is no auto-update yet. `git pull && npm install && npm run build`, then quit and reopen the app.
+**Updating:** the app checks GitHub on launch (and every few hours) and shows an **Update available** banner; **Update now** fast-forwards the checkout, reinstalls if dependencies changed, rebuilds (rolling back if the build fails) and restarts. It refuses to touch a copy with uncommitted edits or local-only commits, and only the account that owns the folder can update it. Manual equivalent: `git pull --ff-only && npm install && npm run build`, then reopen the app.
 
 ## Using it
 
