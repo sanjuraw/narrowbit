@@ -124,7 +124,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .topbar { height: 48px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid transparent; }
 .topbar.scrolled { border-bottom-color: var(--line); }
 .topbar .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
-.crumb { display: flex; align-items: center; gap: 6px; width: fit-content; flex: none; margin: 0 0 8px 4px; padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--panel-2); border: 1px solid var(--line); text-align: left; }
+.crumb-wrap { max-width: 780px; margin: 0 auto 8px; }
+.crumb { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--panel-2); border: 1px solid var(--line); text-align: left; }
 .crumb:hover { background: var(--line); }
 .crumb .ci { font-size: 11px; }
 .crumb #crumbName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
@@ -346,7 +347,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       </div>
     </div>
     <div class="composer-wrap">
-      <button class="crumb hidden" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button>
+      <div class="crumb-wrap hidden" id="crumbWrap"><button class="crumb" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button></div>
       <div class="composer">
         <div id="banner" class="banner hidden"></div>
         <textarea id="input" rows="1" placeholder="Describe a task…"></textarea>
@@ -534,7 +535,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     $("welcomeTitle").textContent = S && S.root ? "What should we work on in " + S.name + "?" : "What should we work on?";
     // Persistent breadcrumb above the chat, not just the sidebar — visible in every view (idle or
     // mid-session), so which repo you're in never depends on remembering to check the sidebar.
-    show($("crumb"), !!(S && S.root));
+    show($("crumbWrap"), !!(S && S.root));
     if (S && S.root) $("crumbName").textContent = S.name + (S.git && S.git.branch ? " · " + S.git.branch : "");
     var t = $("treePill");
     if (S && S.git && S.git.isRepo) {
