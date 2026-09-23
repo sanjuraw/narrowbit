@@ -350,15 +350,16 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
     }
   }
   var PHASE = { explore: ["1", "Explore — reading, before any edit", "var(--t-explore)"], execute: ["2", "Execute — editing and verifying", "var(--t-execute)"], escalate: ["3", "Escalate — only when stuck", "var(--t-escalate)"] };
-  var KIND = { subscription: "Subscriptions", api: "APIs — free & paid", local: "Local models — free, offline" };
+  var KIND = { subscription: "Subscriptions", free: "APIs with a free tier", paid: "Paid APIs", local: "Local models — free, offline" };
   var modelLists = {};   // provider -> /api/models result
   function renderModels() {
     var sel = clear($("providerSel"));
-    ["subscription", "api", "local"].forEach(function (kind) {
-      var g = el("optgroup", { label: KIND[kind] });
+    ["subscription", "free", "paid", "local"].forEach(function (group) {
+      var g = el("optgroup", { label: KIND[group] });
       Object.keys(S.providers).forEach(function (prov) {
         var P = S.providers[prov];
-        if (P.kind !== kind) return;
+        var pg = P.kind === "api" ? (P.free ? "free" : "paid") : P.kind;
+        if (pg !== group) return;
         var o = el("option", { value: prov, text: P.label + " — " + P.pricing });
         if (prov === draft.provider) o.selected = true;
         g.appendChild(o);
@@ -384,7 +385,7 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
       }
     }
     var urlRow = clear($("urlRow"));
-    var hasUrl = P.kind === "local" || draft.provider === "custom";
+    var hasUrl = P.kind === "local" || draft.provider === "custom" || /\{\w+\}/.test(P.baseUrl || "") || draft.provider === "cloudflare";
     show(urlRow, hasUrl);
     if (hasUrl) {
       var u = el("input", { type: "text", cls: "mono", value: P.baseUrl || "", placeholder: "http://127.0.0.1:8080/v1", "aria-label": "Base URL" });

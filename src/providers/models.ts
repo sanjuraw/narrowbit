@@ -12,7 +12,12 @@ import { getKey } from "../keys.js";
  * token or have a free tier, and local model servers. Every API and local provider speaks the
  * OpenAI-compatible chat API, so one adapter (providers/openai-compat.ts) serves all of them.
  */
-export const PROVIDERS = ["claude", "codex", "openrouter", "groq", "gemini", "openai", "deepseek", "ollama", "lmstudio", "custom"] as const;
+export const PROVIDERS = [
+  "claude", "codex",
+  "openrouter", "nvidia", "cloudflare", "groq", "gemini", "cerebras", "mistral", "github", "huggingface", "sambanova",
+  "openai", "deepseek", "together", "fireworks", "xai",
+  "ollama", "lmstudio", "custom",
+] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
 export const PHASES = ["explore", "execute", "escalate"] as const;
 export type Phase = (typeof PHASES)[number];
@@ -25,7 +30,10 @@ export interface ProviderInfo {
   kind: ProviderKind;
   /** Shown next to the name so free options are easy to find. */
   pricing: string;
-  /** OpenAI-compatible base URL (api/local only); `custom` has none until configured. */
+  /** API providers with a usable free tier are grouped separately from paid-only ones. */
+  free?: boolean;
+  /** OpenAI-compatible base URL (api/local only); `custom` has none until configured. `{VAR}` is
+   * filled from the environment (Cloudflare's URL contains the account id). */
   baseUrl?: string;
   /** Environment variable checked for the API key before ~/.narrowbit/keys.json. */
   keyEnv?: string;
@@ -40,22 +48,61 @@ export const PROVIDER_INFO: Record<ProviderName, ProviderInfo> = {
     label: "OpenRouter",
     kind: "api",
     pricing: "free & paid models",
+    free: true,
     baseUrl: "https://openrouter.ai/api/v1",
     keyEnv: "OPENROUTER_API_KEY",
     keyUrl: "https://openrouter.ai/keys",
     hint: "Hundreds of models behind one key; ids ending in :free cost nothing (rate-limited).",
   },
-  groq: { label: "Groq", kind: "api", pricing: "free tier", baseUrl: "https://api.groq.com/openai/v1", keyEnv: "GROQ_API_KEY", keyUrl: "https://console.groq.com/keys" },
+  nvidia: {
+    label: "NVIDIA NIM",
+    kind: "api",
+    pricing: "free for development",
+    free: true,
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    keyEnv: "NVIDIA_API_KEY",
+    keyUrl: "https://build.nvidia.com",
+    hint: "Hosted open models (Llama, Qwen, DeepSeek, Nemotron…); a free build.nvidia.com key is rate-limited.",
+  },
+  cloudflare: {
+    label: "Cloudflare Workers AI",
+    kind: "api",
+    pricing: "free daily allowance",
+    free: true,
+    baseUrl: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1",
+    keyEnv: "CLOUDFLARE_API_TOKEN",
+    keyUrl: "https://dash.cloudflare.com/profile/api-tokens",
+    hint: "Needs your account id: set CLOUDFLARE_ACCOUNT_ID, or put it in the base URL. Model ids look like @cf/meta/llama-3.3-70b-instruct-fp8-fast.",
+  },
+  cerebras: { label: "Cerebras", kind: "api", pricing: "free tier", free: true, baseUrl: "https://api.cerebras.ai/v1", keyEnv: "CEREBRAS_API_KEY", keyUrl: "https://cloud.cerebras.ai" },
+  mistral: { label: "Mistral", kind: "api", pricing: "free tier", free: true, baseUrl: "https://api.mistral.ai/v1", keyEnv: "MISTRAL_API_KEY", keyUrl: "https://console.mistral.ai/api-keys" },
+  github: {
+    label: "GitHub Models",
+    kind: "api",
+    pricing: "free, rate-limited",
+    free: true,
+    baseUrl: "https://models.github.ai/inference",
+    keyEnv: "GITHUB_TOKEN",
+    keyUrl: "https://github.com/settings/tokens",
+    hint: "Uses a GitHub token with the models:read permission. Model ids look like openai/gpt-4.1 or meta/llama-4-scout.",
+  },
+  huggingface: { label: "Hugging Face", kind: "api", pricing: "free monthly credits", free: true, baseUrl: "https://router.huggingface.co/v1", keyEnv: "HF_TOKEN", keyUrl: "https://huggingface.co/settings/tokens" },
+  sambanova: { label: "SambaNova", kind: "api", pricing: "free tier", free: true, baseUrl: "https://api.sambanova.ai/v1", keyEnv: "SAMBANOVA_API_KEY", keyUrl: "https://cloud.sambanova.ai/apis" },
+  groq: { label: "Groq", kind: "api", pricing: "free tier", free: true, baseUrl: "https://api.groq.com/openai/v1", keyEnv: "GROQ_API_KEY", keyUrl: "https://console.groq.com/keys" },
   gemini: {
     label: "Google Gemini",
     kind: "api",
     pricing: "free tier",
+    free: true,
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
     keyEnv: "GEMINI_API_KEY",
     keyUrl: "https://aistudio.google.com/apikey",
   },
   openai: { label: "OpenAI API", kind: "api", pricing: "paid", baseUrl: "https://api.openai.com/v1", keyEnv: "OPENAI_API_KEY", keyUrl: "https://platform.openai.com/api-keys" },
   deepseek: { label: "DeepSeek", kind: "api", pricing: "paid (low cost)", baseUrl: "https://api.deepseek.com/v1", keyEnv: "DEEPSEEK_API_KEY", keyUrl: "https://platform.deepseek.com/api_keys" },
+  together: { label: "Together AI", kind: "api", pricing: "paid", baseUrl: "https://api.together.xyz/v1", keyEnv: "TOGETHER_API_KEY", keyUrl: "https://api.together.ai/settings/api-keys" },
+  fireworks: { label: "Fireworks AI", kind: "api", pricing: "paid", baseUrl: "https://api.fireworks.ai/inference/v1", keyEnv: "FIREWORKS_API_KEY", keyUrl: "https://fireworks.ai/account/api-keys" },
+  xai: { label: "xAI (Grok)", kind: "api", pricing: "paid", baseUrl: "https://api.x.ai/v1", keyEnv: "XAI_API_KEY", keyUrl: "https://console.x.ai" },
   ollama: {
     label: "Ollama",
     kind: "local",
@@ -124,7 +171,7 @@ export function resolveEndpoint(provider: ProviderName, agent?: AgentConfig): En
   const info = PROVIDER_INFO[provider];
   if (info.kind === "subscription") return null;
   const override = agent?.endpoints?.[provider] ?? {};
-  const baseUrl = (override.baseUrl ?? info.baseUrl ?? "").replace(/\/+$/, "");
+  const baseUrl = (override.baseUrl ?? info.baseUrl ?? "").replace(/\/+$/, "").replace(/\{(\w+)\}/g, (m, v) => process.env[v]?.trim() || m);
   // Local servers take no key; a custom endpoint may or may not, so a key is used if one is set.
   const needsKey = info.kind === "api" && provider !== "custom";
   return { provider, baseUrl, apiKey: getKey(provider, override.keyEnv ?? info.keyEnv), needsKey };
@@ -137,6 +184,8 @@ export function unavailableReason(sel: Selection, agent?: AgentConfig): string |
   if (ep) {
     const info = PROVIDER_INFO[sel.provider];
     if (!ep.baseUrl) return `${info.label} has no base URL yet — set one (narrowbit models endpoint ${sel.provider} <url>).`;
+    const placeholder = /\{(\w+)\}/.exec(ep.baseUrl);
+    if (placeholder) return `${info.label}'s base URL needs ${placeholder[1]} — set that environment variable, or set the full URL (narrowbit models endpoint ${sel.provider} <url>).`;
     if (ep.needsKey && !ep.apiKey)
       return `${info.label} needs an API key — run \`narrowbit keys set ${sel.provider}\`${info.keyEnv ? ` or set ${info.keyEnv}` : ""}${info.keyUrl ? ` (get one at ${info.keyUrl})` : ""}.`;
   }

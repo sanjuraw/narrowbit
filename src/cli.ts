@@ -545,7 +545,7 @@ export async function main(argv: string[]): Promise<number> {
         const info = PROVIDER_INFO[pr];
         if (info.kind !== "api") continue;
         const src = keySource(pr, info.keyEnv);
-        out(`  ${pr.padEnd(10)} ${src === "env" ? `set (from $${info.keyEnv})` : src === "file" ? "set (saved)" : "not set"}${!src && info.keyUrl ? `   — get one at ${info.keyUrl}` : ""}`);
+        out(`  ${pr.padEnd(11)} ${src === "env" ? `set (from $${info.keyEnv})` : src === "file" ? "set (saved)" : "not set"}${!src && info.keyUrl ? `   — get one at ${info.keyUrl}` : ""}`);
       }
       return 0;
     }
@@ -566,7 +566,7 @@ export async function main(argv: string[]): Promise<number> {
           const info = PROVIDER_INFO[prov];
           const why = unavailableReason(s, cfg.agent);
           const chosen = PHASES.some((ph) => s.tiers[ph]) ? `  ${PHASES.map((ph) => `${ph}=${s.tiers[ph] || "?"}`).join(" ")}` : "";
-          out(`${prov === current.provider ? "*" : " "} ${prov.padEnd(10)} ${info.label} — ${info.kind}, ${info.pricing}${chosen}${why ? `\n               not ready: ${why}` : ""}`);
+          out(`${prov === current.provider ? "*" : " "} ${prov.padEnd(11)} ${info.label} — ${info.kind}, ${info.pricing}${chosen}${why ? `\n               not ready: ${why}` : ""}`);
         }
         // Model catalogs can be long (OpenRouter lists hundreds), so only the default provider's.
         const avail = await availableModels(current.provider, cfg.agent);
