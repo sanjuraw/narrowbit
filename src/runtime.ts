@@ -460,7 +460,11 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       editsApplied++;
       editedSinceVerify = true;
     }
-    if (decision.action === "verify") editedSinceVerify = false;
+    // Running one of the repo's own verify commands (e.g. `npm test`) and passing counts as verifying:
+    // making the model repeat it through "verify" just to satisfy the done gate wastes a turn.
+    const verifyCommands = Object.values(cfg.verify).filter(Boolean) as string[];
+    const ranVerifyCommand = decision.action === "run" && /^\$ .*\(exit 0/.test(resultText) && verifyCommands.some((c) => (decision.command ?? "").trim() === c || (decision.command ?? "").trim() === c.replace(/ --silent$/, ""));
+    if ((decision.action === "verify" && !resultText.startsWith("VERIFICATION FAILED")) || ranVerifyCommand) editedSinceVerify = false;
     // Only a *failed* check counts toward escalation — edit → typecheck → verify → done is normal,
     // not stuck. The markers are our own output formats: verify.ts's report header and
     // compress.ts's "$ cmd  (exit N; …)" head line.

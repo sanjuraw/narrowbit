@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { ensureDirs, loadConfig, paths, saveConfig, type Paths } from "./config.js";
-import { fold, readEvents } from "./events.js";
+import { fold, readEvents, type Event } from "./events.js";
 import { changedSince, gitState } from "./git.js";
 import { initProject } from "./project.js";
 import { keySource, setKey } from "./keys.js";
@@ -37,8 +37,9 @@ import { sh } from "./util.js";
  */
 
 type StreamEvent =
-  | { type: "start"; task: string; selection: string }
+  | { type: "start"; task: string; continueTask: string | null; selection: string; lead: boolean }
   | { type: "log"; line: string }
+  | { type: "event"; event: Event }
   | { type: "approval"; id: string; command: string }
   | { type: "approval_resolved"; id: string; allowed: boolean }
   | { type: "finished"; outcome: string; summary: string; steps: number; taskId: string; changed: string[]; tokens: number; costUsd: number }
@@ -54,6 +55,7 @@ interface Run {
   running: boolean;
   /** Untracked files that existed before the run — Discard never deletes these. */
   untrackedBefore: Set<string>;
+  taskId: string | null;
 }
 
 const RECENT_FILE = join(homedir(), ".narrowbit", "recent-repos.json");
@@ -105,7 +107,7 @@ function json(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-function taskHistory(p: Paths, limit = 25) {
+function taskHistory(p: Paths, limit = 40) {
   if (!existsSync(p.runtime)) return [];
   const rows = [];
   for (const id of readdirSync(p.runtime)) {
@@ -113,34 +115,54 @@ function taskHistory(p: Paths, limit = 25) {
     if (!events.length) continue;
     const state = fold(id, events);
     const roles = Object.values(state.ledgerByRole);
-    const last = events[events.length - 1];
-    const done = events.find((e) => e.type === "decision" && e.summary.startsWith("done: "));
-    const outcome = done
-      ? "done"
-      : last.actor === "user" && last.type === "blocker"
-        ? "stopped"
-        : last.actor === "model" && last.type === "blocker"
-          ? "blocked"
-          : "unfinished";
+    // runtime.ts ends every run (and every follow-up) with an outcome event; older logs don't have one.
+    const end = [...events].reverse().find((e) => e.type === "decision" && typeof e.meta?.outcome === "string");
+    const done = [...events].reverse().find((e) => e.type === "decision" && e.summary.startsWith("done: "));
     rows.push({
       id,
       goal: state.goal ?? "(no goal recorded)",
       at: events[0].at,
-      outcome,
-      summary: done ? done.summary.slice(6) : last.summary,
+      last: events[events.length - 1].at,
+      outcome: (end?.meta?.outcome as string) ?? (done ? "done" : "unfinished"),
+      turns: events.filter((e) => e.actor === "user" && e.type === "decision").length,
       files: state.filesTouched,
       tokens: roles.reduce((a, r) => a + r.inputTokens + r.cacheCreationTokens + r.cacheReadTokens + r.outputTokens, 0),
       costUsd: roles.reduce((a, r) => a + r.costUsd, 0),
     });
   }
-  return rows.sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit);
+  return rows.sort((a, b) => b.last.localeCompare(a.last)).slice(0, limit);
+}
+
+/** Untracked files that existed before a task started (runtime.ts records them in its first event). */
+function untrackedAtStart(p: Paths, taskId: string | null): Set<string> | null {
+  if (!taskId || !/^rt-[\w-]+$/.test(taskId)) return null;
+  const first = readEvents(p, taskId)[0];
+  return Array.isArray(first?.meta?.untrackedAtStart) ? new Set(first.meta.untrackedAtStart as string[]) : null;
+}
+
+/** Added/removed line counts per changed file (new files count every line as added). */
+function diffStats(root: string, files: string[]): Record<string, { added: number; removed: number }> {
+  const out: Record<string, { added: number; removed: number }> = {};
+  for (const line of sh("git", ["diff", "HEAD", "--numstat", "--", ".", ":(exclude).narrowbit"], root).stdout.split("\n")) {
+    const [a, r, file] = line.split("\t");
+    if (file) out[file] = { added: Number(a) || 0, removed: Number(r) || 0 };
+  }
+  for (const f of files) {
+    if (out[f]) continue;
+    try {
+      out[f] = { added: readFileSync(join(root, f), "utf8").split("\n").length, removed: 0 };
+    } catch {
+      out[f] = { added: 0, removed: 0 };
+    }
+  }
+  return out;
 }
 
 /** Working-tree changes against HEAD, including new files, as one unified-diff-ish text. */
-function workingDiff(root: string, skipUntracked: Set<string> = new Set()): { files: string[]; diff: string; skipped: string[] } {
+function workingDiff(root: string, skipUntracked: Set<string> = new Set()) {
   const g = gitState(root);
-  if (!g.head) return { files: [], diff: "", skipped: [] };
-  const skip = (f: string) => f.startsWith(".narrowbit/") || skipUntracked.has(f);
+  if (!g.head) return { files: [] as string[], stats: {}, diff: "", skipped: [] as string[] };
+  const skip = (f: string) => f.startsWith(".narrowbit/") || f === ".narrowbitignore" || skipUntracked.has(f);
   const files = changedSince(root, g.head).filter((f) => !skip(f));
   let diff = sh("git", ["diff", "HEAD", "--", ".", ":(exclude).narrowbit"], root).stdout;
   for (const f of g.untracked) {
@@ -156,7 +178,12 @@ function workingDiff(root: string, skipUntracked: Set<string> = new Set()): { fi
     diff += `diff --git a/${f} b/${f}\nnew file\n--- /dev/null\n+++ b/${f}\n${body}\n`;
   }
   const MAX = 400_000;
-  return { files, diff: diff.length > MAX ? diff.slice(0, MAX) + "\n… diff truncated" : diff, skipped: g.untracked.filter((f) => skipUntracked.has(f)) };
+  return {
+    files,
+    stats: diffStats(root, files),
+    diff: diff.length > MAX ? diff.slice(0, MAX) + "\n… diff truncated" : diff,
+    skipped: g.untracked.filter((f) => skipUntracked.has(f) && f !== ".narrowbitignore"),
+  };
 }
 
 export interface UiOptions {
@@ -172,7 +199,8 @@ export function startUi(opts: UiOptions) {
   const clients = new Set<ServerResponse>();
   const modelCache = new Map<string, { at: number; list: ModelList }>();
 
-  const preexisting = () => (run && run.root === root ? run.untrackedBefore : new Set<string>());
+  const preexisting = (taskId?: string | null) =>
+    (root ? untrackedAtStart(paths(root), taskId ?? run?.taskId ?? null) : null) ?? (run && run.root === root ? run.untrackedBefore : new Set<string>());
   const emit = (e: StreamEvent) => {
     if (!run) return;
     run.events.push(e);
@@ -228,11 +256,13 @@ export function startUi(opts: UiOptions) {
       phases: PHASES,
       efforts: EFFORT_LEVELS,
       running: !!run?.running && run.root === root,
+      runningTask: run?.running && run.root === root ? run.taskId : null,
+      lead: cfg.agent?.boss ?? true,
       history: initialized ? taskHistory(p) : [],
     };
   };
 
-  const startRun = (task: string, maxSteps: number, askBeforeCommands: boolean): { status: number; body: unknown } => {
+  const startRun = (task: string, maxSteps: number, askBeforeCommands: boolean, continueTask: string | null): { status: number; body: unknown } => {
     if (!root) return { status: 400, body: { error: "open a repository first" } };
     if (run?.running) return { status: 409, body: { error: "a task is already running" } };
     const p = paths(root);
@@ -242,25 +272,34 @@ export function startUi(opts: UiOptions) {
     const sel = resolveSelection(cfg.agent);
     const unavailable = unavailableReason(sel, cfg.agent);
     if (unavailable) return { status: 400, body: { error: unavailable } };
+    if (continueTask && !readEvents(p, continueTask).length) return { status: 404, body: { error: `no task ${continueTask}` } };
+    const lead = cfg.agent?.boss ?? true;
     const thisRun: Run = {
       root,
+      taskId: continueTask,
       events: [],
       controller: new AbortController(),
       pending: new Map(),
       allowed: new Set(),
       running: true,
-      untrackedBefore: new Set(g.untracked),
+      // A follow-up keeps the original task's baseline, so the first request's new files still count as its work.
+      untrackedBefore: untrackedAtStart(p, continueTask) ?? new Set(g.untracked),
     };
     run = thisRun;
     let approvalSeq = 0;
-    emit({ type: "start", task, selection: `${sel.tiers.explore} → ${sel.tiers.execute} → ${sel.tiers.escalate} · effort ${sel.effort}` });
+    emit({ type: "start", task, continueTask, lead, selection: `${sel.tiers.explore} → ${sel.tiers.execute} → ${sel.tiers.escalate} · effort ${sel.effort}` });
     runTask(p, task, {
       maxSteps,
+      boss: lead,
+      continueTask: continueTask ?? undefined,
+      onEvent: (event) => {
+        thisRun.taskId = event.taskId;
+        emit({ type: "event", event });
+      },
       provider: sel.provider,
       models: sel.tiers,
       effort: sel.effort,
       signal: thisRun.controller.signal,
-      log: (line) => emit({ type: "log", line }),
       approve: askBeforeCommands
         ? (command) => {
             if (thisRun.allowed.has(command)) return Promise.resolve(true);
@@ -354,15 +393,14 @@ export function startUi(opts: UiOptions) {
 
       if (route === "GET /api/diff") {
         if (!root) return json(res, 400, { error: "no repository open" });
-        return json(res, 200, workingDiff(root, preexisting()));
+        return json(res, 200, workingDiff(root, preexisting(url.searchParams.get("task"))));
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/api/task/")) {
         if (!root) return json(res, 400, { error: "no repository open" });
         const id = url.pathname.slice("/api/task/".length);
         if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
-        const events = readEvents(paths(root), id).map((e) => ({ at: e.at, actor: e.actor, type: e.type, summary: e.summary, model: e.tokens?.model }));
-        return json(res, 200, { id, events });
+        return json(res, 200, { id, events: readEvents(paths(root), id), running: !!run?.running && run.taskId === id });
       }
 
       if (req.method !== "POST") return json(res, 404, { error: "not found" });
@@ -401,7 +439,7 @@ export function startUi(opts: UiOptions) {
             if (m) slots[phase] = m;
           }
           models[provider as ProviderName] = slots;
-          cfg.agent = { ...cfg.agent, provider, effort, models };
+          cfg.agent = { ...cfg.agent, provider, effort, models, ...(typeof body.lead === "boolean" ? { boss: body.lead } : {}) };
           ensureDirs(p);
           saveConfig(p, cfg);
           return json(res, 200, state());
@@ -438,13 +476,14 @@ export function startUi(opts: UiOptions) {
         case "/api/run": {
           const task = String(body.task ?? "").trim();
           if (!task) return json(res, 400, { error: "describe the task first" });
-          if (root && !body.force) {
+          const continueTask = typeof body.continueTask === "string" && /^rt-[\w-]+$/.test(body.continueTask) ? body.continueTask : null;
+          if (root && !body.force && !continueTask) {
             const g = gitState(root);
             const changed = [...new Set([...g.dirty, ...g.staged])];
             if (changed.length) return json(res, 409, { error: "dirty", files: changed });
           }
           const maxSteps = Math.min(100, Math.max(1, Number(body.maxSteps) || 20));
-          const r = startRun(task, maxSteps, body.askBeforeCommands !== false);
+          const r = startRun(task, maxSteps, body.askBeforeCommands !== false, continueTask);
           return json(res, r.status, r.body);
         }
         case "/api/approve": {
@@ -463,7 +502,7 @@ export function startUi(opts: UiOptions) {
           if (run?.running) return json(res, 409, { error: "wait for the task to finish" });
           const message = String(body.message ?? "").trim();
           if (!message) return json(res, 400, { error: "write a commit message" });
-          const { files } = workingDiff(root, preexisting());
+          const { files } = workingDiff(root, preexisting(typeof body.task === "string" ? body.task : null));
           if (!files.length) return json(res, 400, { error: "nothing to commit" });
           const add = sh("git", ["add", "-A", "--", ...files], root);
           if (add.code !== 0) return json(res, 500, { error: add.stderr.trim() || "git add failed" });
@@ -481,8 +520,9 @@ export function startUi(opts: UiOptions) {
             const r = sh("git", ["restore", "--source=HEAD", "--staged", "--worktree", "--", ...tracked], root);
             if (r.code !== 0) return json(res, 500, { error: r.stderr.trim() || "git restore failed" });
           }
-          // Only delete new files this app's last run created; anything else untracked is the user's.
-          const created = run && run.root === root ? g.untracked.filter((f) => !run!.untrackedBefore.has(f) && !f.startsWith(".narrowbit/")) : [];
+          // Only delete new files the task created (per its recorded baseline); anything else untracked is the user's.
+          const baseline = untrackedAtStart(p, typeof body.task === "string" ? body.task : null) ?? (run && run.root === root ? run.untrackedBefore : null);
+          const created = baseline ? g.untracked.filter((f) => !baseline.has(f) && !f.startsWith(".narrowbit/") && f !== ".narrowbitignore") : [];
           for (const f of created) {
             const abs = safeAbsPath(p, f);
             if (abs) unlinkSync(abs);
