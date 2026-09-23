@@ -8,8 +8,9 @@ import { writeEvidence } from "./evidence.js";
 import { appendEvent, fold, readEvents } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./memory.js";
-import { callModel } from "./providers/claude-cli.js";
-import { DEFAULT_TIERS, type ModelTiers, type ProviderName } from "./providers/models.js";
+import { callModel, type ModelCallOptions } from "./providers/claude-cli.js";
+import { DEFAULT_TIERS, resolveEndpoint, unavailableReason, type ModelTiers, type ProviderName } from "./providers/models.js";
+import { callOpenAICompat } from "./providers/openai-compat.js";
 import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
 import { termsOf } from "./terms.js";
@@ -172,17 +173,20 @@ const MAX_TRANSIENT_RETRIES = 2;
 
 export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions = {}): Promise<RuntimeResult> {
   const provider = opts.provider ?? "claude";
-  // Codex selection is resolvable and saveable today; its adapter (providers/codex-cli.ts) is not
-  // built yet, so refuse clearly rather than silently running on Claude instead.
-  if (provider !== "claude") throw new Error(`provider "${provider}" is not available yet — only "claude" can run tasks so far`);
   const cfg = loadConfig(p);
+  const tiers = opts.models ? { ...DEFAULT_TIERS[provider], ...opts.models } : opts.model ? { explore: opts.model, execute: opts.model, escalate: opts.model } : DEFAULT_TIERS[provider];
+  const effort = opts.effort ?? "medium";
+  // Refuse clearly up front (Codex without its adapter, a missing key, an unchosen model) rather
+  // than silently running on a different provider or failing on the first call.
+  const unavailable = unavailableReason({ provider, tiers, effort }, cfg.agent);
+  if (unavailable) throw new Error(unavailable);
+  const endpoint = resolveEndpoint(provider, cfg.agent);
+  const call = endpoint ? (o: ModelCallOptions) => callOpenAICompat(endpoint, o) : callModel;
   const taskId = `rt-${shortId()}`;
   const store = openStore(p);
   indexRepo(p, store);
   const maxSteps = opts.maxSteps ?? 20;
   const role = opts.role ?? "execution";
-  const tiers = opts.models ? { ...DEFAULT_TIERS[provider], ...opts.models } : opts.model ? { explore: opts.model, execute: opts.model, escalate: opts.model } : DEFAULT_TIERS[provider];
-  const effort = opts.effort ?? "medium";
   const compactThreshold = opts.compactThreshold ?? cfg.budget.max;
   const log = opts.log ?? (() => {});
   let hasEdited = false;
@@ -247,12 +251,12 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       sessionId,
       resume: !freshSessionPending,
     };
-    let res = await callModel(callOpts);
+    let res = await call(callOpts);
     // A non-fatal error (timeout, killed process, no result event) is presumed transient, not a
     // real problem with the request — retry the identical call before giving up on the task.
     for (let transientRetries = 0; res.isError && !res.fatal && transientRetries < MAX_TRANSIENT_RETRIES; transientRetries++) {
       appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `step ${steps}: model call failed (${res.errorMessage ?? "no result"}), retrying (${transientRetries + 1}/${MAX_TRANSIENT_RETRIES})` });
-      res = await callModel(callOpts);
+      res = await call(callOpts);
     }
     freshSessionPending = false;
     const totalCost = res.costUsd ?? cumulativeCost;

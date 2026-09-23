@@ -7,7 +7,21 @@ import { ensureDirs, loadConfig, paths, saveConfig, type Paths } from "./config.
 import { fold, readEvents } from "./events.js";
 import { changedSince, gitState } from "./git.js";
 import { initProject } from "./project.js";
-import { availableModels, DEFAULT_TIERS, EFFORT_LEVELS, isProvider, PHASES, PROVIDERS, resolveSelection, type ProviderName } from "./providers/models.js";
+import { keySource, setKey } from "./keys.js";
+import {
+  availableModels,
+  DEFAULT_TIERS,
+  EFFORT_LEVELS,
+  isProvider,
+  PHASES,
+  PROVIDER_INFO,
+  PROVIDERS,
+  resolveEndpoint,
+  resolveSelection,
+  unavailableReason,
+  type ModelList,
+  type ProviderName,
+} from "./providers/models.js";
 import { runTask, safeAbsPath } from "./runtime.js";
 import { uiPage } from "./ui-page.js";
 import { sh } from "./util.js";
@@ -155,7 +169,7 @@ export function startUi(opts: UiOptions) {
   let root: string | null = opts.root && existsSync(opts.root) ? repoRootOf(opts.root) : (loadRecent()[0] ?? null);
   let run: Run | null = null;
   const clients = new Set<ServerResponse>();
-  let codexModels: ReturnType<typeof availableModels> | null = null;
+  const modelCache = new Map<string, { at: number; list: ModelList }>();
 
   const preexisting = () => (run && run.root === root ? run.untrackedBefore : new Set<string>());
   const emit = (e: StreamEvent) => {
@@ -179,17 +193,26 @@ export function startUi(opts: UiOptions) {
       selectionError = e.message;
       selection = resolveSelection(undefined);
     }
-    codexModels ??= availableModels("codex");
+    // Model lists are fetched separately (/api/models): some are network calls, and only the
+    // provider on screen needs one.
     const providers = Object.fromEntries(
-      PROVIDERS.map((prov) => [
-        prov,
-        {
-          tiers: resolveSelection(cfg.agent, { provider: prov }).tiers,
-          defaults: DEFAULT_TIERS[prov],
-          available: prov === "codex" ? codexModels : availableModels(prov),
-          runnable: prov === "claude",
-        },
-      ]),
+      PROVIDERS.map((prov) => {
+        const info = PROVIDER_INFO[prov];
+        const s = resolveSelection(cfg.agent, { provider: prov });
+        const ep = resolveEndpoint(prov, cfg.agent);
+        return [
+          prov,
+          {
+            ...info,
+            tiers: s.tiers,
+            defaults: DEFAULT_TIERS[prov],
+            baseUrl: ep?.baseUrl ?? null,
+            needsKey: ep?.needsKey ?? false,
+            keySource: info.kind === "subscription" ? null : keySource(prov, cfg.agent?.endpoints?.[prov]?.keyEnv ?? info.keyEnv),
+            unavailable: unavailableReason(s, cfg.agent),
+          },
+        ];
+      }),
     );
     return {
       root,
@@ -216,7 +239,8 @@ export function startUi(opts: UiOptions) {
     const g = gitState(root);
     const cfg = loadConfig(p);
     const sel = resolveSelection(cfg.agent);
-    if (sel.provider !== "claude") return { status: 400, body: { error: `${sel.provider} can be selected but can't run tasks yet — its adapter isn't built. Switch the provider to Claude.` } };
+    const unavailable = unavailableReason(sel, cfg.agent);
+    if (unavailable) return { status: 400, body: { error: unavailable } };
     const thisRun: Run = {
       root,
       events: [],
@@ -307,6 +331,19 @@ export function startUi(opts: UiOptions) {
         return;
       }
 
+      if (route === "GET /api/models") {
+        if (!root) return json(res, 400, { error: "no repository open" });
+        const prov = url.searchParams.get("provider") ?? "";
+        if (!isProvider(prov)) return json(res, 400, { error: `unknown provider "${prov}"` });
+        const agent = loadConfig(paths(root)).agent;
+        const cacheKey = `${prov} ${resolveEndpoint(prov, agent)?.baseUrl ?? ""} ${keySource(prov, PROVIDER_INFO[prov].keyEnv) ?? ""}`;
+        const hit = modelCache.get(cacheKey);
+        if (hit && Date.now() - hit.at < 5 * 60_000 && hit.list.models.length && !url.searchParams.has("refresh")) return json(res, 200, hit.list);
+        const list = await availableModels(prov, agent);
+        modelCache.set(cacheKey, { at: Date.now(), list });
+        return json(res, 200, list);
+      }
+
       if (route === "GET /api/diff") {
         if (!root) return json(res, 400, { error: "no repository open" });
         return json(res, 200, workingDiff(root, preexisting()));
@@ -357,6 +394,31 @@ export function startUi(opts: UiOptions) {
           }
           models[provider as ProviderName] = slots;
           cfg.agent = { ...cfg.agent, provider, effort, models };
+          ensureDirs(p);
+          saveConfig(p, cfg);
+          return json(res, 200, state());
+        }
+        case "/api/key": {
+          // The user's own key, typed into their own app: stored in ~/.narrowbit/keys.json (0600)
+          // and never sent back to the page — state() only reports whether one is set.
+          const prov = String(body.provider ?? "");
+          if (!isProvider(prov) || PROVIDER_INFO[prov].kind === "subscription") return json(res, 400, { error: "that provider doesn't use an API key" });
+          const key = typeof body.key === "string" ? body.key.trim() : "";
+          setKey(prov, key || null);
+          return json(res, 200, state());
+        }
+        case "/api/endpoint": {
+          if (!root) return json(res, 400, { error: "no repository open" });
+          const prov = String(body.provider ?? "");
+          if (!isProvider(prov) || PROVIDER_INFO[prov].kind === "subscription") return json(res, 400, { error: "that provider has no endpoint" });
+          const baseUrl = String(body.baseUrl ?? "").trim();
+          if (baseUrl && !/^https?:\/\/[^\s]+$/.test(baseUrl)) return json(res, 400, { error: "base URL must start with http:// or https://" });
+          const p = paths(root);
+          const cfg = loadConfig(p);
+          const agent = (cfg.agent ??= {});
+          const eps = (agent.endpoints ??= {});
+          if (baseUrl && baseUrl !== PROVIDER_INFO[prov].baseUrl) eps[prov] = { ...eps[prov], baseUrl };
+          else delete eps[prov];
           ensureDirs(p);
           saveConfig(p, cfg);
           return json(res, 200, state());

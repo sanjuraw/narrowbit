@@ -1,23 +1,82 @@
 import type { AgentConfig } from "../config.js";
 import { sh } from "../util.js";
+import { getKey } from "../keys.js";
 
 /**
  * Model selection for `narrowbit agent`, shared by every provider: which provider drives the
  * loop, and which model handles each phase (explore = before any edit, execute = editing and
  * verifying, escalate = stuck). Precedence: CLI flags > .narrowbit/config.json `agent` > the
  * built-in defaults below.
+ *
+ * Three kinds of provider: the two subscription CLIs (claude, codex), hosted APIs that bill per
+ * token or have a free tier, and local model servers. Every API and local provider speaks the
+ * OpenAI-compatible chat API, so one adapter (providers/openai-compat.ts) serves all of them.
  */
-export const PROVIDERS = ["claude", "codex"] as const;
+export const PROVIDERS = ["claude", "codex", "openrouter", "groq", "gemini", "openai", "deepseek", "ollama", "lmstudio", "custom"] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
 export const PHASES = ["explore", "execute", "escalate"] as const;
 export type Phase = (typeof PHASES)[number];
 export type ModelTiers = Record<Phase, string>;
 
+export type ProviderKind = "subscription" | "api" | "local";
+
+export interface ProviderInfo {
+  label: string;
+  kind: ProviderKind;
+  /** Shown next to the name so free options are easy to find. */
+  pricing: string;
+  /** OpenAI-compatible base URL (api/local only); `custom` has none until configured. */
+  baseUrl?: string;
+  /** Environment variable checked for the API key before ~/.narrowbit/keys.json. */
+  keyEnv?: string;
+  keyUrl?: string;
+  hint?: string;
+}
+
+export const PROVIDER_INFO: Record<ProviderName, ProviderInfo> = {
+  claude: { label: "Claude", kind: "subscription", pricing: "your Claude plan" },
+  codex: { label: "Codex (GPT)", kind: "subscription", pricing: "your ChatGPT plan" },
+  openrouter: {
+    label: "OpenRouter",
+    kind: "api",
+    pricing: "free & paid models",
+    baseUrl: "https://openrouter.ai/api/v1",
+    keyEnv: "OPENROUTER_API_KEY",
+    keyUrl: "https://openrouter.ai/keys",
+    hint: "Hundreds of models behind one key; ids ending in :free cost nothing (rate-limited).",
+  },
+  groq: { label: "Groq", kind: "api", pricing: "free tier", baseUrl: "https://api.groq.com/openai/v1", keyEnv: "GROQ_API_KEY", keyUrl: "https://console.groq.com/keys" },
+  gemini: {
+    label: "Google Gemini",
+    kind: "api",
+    pricing: "free tier",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    keyEnv: "GEMINI_API_KEY",
+    keyUrl: "https://aistudio.google.com/apikey",
+  },
+  openai: { label: "OpenAI API", kind: "api", pricing: "paid", baseUrl: "https://api.openai.com/v1", keyEnv: "OPENAI_API_KEY", keyUrl: "https://platform.openai.com/api-keys" },
+  deepseek: { label: "DeepSeek", kind: "api", pricing: "paid (low cost)", baseUrl: "https://api.deepseek.com/v1", keyEnv: "DEEPSEEK_API_KEY", keyUrl: "https://platform.deepseek.com/api_keys" },
+  ollama: {
+    label: "Ollama",
+    kind: "local",
+    pricing: "free, on this Mac",
+    baseUrl: "http://127.0.0.1:11434/v1",
+    hint: "Start Ollama and pull a coding model first. Its default context window is small; set OLLAMA_CONTEXT_LENGTH=32768 before `ollama serve`, or long reads get cut off silently.",
+  },
+  lmstudio: { label: "LM Studio", kind: "local", pricing: "free, on this Mac", baseUrl: "http://127.0.0.1:1234/v1", hint: "Load a model in LM Studio and start its local server (Developer tab)." },
+  custom: { label: "Custom endpoint", kind: "api", pricing: "any OpenAI-compatible server", hint: "Set its base URL (and a key, if it needs one)." },
+};
+
 // Codex tiers follow its own catalog descriptions: Luna "fast and affordable", Terra "balanced
-// for everyday work", Sol "latest frontier" — the same shape as Haiku / Sonnet / Opus.
+// for everyday work", Sol "latest frontier" — the same shape as Haiku / Sonnet / Opus. API and
+// local providers have no default: model catalogs there change constantly, so the user picks.
 export const DEFAULT_TIERS: Record<ProviderName, ModelTiers> = {
   claude: { explore: "haiku", execute: "sonnet", escalate: "opus" },
   codex: { explore: "gpt-5.6-luna", execute: "gpt-5.6-terra", escalate: "gpt-5.6-sol" },
+  ...(Object.fromEntries(PROVIDERS.filter((p) => p !== "claude" && p !== "codex").map((p) => [p, { explore: "", execute: "", escalate: "" }])) as Record<
+    Exclude<ProviderName, "claude" | "codex">,
+    ModelTiers
+  >),
 };
 export const DEFAULT_EFFORT = "medium";
 /** Effort levels both CLIs accept (Codex's Sol/Terra also take "ultra"; not offered here since Luna and Claude don't). */
@@ -45,27 +104,115 @@ export interface Selection {
 
 export function resolveSelection(agent: AgentConfig | undefined, flags: SelectionFlags = {}): Selection {
   const provider = flags.provider ?? agent?.provider ?? "claude";
-  if (!isProvider(provider)) throw new Error(`unknown provider "${provider}" (expected ${PROVIDERS.join(" or ")})`);
+  if (!isProvider(provider)) throw new Error(`unknown provider "${provider}" (expected one of ${PROVIDERS.join(", ")})`);
   const saved = agent?.models?.[provider] ?? {};
   const tiers = { ...DEFAULT_TIERS[provider] };
   for (const phase of PHASES) tiers[phase] = flags[phase] ?? flags.model ?? saved[phase] ?? tiers[phase];
   return { provider, tiers, effort: flags.effort ?? agent?.effort ?? DEFAULT_EFFORT };
 }
 
+export interface Endpoint {
+  provider: ProviderName;
+  baseUrl: string;
+  /** Undefined when the provider needs none (local) or none is set (see `needsKey`). */
+  apiKey?: string;
+  needsKey: boolean;
+}
+
+/** Where an API/local provider lives, with per-repo overrides from `agent.endpoints`. */
+export function resolveEndpoint(provider: ProviderName, agent?: AgentConfig): Endpoint | null {
+  const info = PROVIDER_INFO[provider];
+  if (info.kind === "subscription") return null;
+  const override = agent?.endpoints?.[provider] ?? {};
+  const baseUrl = (override.baseUrl ?? info.baseUrl ?? "").replace(/\/+$/, "");
+  // Local servers take no key; a custom endpoint may or may not, so a key is used if one is set.
+  const needsKey = info.kind === "api" && provider !== "custom";
+  return { provider, baseUrl, apiKey: getKey(provider, override.keyEnv ?? info.keyEnv), needsKey };
+}
+
+/** Why `provider` can't run tasks right now, or null if it can. */
+export function unavailableReason(sel: Selection, agent?: AgentConfig): string | null {
+  if (sel.provider === "codex") return "Codex can be selected but can't run tasks yet — its adapter needs `codex login` first.";
+  const ep = resolveEndpoint(sel.provider, agent);
+  if (ep) {
+    const info = PROVIDER_INFO[sel.provider];
+    if (!ep.baseUrl) return `${info.label} has no base URL yet — set one (narrowbit models endpoint ${sel.provider} <url>).`;
+    if (ep.needsKey && !ep.apiKey)
+      return `${info.label} needs an API key — run \`narrowbit keys set ${sel.provider}\`${info.keyEnv ? ` or set ${info.keyEnv}` : ""}${info.keyUrl ? ` (get one at ${info.keyUrl})` : ""}.`;
+  }
+  const missing = PHASES.filter((ph) => !sel.tiers[ph]);
+  if (missing.length) return `choose ${PROVIDER_INFO[sel.provider].label} models for ${missing.join(", ")} first (narrowbit models choose).`;
+  return null;
+}
+
+export interface ModelList {
+  models: string[];
+  /** Subset of `models` that cost nothing to call (OpenRouter's pricing data). */
+  free: string[];
+  /** Display name (and one-line description where the catalog gives one), by model id. */
+  labels: Record<string, string>;
+  note: string;
+}
+
 /**
- * Models a provider can use, for `narrowbit models`. Codex publishes its catalog locally
- * (`codex debug models`, no login needed); Claude Code has no catalog command, so these are the
- * aliases its `--model` accepts (full model names like claude-opus-5 also work).
+ * Claude Code has no command that lists models, so the current lineup is kept here. The aliases
+ * always resolve to the newest model of that family, so they stay correct when this list goes
+ * stale; the full ids pin an exact version. Update this when Anthropic ships a new model.
  */
-export function availableModels(provider: ProviderName): { models: string[]; note: string } {
-  if (provider === "claude") return { models: ["haiku", "sonnet", "opus", "fable"], note: "claude --model aliases; full model names also work" };
-  const r = sh(process.env.NARROWBIT_CODEX ?? "codex", ["debug", "models"], process.cwd());
+const CLAUDE_MODELS: [string, string][] = [
+  ["haiku", "Haiku (latest — currently Haiku 4.5)"],
+  ["sonnet", "Sonnet (latest — currently Sonnet 5)"],
+  ["opus", "Opus (latest — currently Opus 5.5)"],
+  ["fable", "Fable (latest — currently Fable 5.1)"],
+  ["claude-haiku-4-5-20251001", "Haiku 4.5 — fast, lowest cost"],
+  ["claude-sonnet-5", "Sonnet 5 — balanced everyday coding"],
+  ["claude-opus-5-5", "Opus 5.5 — strongest for hard problems"],
+  ["claude-fable-5-1", "Fable 5.1"],
+];
+
+/**
+ * Models a provider can use. Claude Code has no catalog command, so these are the aliases its
+ * `--model` accepts (full model names like claude-opus-5 also work); Codex publishes its catalog
+ * locally (`codex debug models`, no login needed); API and local servers list theirs at /models.
+ */
+export async function availableModels(provider: ProviderName, agent?: AgentConfig): Promise<ModelList> {
+  if (provider === "claude")
+    return { models: CLAUDE_MODELS.map(([id]) => id), free: [], labels: Object.fromEntries(CLAUDE_MODELS), note: "Claude Code aliases (always the newest of each family) and exact model ids" };
+  if (provider === "codex") {
+    const r = sh(process.env.NARROWBIT_CODEX ?? "codex", ["debug", "models"], process.cwd());
+    try {
+      const d = JSON.parse(r.stdout);
+      const list: any[] = Array.isArray(d) ? d : (d.models ?? []);
+      const shown = list.filter((m) => m?.visibility !== "hide" && typeof m?.slug === "string");
+      const labels = Object.fromEntries(shown.map((m) => [m.slug, [m.display_name, m.description].filter(Boolean).join(" — ")]));
+      const version = sh(process.env.NARROWBIT_CODEX ?? "codex", ["--version"], process.cwd()).stdout.trim();
+      // The catalog ships with the CLI, so an old CLI lists old models.
+      return { models: shown.map((m) => m.slug as string), free: [], labels, note: `from the installed Codex CLI (${version || "unknown version"}) — update the CLI to see newer models` };
+    } catch {
+      return { models: [], free: [], labels: {}, note: "`codex debug models` unavailable — is the Codex CLI installed?" };
+    }
+  }
+  const ep = resolveEndpoint(provider, agent)!;
+  const label = PROVIDER_INFO[provider].label;
+  if (!ep.baseUrl) return { models: [], free: [], labels: {}, note: `no base URL set for ${label}` };
   try {
-    const d = JSON.parse(r.stdout);
-    const list: any[] = Array.isArray(d) ? d : (d.models ?? []);
-    const models = list.filter((m) => m?.visibility !== "hide" && typeof m?.slug === "string").map((m) => m.slug as string);
-    return { models, note: "from `codex debug models`" };
-  } catch {
-    return { models: [], note: "`codex debug models` unavailable — is the Codex CLI installed?" };
+    const res = await fetch(`${ep.baseUrl}/models`, { headers: ep.apiKey ? { authorization: `Bearer ${ep.apiKey}` } : {}, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return { models: [], free: [], labels: {}, note: `${label} /models answered ${res.status}${res.status === 401 ? " — check the API key" : ""}` };
+    const d: any = await res.json();
+    const list: any[] = Array.isArray(d) ? d : (d.data ?? d.models ?? []);
+    const ids = list.map((m) => (typeof m === "string" ? m : (m?.id ?? m?.name))).filter((x): x is string => typeof x === "string");
+    const free = list
+      .filter((m) => m?.pricing && Number(m.pricing.prompt) === 0 && Number(m.pricing.completion) === 0)
+      // Free image/music generators exist too; the agent needs text out.
+      .filter((m) => !m.architecture?.output_modalities || m.architecture.output_modalities.includes("text"))
+      .map((m) => m.id as string)
+      .filter((id) => !id.startsWith("openrouter/")); // routers, not models
+    const models = [...new Set(ids.map((id) => id.replace(/^models\//, "")))].sort((a, b) => a.localeCompare(b));
+    const labels: Record<string, string> = {};
+    for (const m of list) if (m?.id && m?.name && m.name !== m.id) labels[String(m.id).replace(/^models\//, "")] = String(m.name);
+    return { models, free: free.sort((a, b) => a.localeCompare(b)), labels, note: `from ${label}` };
+  } catch (e: any) {
+    const down = PROVIDER_INFO[provider].kind === "local" ? ` — is ${label} running?` : "";
+    return { models: [], free: [], labels: {}, note: `couldn't reach ${ep.baseUrl}${down} (${e?.cause?.code ?? e?.name ?? "error"})` };
   }
 }

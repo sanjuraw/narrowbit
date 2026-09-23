@@ -14,7 +14,8 @@ import { Memory, openMemory, MEMORY_TYPES, renderMemory, type MemoryType } from 
 import { buildPackage } from "./package.js";
 import { initProject } from "./project.js";
 import { expandTask, grepText, outlineText, refsText, searchText, symbolText, testsText } from "./query.js";
-import { availableModels, DEFAULT_TIERS, EFFORT_LEVELS, isProvider, PHASES, PROVIDERS, resolveSelection, type Phase, type ProviderName, type Selection } from "./providers/models.js";
+import { availableModels, DEFAULT_TIERS, EFFORT_LEVELS, isProvider, PHASES, PROVIDER_INFO, PROVIDERS, resolveSelection, unavailableReason, type Phase, type ProviderName, type Selection } from "./providers/models.js";
+import { keySource, setKey } from "./keys.js";
 import { runTask } from "./runtime.js";
 import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
@@ -47,7 +48,7 @@ function parseArgs(argv: string[]): Args {
 
 const VALUE_FLAGS = new Set([
   "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip",
-  "max-steps", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port",
+  "max-steps", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env",
 ]);
 
 const HELP = `narrowbit — minimum sufficient context for coding agents
@@ -71,7 +72,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit verify [--full]           type-check, lint, focused tests for changed files
 
   narrowbit agent "<task>"            Narrowbit's own agent loop: reads, edits, runs commands,
-      [--provider claude|codex] [--model X | --explore X --execute X --escalate X]
+      [--provider <name>] [--model X | --explore X --execute X --escalate X]
       [--effort low|medium|high|xhigh|max] [--max-steps N] [--force] [--dry-run]
       verifies and remembers, driving the task end to end in THIS working tree (not a worktree —
       edits are real). Refuses to run on a dirty git tree unless --force.
@@ -79,9 +80,13 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
       commit or discard, pick models — in a local window (127.0.0.1 only). The macOS app wraps this.
   narrowbit models                    providers, numbered available models, and this repo's selection
   narrowbit models choose             pick provider, model 1 (explore), 2 (execute), 3 (escalate) and effort from numbered menus
-  narrowbit models set <explore|execute|escalate|all> <model name or number> [--provider claude|codex]
+  narrowbit models set <explore|execute|escalate|all> <model name or number> [--provider <name>]
   narrowbit models set provider <claude|codex>     narrowbit models set effort <level>
-  narrowbit models reset [--provider claude|codex]   back to the built-in defaults
+  narrowbit models reset [--provider <name>]   back to the built-in defaults
+  narrowbit models endpoint <provider> <base-url|default> [--key-env NAME]   point an API/local provider elsewhere
+  narrowbit keys [list]               which API keys are set    narrowbit keys set|remove <provider>
+      providers: claude, codex (subscriptions); openrouter (free & paid), groq, gemini (free tiers),
+      openai, deepseek (paid); ollama, lmstudio (local, free); custom (any OpenAI-compatible server)
 
   narrowbit memory add <type> "<text>" [--reason ..] [--attempt ..] [--result ..] [--files a,b]
       types: ${MEMORY_TYPES.join(", ")}
@@ -382,7 +387,7 @@ export async function main(argv: string[]): Promise<number> {
       requireInit(p);
       const text = pos.join(" ");
       if (!text) {
-        process.stderr.write('usage: narrowbit agent "<task>" [--provider claude|codex] [--model X | --explore X --execute X --escalate X] [--effort medium] [--max-steps N] [--force] [--dry-run]\n');
+        process.stderr.write('usage: narrowbit agent "<task>" [--provider <name>] [--model X | --explore X --execute X --escalate X] [--effort medium] [--max-steps N] [--force] [--dry-run]\n');
         return 2;
       }
       const g = gitState(root);
@@ -418,8 +423,9 @@ export async function main(argv: string[]): Promise<number> {
         out(`verify: ${verifyEntries.length ? verifyEntries.map(([k, v]) => `${k}=${v}`).join(", ") : "(none)"}`);
         return 0;
       }
-      if (sel.provider !== "claude") {
-        process.stderr.write(`narrowbit: provider "${sel.provider}" can be selected but can't run tasks yet — its adapter isn't built. Use --provider claude for now.\n`);
+      const unavailable = unavailableReason(sel, cfg.agent);
+      if (unavailable) {
+        process.stderr.write(`narrowbit: ${unavailable}\n`);
         return 2;
       }
       out(`narrowbit agent: ${text}`);
@@ -467,6 +473,68 @@ export async function main(argv: string[]): Promise<number> {
       }
       return await new Promise<number>(() => {});
     }
+    case "keys": {
+      // API keys live in ~/.narrowbit/keys.json (0600), shared by every repo; env vars win.
+      const [sub, prov] = pos;
+      if (sub === "set" || sub === "remove") {
+        if (!prov || !isProvider(prov) || PROVIDER_INFO[prov].kind === "subscription") {
+          process.stderr.write(`usage: narrowbit keys ${sub} <${PROVIDERS.filter((x) => PROVIDER_INFO[x].kind !== "subscription").join("|")}>\n`);
+          return 2;
+        }
+        if (sub === "remove") {
+          setKey(prov, null);
+          out(`removed the saved ${PROVIDER_INFO[prov].label} key`);
+          return 0;
+        }
+        // Read the key without echoing it or putting it on the command line (shell history).
+        let key = "";
+        if (process.stdin.isTTY) {
+          process.stdout.write(`${PROVIDER_INFO[prov].label} API key${PROVIDER_INFO[prov].keyUrl ? ` (from ${PROVIDER_INFO[prov].keyUrl})` : ""}: `);
+          process.stdin.setRawMode(true);
+          key = await new Promise<string>((res) => {
+            let buf = "";
+            const onData = (d: Buffer) => {
+              for (const ch of d.toString("utf8")) {
+                if (ch === "\r" || ch === "\n") {
+                  process.stdin.off("data", onData);
+                  process.stdin.setRawMode(false);
+                  process.stdin.pause();
+                  process.stdout.write("\n");
+                  return res(buf);
+                }
+                if (ch === "\u0003") {
+                  process.stdin.setRawMode(false);
+                  process.stdout.write("\n");
+                  process.exit(1);
+                }
+                if (ch === "\u007f") buf = buf.slice(0, -1);
+                else buf += ch;
+              }
+            };
+            process.stdin.on("data", onData);
+            process.stdin.resume();
+          });
+        } else key = (await readStdin()).trim();
+        if (!key.trim()) {
+          process.stderr.write("narrowbit: no key entered — nothing saved\n");
+          return 1;
+        }
+        setKey(prov, key);
+        out(`saved the ${PROVIDER_INFO[prov].label} key to ~/.narrowbit/keys.json (readable only by you)`);
+        return 0;
+      }
+      if (sub && sub !== "list") {
+        process.stderr.write("usage: narrowbit keys [list | set <provider> | remove <provider>]\n");
+        return 2;
+      }
+      for (const pr of PROVIDERS) {
+        const info = PROVIDER_INFO[pr];
+        if (info.kind !== "api") continue;
+        const src = keySource(pr, info.keyEnv);
+        out(`  ${pr.padEnd(10)} ${src === "env" ? `set (from $${info.keyEnv})` : src === "file" ? "set (saved)" : "not set"}${!src && info.keyUrl ? `   — get one at ${info.keyUrl}` : ""}`);
+      }
+      return 0;
+    }
     case "models": {
       const cfg = loadConfig(p);
       const sub = pos[0];
@@ -481,11 +549,15 @@ export async function main(argv: string[]): Promise<number> {
         out(`default provider: ${current.provider}   effort: ${current.effort}${existsSync(p.config) ? "" : "   (built-in defaults; nothing saved for this repo yet)"}\n`);
         for (const prov of PROVIDERS) {
           const s = resolveSelection(cfg.agent, { provider: prov });
-          const avail = availableModels(prov);
-          out(`${prov === current.provider ? "*" : " "} ${prov}${prov === "claude" ? "" : "   (selection only — adapter not built yet)"}`);
-          for (const ph of PHASES) out(`    ${ph.padEnd(9)} ${s.tiers[ph]}${s.tiers[ph] === DEFAULT_TIERS[prov][ph] ? "" : `   (default ${DEFAULT_TIERS[prov][ph]})`}`);
-          out(`    available: ${avail.models.length ? avail.models.map((m, i) => `${i + 1}) ${m}`).join("  ") : "(unknown)"}   — ${avail.note}`);
+          const info = PROVIDER_INFO[prov];
+          const why = unavailableReason(s, cfg.agent);
+          const chosen = PHASES.some((ph) => s.tiers[ph]) ? `  ${PHASES.map((ph) => `${ph}=${s.tiers[ph] || "?"}`).join(" ")}` : "";
+          out(`${prov === current.provider ? "*" : " "} ${prov.padEnd(10)} ${info.label} — ${info.kind}, ${info.pricing}${chosen}${why ? `\n               not ready: ${why}` : ""}`);
         }
+        // Model catalogs can be long (OpenRouter lists hundreds), so only the default provider's.
+        const avail = await availableModels(current.provider, cfg.agent);
+        out(`\n${current.provider} models: ${avail.models.length ? (avail.models.length > 40 ? `${avail.models.length} available${avail.free.length ? ` (${avail.free.length} free: ${avail.free.slice(0, 12).join(", ")}${avail.free.length > 12 ? ", …" : ""})` : ""}` : `\n${avail.models.map((m, i) => `  ${String(i + 1).padStart(2)}) ${m}${avail.labels[m] ? `  — ${avail.labels[m]}` : ""}`).join("\n")}`) : "(unknown)"}\n  (${avail.note})`);
+        out("switch with `narrowbit models set provider <name>` or `narrowbit models choose`");
         return 0;
       }
       if (sub === "choose") {
@@ -495,40 +567,48 @@ export async function main(argv: string[]): Promise<number> {
         }
         const { createInterface } = await import("node:readline/promises");
         const rl = createInterface({ input: process.stdin, output: process.stdout });
-        const pick = async (title: string, options: readonly string[], current: string): Promise<string> => {
+        const pick = async (title: string, options: readonly string[], current: string, o: { labels?: string[]; allowName?: boolean } = {}): Promise<string> => {
           out(`\n${title}`);
-          options.forEach((o, i) => out(`  ${i + 1}) ${o}${o === current ? "   ← current" : ""}`));
+          options.forEach((opt, i) => out(`  ${i + 1}) ${o.labels?.[i] ?? opt}${opt === current ? "   ← current" : ""}`));
+          const keep = current ? `, or Enter to keep ${current}` : "";
           for (;;) {
-            const a = (await rl.question(`choose 1-${options.length}, or Enter to keep ${current}: `)).trim();
-            if (!a) return current;
+            const a = (await rl.question(`choose 1-${options.length}${o.allowName ? " or type a model id" : ""}${keep}: `)).trim();
+            if (!a && current) return current;
             const n = Number(a);
             if (Number.isInteger(n) && n >= 1 && n <= options.length) return options[n - 1];
-            out(`  "${a}" isn't one of the numbers above`);
+            if (a && o.allowName && !/^\d+$/.test(a)) return a;
+            out(a ? `  "${a}" isn't one of the numbers above` : "  a model is required here");
           }
         };
         try {
           const agent = (cfg.agent ??= {});
           const start = resolveSelection(isProvider(agent.provider ?? "claude") ? agent : { ...agent, provider: "claude" });
-          const provider = (await pick("Provider", PROVIDERS, start.provider)) as ProviderName;
+          const provider = (await pick("Provider", PROVIDERS, start.provider, {
+            labels: PROVIDERS.map((pr) => `${PROVIDER_INFO[pr].label} — ${PROVIDER_INFO[pr].kind}, ${PROVIDER_INFO[pr].pricing}`),
+          })) as ProviderName;
           const current = resolveSelection(agent, { provider });
-          const avail = availableModels(provider);
-          if (!avail.models.length) {
-            process.stderr.write(`narrowbit: no model list for ${provider} — ${avail.note}\n`);
-            return 2;
-          }
+          const avail = await availableModels(provider, agent);
+          // Long catalogs: number the free models (or the first 40) and accept any typed id.
+          const long = avail.models.length > 40;
+          const menu = long ? (avail.free.length ? avail.free : avail.models).slice(0, 40) : avail.models;
+          if (long) out(`\n${avail.models.length} ${provider} models available — listing ${avail.free.length ? "free ones" : "the first 40"}; type any other id directly.`);
+          if (!avail.models.length) out(`\n(no model list: ${avail.note} — type model ids directly)`);
+          const pickOpts = { allowName: long || !avail.models.length || PROVIDER_INFO[provider].kind !== "subscription" };
           const slots: Record<Phase, string> = {
             explore: "Model 1 — explore: reading and orienting, before any edit (a cheap model is usually enough)",
             execute: "Model 2 — execute: making edits and verifying them",
             escalate: "Model 3 — escalate: only when the loop is stuck (your strongest model)",
           };
           const saved = ((agent.models ??= {})[provider] ??= {});
-          for (const ph of PHASES) saved[ph] = await pick(slots[ph], avail.models, current.tiers[ph]);
+          const modelLabels = menu.map((m) => (avail.labels[m] ? `${m}  — ${avail.labels[m]}` : m));
+          for (const ph of PHASES) saved[ph] = await pick(slots[ph], menu, current.tiers[ph], { ...pickOpts, labels: modelLabels });
           agent.effort = await pick("Effort", EFFORT_LEVELS, current.effort);
           agent.provider = provider;
           ensureDirs(p);
           saveConfig(p, cfg);
           out(`\nsaved for this repo: provider=${provider}  ${PHASES.map((ph) => `${ph}=${saved[ph]}`).join("  ")}  effort=${agent.effort}`);
-          if (provider !== "claude") out(`note: ${provider} can be selected but can't run tasks until its adapter is built.`);
+          const why = unavailableReason(resolveSelection(agent, { provider }), agent);
+          if (why) out(`note: ${why}`);
           return 0;
         } catch (e: any) {
           // Ctrl+C / Ctrl+D mid-menu: nothing has been saved yet, so just say so.
@@ -541,6 +621,22 @@ export async function main(argv: string[]): Promise<number> {
           rl.close();
         }
       }
+      if (sub === "endpoint") {
+        // narrowbit models endpoint <provider> <base-url|default> [--key-env NAME]
+        const [prov, url] = [pos[1], pos[2]];
+        if (!prov || !isProvider(prov) || PROVIDER_INFO[prov].kind === "subscription" || !url) {
+          process.stderr.write("usage: narrowbit models endpoint <openrouter|groq|gemini|openai|deepseek|ollama|lmstudio|custom> <base-url|default> [--key-env NAME]\n");
+          return 2;
+        }
+        const agent = (cfg.agent ??= {});
+        const eps = (agent.endpoints ??= {});
+        if (url === "default") delete eps[prov];
+        else eps[prov] = { ...eps[prov], baseUrl: url, ...(strFlag(args, "key-env") ? { keyEnv: strFlag(args, "key-env") } : {}) };
+        ensureDirs(p);
+        saveConfig(p, cfg);
+        out(`${prov}: ${url === "default" ? `back to ${PROVIDER_INFO[prov].baseUrl ?? "(no default)"}` : url}`);
+        return 0;
+      }
       if (sub !== "set" && sub !== "reset") {
         process.stderr.write("usage: narrowbit models [choose | set <explore|execute|escalate|all|provider|effort> <value> [--provider X] | reset [--provider X]]\n");
         return 2;
@@ -548,7 +644,7 @@ export async function main(argv: string[]): Promise<number> {
       const agent = (cfg.agent ??= {});
       const provider = strFlag(args, "provider") ?? agent.provider ?? "claude";
       if (!isProvider(provider)) {
-        process.stderr.write(`narrowbit: unknown provider "${provider}" (expected ${PROVIDERS.join(" or ")})\n`);
+        process.stderr.write(`narrowbit: unknown provider "${provider}" (expected one of ${PROVIDERS.join(", ")})\n`);
         return 2;
       }
       if (sub === "reset") {
@@ -560,30 +656,30 @@ export async function main(argv: string[]): Promise<number> {
       }
       const [key, value] = [pos[1], pos[2]];
       if (!key || !value) {
-        process.stderr.write("usage: narrowbit models set <explore|execute|escalate|all|provider|effort> <value> [--provider claude|codex]\n");
+        process.stderr.write("usage: narrowbit models set <explore|execute|escalate|all|provider|effort> <value> [--provider <name>]\n");
         return 2;
       }
       if (key === "provider") {
         if (!isProvider(value)) {
-          process.stderr.write(`narrowbit: unknown provider "${value}" (expected ${PROVIDERS.join(" or ")})\n`);
+          process.stderr.write(`narrowbit: unknown provider "${value}" (expected one of ${PROVIDERS.join(", ")})\n`);
           return 2;
         }
         agent.provider = value;
       } else if (key === "effort") {
         agent.effort = value;
       } else if (key === "all" || (PHASES as readonly string[]).includes(key)) {
-        const avail = availableModels(provider);
+        const avail = await availableModels(provider, agent);
         // A number picks from the numbered "available" list that `narrowbit models` prints.
         let model = value;
         if (/^\d+$/.test(value)) {
           const i = Number(value) - 1;
           if (!avail.models[i]) {
-            process.stderr.write(`narrowbit: no model number ${value} for ${provider} (${avail.models.map((m, j) => `${j + 1}) ${m}`).join("  ") || "none listed"})\n`);
+            process.stderr.write(`narrowbit: no model number ${value} for ${provider} (${avail.models.slice(0, 40).map((m, j) => `${j + 1}) ${m}`).join("  ") || "none listed"})\n`);
             return 2;
           }
           model = avail.models[i];
-        } else if (provider === "codex" && avail.models.length && !avail.models.includes(value)) {
-          process.stderr.write(`narrowbit: warning — "${value}" isn't in the local Codex catalog (${avail.models.join(", ")}); saving anyway\n`);
+        } else if (provider !== "claude" && avail.models.length && !avail.models.includes(value)) {
+          process.stderr.write(`narrowbit: warning — "${value}" isn't in ${PROVIDER_INFO[provider].label}'s model list; saving anyway\n`);
         }
         const phases: Phase[] = key === "all" ? [...PHASES] : [key as Phase];
         const saved = ((agent.models ??= {})[provider] ??= {});
@@ -596,7 +692,7 @@ export async function main(argv: string[]): Promise<number> {
       saveConfig(p, cfg);
       const shown = key === "provider" ? (value as ProviderName) : provider;
       const updated = resolveSelection(cfg.agent, { provider: shown });
-      out(`saved. ${shown}: ${PHASES.map((ph) => `${ph}=${updated.tiers[ph]}`).join(" ")}   default provider: ${agent.provider ?? "claude"}   effort: ${updated.effort}`);
+      out(`saved. ${shown}: ${PHASES.map((ph) => `${ph}=${updated.tiers[ph] || "?"}`).join(" ")}   default provider: ${agent.provider ?? "claude"}   effort: ${updated.effort}`);
       return 0;
     }
     case "memory": {

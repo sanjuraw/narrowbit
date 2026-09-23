@@ -73,9 +73,14 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .slot .num { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; font-weight: 700; font-size: 12px; color: #fff; }
 .slot label { font-size: 12px; color: var(--muted); }
 .slot select { grid-column: 2; }
-.seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--panel-2); border-radius: 8px; padding: 3px; gap: 3px; margin-bottom: 12px; }
-.seg button { border: 0; background: transparent; padding: 5px; border-radius: 6px; }
-.seg button.on { background: var(--panel); box-shadow: 0 1px 2px rgba(0,0,0,.12); font-weight: 600; }
+#providerSel { margin-bottom: 12px; }
+.pinfo { font-size: 12px; color: var(--muted); margin: -4px 0 12px; }
+.pinfo a { color: var(--accent); }
+.subrow { display: flex; gap: 6px; margin: -4px 0 12px; align-items: center; flex-wrap: wrap; }
+.subrow input { flex: 1 1 140px; width: auto; }
+.subrow .status { font-size: 12px; color: var(--ok); flex: 1 1 100%; }
+.slot input { grid-column: 2; }
+.freeonly { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); margin: -4px 0 10px 30px; }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
 .check { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; font-size: 13px; }
@@ -170,7 +175,11 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
   <aside>
     <section>
       <h2>Models</h2>
-      <div class="seg" id="providerSeg"></div>
+      <select id="providerSel" aria-label="Provider"></select>
+      <div class="pinfo" id="providerInfo"></div>
+      <div id="keyRow" class="subrow hidden"></div>
+      <div id="urlRow" class="subrow hidden"></div>
+      <datalist id="modelList"></datalist>
       <div id="slots"></div>
       <div class="row2">
         <div class="field"><label for="effort">Effort</label><select id="effort"></select></div>
@@ -332,44 +341,111 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
     }
   }
   var PHASE = { explore: ["1", "Explore — reading, before any edit", "var(--t-explore)"], execute: ["2", "Execute — editing and verifying", "var(--t-execute)"], escalate: ["3", "Escalate — only when stuck", "var(--t-escalate)"] };
+  var KIND = { subscription: "Subscriptions", api: "APIs — free & paid", local: "Local models — free, offline" };
+  var modelLists = {};   // provider -> /api/models result
   function renderModels() {
-    var seg = clear($("providerSeg"));
-    Object.keys(S.providers).forEach(function (prov) {
-      seg.appendChild(el("button", { text: prov === "claude" ? "Claude" : "Codex (GPT)", cls: draft.provider === prov ? "on" : "", onclick: function () { if (prov === draft.provider) return; draft.provider = prov; saveModels(S.providers[prov].tiers); } }));
+    var sel = clear($("providerSel"));
+    ["subscription", "api", "local"].forEach(function (kind) {
+      var g = el("optgroup", { label: KIND[kind] });
+      Object.keys(S.providers).forEach(function (prov) {
+        var P = S.providers[prov];
+        if (P.kind !== kind) return;
+        var o = el("option", { value: prov, text: P.label + " — " + P.pricing });
+        if (prov === draft.provider) o.selected = true;
+        g.appendChild(o);
+      });
+      sel.appendChild(g);
     });
     var P = S.providers[draft.provider];
+    var info = clear($("providerInfo"));
+    if (P.hint) info.appendChild(document.createTextNode(P.hint + " "));
+    if (P.keyUrl && !P.keySource) info.appendChild(el("a", { href: P.keyUrl, target: "_blank", text: "Get a key →" }));
+    show(info, !!(P.hint || (P.keyUrl && !P.keySource)));
+
+    var keyRow = clear($("keyRow"));
+    show(keyRow, P.kind === "api");
+    if (P.kind === "api") {
+      if (P.keySource) {
+        keyRow.appendChild(el("span", { cls: "status", text: P.keySource === "env" ? "✓ API key set (from environment)" : "✓ API key saved" }));
+        if (P.keySource === "file") keyRow.appendChild(el("button", { cls: "link", text: "Remove key", onclick: function () { saveKey(""); } }));
+      } else {
+        var k = el("input", { type: "password", placeholder: P.needsKey ? "Paste API key" : "API key (if needed)", autocomplete: "off" });
+        keyRow.appendChild(k);
+        keyRow.appendChild(el("button", { text: "Save", onclick: function () { if (k.value.trim()) saveKey(k.value); } }));
+      }
+    }
+    var urlRow = clear($("urlRow"));
+    var hasUrl = P.kind === "local" || draft.provider === "custom";
+    show(urlRow, hasUrl);
+    if (hasUrl) {
+      var u = el("input", { type: "text", cls: "mono", value: P.baseUrl || "", placeholder: "http://127.0.0.1:8080/v1", "aria-label": "Base URL" });
+      urlRow.appendChild(u);
+      urlRow.appendChild(el("button", { text: "Set URL", onclick: function () { api("/api/endpoint", { provider: draft.provider, baseUrl: u.value }).then(function (st) { delete modelLists[draft.provider]; apply(st); flash($("savedMsg"), "Endpoint saved"); }).catch(function (e) { showError(e.message); }); } }));
+    }
+
     var slots = clear($("slots"));
+    var list = modelLists[draft.provider];
     S.phases.forEach(function (ph) {
-      var sel = el("select", { id: "slot-" + ph, onchange: function () { saveModels(); } });
-      var opts = P.available.models.slice();
-      if (opts.indexOf(P.tiers[ph]) < 0) opts.unshift(P.tiers[ph]);
-      opts.forEach(function (m) {
-        var o = el("option", { value: m, text: m + (m === P.defaults[ph] ? "  (default)" : "") });
-        if (m === P.tiers[ph]) o.selected = true;
-        sel.appendChild(o);
-      });
+      var inp = el("input", { type: "text", id: "slot-" + ph, list: "modelList", value: P.tiers[ph] || "", placeholder: list && !list.models.length ? "type a model id" : "choose a model", autocomplete: "off", spellcheck: "false", onchange: function () { saveModels(); } });
       slots.appendChild(el("div", { cls: "slot" },
         el("span", { cls: "num", style: "background:" + PHASE[ph][2], text: PHASE[ph][0] }),
-        el("label", { for: "slot-" + ph, text: PHASE[ph][1] }),
-        sel));
+        el("label", { for: "slot-" + ph, text: PHASE[ph][1] + (P.defaults[ph] && P.tiers[ph] !== P.defaults[ph] ? " · default " + P.defaults[ph] : "") }),
+        inp));
     });
+    if (list && list.free.length) {
+      var fo = el("input", { type: "checkbox", id: "freeOnly" });
+      fo.checked = store("freeOnly") === "1";
+      fo.onchange = function () { store("freeOnly", fo.checked ? "1" : "0"); fillModelList(); };
+      slots.appendChild(el("label", { cls: "freeonly" }, fo, "Show free models only (" + list.free.length + ")"));
+    }
+    fillModelList();
+    if (!list) loadModelList(draft.provider);
+
     var eff = clear($("effort"));
     S.efforts.forEach(function (l) { var o = el("option", { value: l, text: l }); if (l === draft.effort) o.selected = true; eff.appendChild(o); });
     var note = $("providerNote");
     var notes = [];
-    if (!P.runnable) notes.push("Codex runs aren't available yet — its adapter needs “codex login” first. You can pick the models now; runs use Claude until then.");
-    if (!P.available.models.length) notes.push(P.available.note);
+    if (P.unavailable) notes.push(P.unavailable);
+    if (list && !list.models.length) notes.push(list.note);
     if (S.selectionError) notes.push(S.selectionError);
     note.textContent = notes.join(" "); show(note, notes.length > 0);
     var t = S.selection.tiers;
-    $("selLine").textContent = S.selection.provider + ": " + t.explore + " → " + t.execute + " → " + t.escalate + " · " + S.selection.effort;
+    $("selLine").textContent = S.providers[S.selection.provider].label + ": " + (t.explore || "?") + " → " + (t.execute || "?") + " → " + (t.escalate || "?") + " · " + S.selection.effort;
     updateRunBtn();
   }
+  function fillModelList() {
+    var dl = clear($("modelList"));
+    var list = modelLists[draft.provider];
+    if (!list) return;
+    var fo = $("freeOnly");
+    var ids = fo && fo.checked ? list.free : list.models;
+    ids.forEach(function (id) {
+      var label = (list.labels[id] || "") + (list.free.indexOf(id) >= 0 ? " · free" : "");
+      dl.appendChild(el("option", { value: id, label: label.replace(/^ · /, "") }));
+    });
+  }
+  function loadModelList(prov) {
+    api("/api/models?provider=" + encodeURIComponent(prov)).then(function (l) {
+      modelLists[prov] = l;
+      if (draft && draft.provider === prov) renderModels();
+    }).catch(function () {});
+  }
+  function saveKey(key) {
+    api("/api/key", { provider: draft.provider, key: key }).then(function (st) {
+      delete modelLists[draft.provider];
+      apply(st); flash($("savedMsg"), key ? "Key saved to ~/.narrowbit/keys.json" : "Key removed");
+    }).catch(function (e) { showError(e.message); });
+  }
+  $("providerSel").onchange = function () {
+    var prov = $("providerSel").value;
+    draft.provider = prov;
+    saveModels(S.providers[prov].tiers);
+  };
   // tiers omitted = keep that provider's own saved models (used when switching provider).
   function saveModels(tiers) {
     if (!tiers || tiers instanceof Event) {
       tiers = {};
-      S.phases.forEach(function (ph) { tiers[ph] = $("slot-" + ph).value; });
+      S.phases.forEach(function (ph) { tiers[ph] = $("slot-" + ph).value.trim(); });
     }
     draft.effort = $("effort").value || draft.effort;
     api("/api/models", { provider: draft.provider, effort: draft.effort, tiers: tiers }).then(function (st) {
@@ -448,7 +524,7 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
     updateRunBtn();
   }
   function updateRunBtn() {
-    var ok = S && S.root && S.initialized && !running && S.providers[S.selection.provider].runnable;
+    var ok = S && S.root && S.initialized && !running && !S.providers[S.selection.provider].unavailable;
     $("runBtn").disabled = !ok;
   }
   $("maxSteps").value = store("maxSteps") || "20";

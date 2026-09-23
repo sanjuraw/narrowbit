@@ -465,8 +465,8 @@ describe("model selection (providers/models.ts)", () => {
   });
 
   test("unknown provider is an error, not a silent fallback", () => {
-    assert.throws(() => resolveSelection({ provider: "gemini" }), /unknown provider/);
-    assert.throws(() => resolveSelection(undefined, { provider: "gemini" }), /unknown provider/);
+    assert.throws(() => resolveSelection({ provider: "nosuchai" }), /unknown provider/);
+    assert.throws(() => resolveSelection(undefined, { provider: "nosuchai" }), /unknown provider/);
   });
 });
 
@@ -507,5 +507,53 @@ test("app server (ui.ts): refuses calls without the launch token or from a non-l
   } finally {
     server.close();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("openai-compat adapter: keeps the conversation per session, cumulative cost, fatal vs retryable errors", async () => {
+  const { callOpenAICompat } = await dist("providers/openai-compat.js");
+  const { createServer } = await import("node:http");
+  const seen = [];
+  let status = 200;
+  const server = createServer((req, res) => {
+    let b = "";
+    req.on("data", (c) => (b += c));
+    req.on("end", () => {
+      const body = JSON.parse(b);
+      seen.push({ auth: req.headers.authorization, messages: body.messages });
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(status === 200
+        ? JSON.stringify({ choices: [{ message: { content: `{"action":"done","n":${seen.length}}` } }], usage: { prompt_tokens: 100, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 40 }, cost: 0.01 } })
+        : JSON.stringify({ error: { message: "nope" } }));
+    });
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const ep = { provider: "openrouter", baseUrl: `http://127.0.0.1:${server.address().port}`, apiKey: "k-test", needsKey: true };
+  const base = { cwd: ".", role: "execution", model: "some/model:free", sessionId: "s1" };
+  try {
+    const a = await callOpenAICompat(ep, { ...base, systemPrompt: "SYS", prompt: "first" });
+    const b = await callOpenAICompat(ep, { ...base, resume: true, prompt: "second" });
+    assert.equal(a.isError, false);
+    assert.deepEqual(a.usage, { input: 60, cacheCreate: 0, cacheRead: 40, output: 10 });
+    assert.deepEqual(seen[0].messages.map((m) => m.role), ["system", "user"]);
+    // The resumed call resends the whole conversation, including the model's own reply.
+    assert.deepEqual(seen[1].messages.map((m) => m.content), ["SYS", "first", '{"action":"done","n":1}', "second"]);
+    assert.equal(seen[0].auth, "Bearer k-test");
+    assert.ok(Math.abs(b.costUsd - 0.02) < 1e-9, "costUsd is cumulative per session, like claude-cli");
+    status = 401;
+    const bad = await callOpenAICompat(ep, { ...base, resume: true, prompt: "third" });
+    assert.equal(bad.isError, true);
+    assert.equal(bad.fatal, true);
+    status = 503;
+    const flaky = await callOpenAICompat(ep, { ...base, resume: true, prompt: "fourth" });
+    assert.equal(flaky.fatal, false, "a 5xx is worth retrying");
+    // A failed call must not leave its prompt in the history (the retry would duplicate it).
+    status = 200;
+    await callOpenAICompat(ep, { ...base, resume: true, prompt: "fifth" });
+    assert.deepEqual(seen.at(-1).messages.map((m) => m.content).slice(-2), ['{"action":"done","n":2}', "fifth"]);
+    const noKey = await callOpenAICompat({ ...ep, apiKey: undefined }, { ...base, prompt: "x" });
+    assert.equal(noKey.fatal, true);
+  } finally {
+    server.close();
   }
 });
