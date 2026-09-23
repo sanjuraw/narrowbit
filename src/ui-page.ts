@@ -113,6 +113,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .topbar { height: 48px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid transparent; }
 .topbar.scrolled { border-bottom-color: var(--line); }
 .topbar .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.repo-bar { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.repo-bar .rb-label { font-weight: 600; white-space: nowrap; flex: none; }
+.repo-bar .rb-recent { display: flex; align-items: center; gap: 4px; overflow-x: auto; flex: none; }
+.repo-bar .rb-recent button { font-size: 12px; padding: 4px 8px; border-radius: 6px; background: var(--panel-2); white-space: nowrap; }
+.repo-bar .rb-recent button:hover { background: var(--line); }
+.repo-bar input { flex: 1; min-width: 80px; font-size: 12.5px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); }
+.repo-bar button.primary { flex: none; padding: 5px 10px; font-size: 12.5px; }
 .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 2px 9px; border-radius: 99px; background: var(--panel-2); color: var(--muted); white-space: nowrap; border: 0; }
 .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); }
 #menuBtn { display: none; }
@@ -285,6 +292,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   <main>
     <div class="topbar" id="topbar">
       <button class="ghost" id="menuBtn" aria-label="Menu">☰</button>
+      <div class="repo-bar hidden" id="repoBar">
+        <span class="rb-label">Choose a folder to get started</span>
+        <div class="rb-recent" id="repoBarRecent"></div>
+        <input type="text" id="repoBarPath" placeholder="/path/to/your/project" class="mono">
+        <button id="repoBarPick" class="hidden">Choose…</button>
+        <button class="primary" id="repoBarOpen">Open</button>
+      </div>
       <span class="title" id="title"></span>
       <button class="pill hidden" id="planMini"></button>
       <span class="pill hidden" id="treePill"></span>
@@ -436,17 +450,31 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function apply(state) {
     var first = !S;
     S = state;
-    if (!S.root) { renderRepo(); openRepoPicker(false); return; }
+    renderRepo();
     show($("repoOverlay"), false);
+    showRepoBar(!S.root);
+    if (!S.root) { show($("welcome"), true); show($("setupCard"), false); renderComposer(); return; }
     if (!draft || draft.root !== S.root) draft = { root: S.root, provider: S.selection.provider, effort: S.selection.effort };
     run.active = S.running; if (S.running) run.taskId = S.runningTask;
-    renderRepo(); renderSessions(); renderSettings(); renderComposer();
+    renderSessions(); renderSettings(); renderComposer();
     show($("setupCard"), !S.initialized);
     if (first) {
       if (S.running && S.runningTask) openSession(S.runningTask);
       else newTask();
     }
     if (!es) connect();
+  }
+  // Non-blocking: unlike switching repositories later (openRepoPicker's overlay), the app is fully
+  // visible behind this — it's a bar in the topbar, not a gate you have to clear before anything works.
+  function showRepoBar(on) {
+    show($("repoBar"), on);
+    show($("title"), !on);
+    if (!on) return;
+    var list = clear($("repoBarRecent"));
+    ((S && S.recent) || []).slice(0, 4).forEach(function (r) {
+      list.appendChild(el("button", { title: r, onclick: function () { openRepo(r); } }, r.split("/").filter(Boolean).pop()));
+    });
+    show($("repoBarPick"), !!native);
   }
   function renderRepo() {
     $("repoName").textContent = S && S.root ? S.name : "No repository";
@@ -486,6 +514,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   $("closeDrawer").onclick = closeDrawer; $("scrim").onclick = function () { closeDrawer(); closeSide(); };
 
   function renderSettings() {
+    if (!S || !S.providers) return;
     var sel = clear($("providerSel"));
     ["subscription", "free", "paid", "local"].forEach(function (group) {
       var g = el("optgroup", { label: KIND[group] });
@@ -614,7 +643,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     $("sendBtn").disabled = !S || !S.root || !S.initialized || busy || !!(P && P.unavailable);
     $("leadTog").checked = !!(S && S.lead);
     input.placeholder = view && view.taskId ? "Ask for a follow-up or a change…" : "Describe a task…";
-    $("hint").textContent = busy && !viewingRun() ? "Another task is running — open it from the sidebar to watch or stop it." : P && P.unavailable ? P.unavailable : "Enter to send · Shift+Enter for a new line";
+    $("hint").textContent = !S || !S.root ? "Choose a folder above to get started" : busy && !viewingRun() ? "Another task is running — open it from the sidebar to watch or stop it." : P && P.unavailable ? P.unavailable : "Enter to send · Shift+Enter for a new line";
   }
   function send(force) {
     var text = input.value.trim();
@@ -991,14 +1020,20 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (es) { es.close(); es = null; }
       draft = null; S = null; modelLists = {};
       apply(st);
-    }).catch(function (e) { var n = $("repoErr"); n.textContent = e.message; show(n, true); });
+    }).catch(function (e) {
+      var n = $("repoErr"); n.textContent = e.message; show(n, true);
+      banner("bad", e.message);
+    });
   }
   $("repoBtn").onclick = function () { openRepoPicker(!!(S && S.root)); };
   $("closeRepo").onclick = function () { show($("repoOverlay"), false); };
   $("openRepo").onclick = function () { var v = $("repoPath").value.trim(); if (v) openRepo(v); };
   $("repoPath").addEventListener("keydown", function (e) { if (e.key === "Enter") $("openRepo").click(); });
   $("pickFolder").onclick = function () { native.postMessage({ type: "pickFolder" }); };
-  window.narrowbitFolderPicked = function (path) { if (path) { $("repoPath").value = path; openRepo(path); } };
+  $("repoBarOpen").onclick = function () { var v = $("repoBarPath").value.trim(); if (v) openRepo(v); };
+  $("repoBarPath").addEventListener("keydown", function (e) { if (e.key === "Enter") $("repoBarOpen").click(); });
+  $("repoBarPick").onclick = function () { native.postMessage({ type: "pickFolder" }); };
+  window.narrowbitFolderPicked = function (path) { if (path) openRepo(path); };
   $("initBtn").onclick = function () {
     var b = $("initBtn"); b.disabled = true; b.textContent = "Indexing…";
     api("/api/init", {}).then(function (st) { apply(st); resetView(null); }).catch(function (e) { banner("bad", e.message); }).then(function () { b.disabled = false; b.textContent = "Set up Narrowbit here"; });
