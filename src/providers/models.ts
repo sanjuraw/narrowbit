@@ -179,7 +179,6 @@ export function resolveEndpoint(provider: ProviderName, agent?: AgentConfig): En
 
 /** Why `provider` can't run tasks right now, or null if it can. */
 export function unavailableReason(sel: Selection, agent?: AgentConfig): string | null {
-  if (sel.provider === "codex") return "Codex can be selected but can't run tasks yet — its adapter needs `codex login` first.";
   const ep = resolveEndpoint(sel.provider, agent);
   if (ep) {
     const info = PROVIDER_INFO[sel.provider];

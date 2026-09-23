@@ -27,6 +27,7 @@ const { appendEvent, readEvents, fold } = await dist("events.js");
 const { writeEvidence, readEvidence } = await dist("evidence.js");
 const { project } = await dist("context.js");
 const { parseDecision, parseDecisions, capSummary, safeAbsPath } = await dist("runtime.js");
+const { parseCodexStream } = await dist("providers/codex-cli.js");
 const { listSkills, getSkill, saveSkill, removeSkill, renameSkill, slugify } = await dist("skills.js");
 const { resolveSelection, DEFAULT_TIERS } = await dist("providers/models.js");
 
@@ -506,6 +507,48 @@ describe("runtime loop helpers (no model calls — keeps npm test free of Claude
     assert.equal(safeAbsPath(p, "../../etc/passwd"), null);
     assert.equal(safeAbsPath(p, "/etc/passwd"), null);
     assert.equal(safeAbsPath(p, "."), null);
+  });
+});
+
+describe("codex stream parsing (providers/codex-cli.ts — no model calls, no codex login needed)", () => {
+  test("extracts text, thread id and usage from a well-formed successful turn", () => {
+    const lines = [
+      JSON.stringify({ type: "thread.started", thread_id: "01a0-thread-id" }),
+      JSON.stringify({ type: "turn.started" }),
+      JSON.stringify({ type: "item.completed", item: { id: "item_0", type: "reasoning", text: "thinking…" } }),
+      JSON.stringify({ type: "item.completed", item: { id: "item_1", type: "agent_message", text: '{"action":"done","summary":"ok"}' } }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 500, output_tokens: 42, cached_input_tokens: 100 } }),
+    ].join("\n");
+    const r = parseCodexStream(lines);
+    assert.equal(r.sessionId, "01a0-thread-id");
+    assert.equal(r.text, '{"action":"done","summary":"ok"}');
+    assert.equal(r.isError, false);
+    assert.deepEqual(r.usage, { input: 500, cacheCreate: 0, cacheRead: 100, output: 42 });
+  });
+
+  test("a real observed auth failure (turn.failed, 401) is reported as an error, not silently empty", () => {
+    const lines = [
+      JSON.stringify({ type: "thread.started", thread_id: "01a0-thread-id" }),
+      JSON.stringify({ type: "turn.started" }),
+      JSON.stringify({ type: "error", message: "Reconnecting... 1/5 (unexpected status 401 Unauthorized...)" }),
+      JSON.stringify({ type: "turn.failed", error: { message: "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header" } }),
+    ].join("\n");
+    const r = parseCodexStream(lines);
+    assert.equal(r.isError, true);
+    assert.match(r.errorMessage, /401 Unauthorized/);
+    assert.equal(r.text, "");
+  });
+
+  test("an item-level error is captured even without a turn.failed", () => {
+    const lines = [JSON.stringify({ type: "item.completed", item: { id: "item_0", type: "error", message: "something broke" } })].join("\n");
+    const r = parseCodexStream(lines);
+    assert.equal(r.isError, true);
+    assert.match(r.errorMessage, /something broke/);
+  });
+
+  test("empty or garbage output is an error, not a silent empty success", () => {
+    assert.equal(parseCodexStream("").isError, true);
+    assert.equal(parseCodexStream("not json\nalso not json").isError, true);
   });
 });
 

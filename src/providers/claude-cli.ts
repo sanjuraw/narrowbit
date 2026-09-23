@@ -65,6 +65,11 @@ export interface ModelCallResult {
    * in a 25-task batch run: 2 failures, both a bare "model call failed" with empty stderr (no
    * result event, most likely the default timeout under sustained load), not an auth problem. */
   fatal: boolean;
+  /** Set only when the provider assigns its own session/thread id rather than accepting the
+   * caller's requested `sessionId` (e.g. codex-cli.ts — `codex exec` always mints its own thread
+   * id). The caller should adopt this for subsequent resume calls. Claude's own adapter never sets
+   * this: `--session-id` already lets the caller pick the id, so what was requested is what was used. */
+  sessionId?: string;
 }
 
 export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {

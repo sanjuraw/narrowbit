@@ -11,6 +11,7 @@ import { indexRepo, openStore } from "./indexer.js";
 import { callConnectorTool, listConnectorTools } from "./mcpClient.js";
 import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./memory.js";
 import { callModel, type ModelCallOptions, type ModelCallResult } from "./providers/claude-cli.js";
+import { callCodex } from "./providers/codex-cli.js";
 import { DEFAULT_TIERS, resolveEndpoint, unavailableReason, type ModelTiers, type ProviderName } from "./providers/models.js";
 import { callOpenAICompat, hasSession } from "./providers/openai-compat.js";
 import { redact } from "./redact.js";
@@ -301,7 +302,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const unavailable = unavailableReason({ provider, tiers, effort }, cfg.agent);
   if (unavailable) throw new Error(unavailable);
   const endpoint = resolveEndpoint(provider, cfg.agent);
-  const call = endpoint ? (o: ModelCallOptions) => callOpenAICompat(endpoint, o) : callModel;
+  const call = endpoint ? (o: ModelCallOptions) => callOpenAICompat(endpoint, o) : provider === "codex" ? callCodex : callModel;
   const store = openStore(p);
   indexRepo(p, store);
   const maxSteps = opts.maxSteps ?? 20;
@@ -429,6 +430,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       res = await call(callOpts);
     }
     freshSessionPending = false;
+    // Codex assigns its own thread id rather than accepting the one we requested (see
+    // codex-cli.ts) — adopt whatever it actually used so the next call's --resume targets it.
+    if (res.sessionId) sessionId = res.sessionId;
     const totalCost = res.costUsd ?? cumulativeCost;
     const callCost = Math.max(0, totalCost - cumulativeCost);
     cumulativeCost = totalCost;
