@@ -27,6 +27,7 @@ const { appendEvent, readEvents, fold } = await dist("events.js");
 const { writeEvidence, readEvidence } = await dist("evidence.js");
 const { project } = await dist("context.js");
 const { parseDecision, parseDecisions, capSummary, safeAbsPath } = await dist("runtime.js");
+const { listSkills, getSkill, saveSkill, removeSkill, renameSkill, slugify } = await dist("skills.js");
 const { resolveSelection, DEFAULT_TIERS } = await dist("providers/models.js");
 
 const nb = (cwd, ...args) => execFileSync(process.execPath, [BIN, ...args], { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
@@ -341,6 +342,56 @@ describe("fixture repository", () => {
     assert.match(byId[4].result.content[0].text, /exit 3/);
     assert.ok(byId[4].result.content[0].text.split("\n").length < 45);
     assert.equal(byId[5].error.code, -32601);
+  });
+});
+
+describe("skills (reusable task templates)", () => {
+  let root, p;
+  before(() => {
+    root = makeFixture();
+    p = paths(root);
+    ensureDirs(p);
+  });
+  after(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("save, list, get, rename and remove round-trip through Markdown files on disk", () => {
+    assert.deepEqual(listSkills(p), []);
+    saveSkill(p, "Bug Fix", "Standard bugfix workflow", "1. Reproduce with a failing test.\n2. Fix the implementation, not the test.\n3. Verify.");
+    saveSkill(p, "Refactor", "", "Extract, rename, verify — one step at a time.");
+    assert.deepEqual(listSkills(p).map((s) => s.name), ["Bug Fix", "Refactor"]);
+
+    const bugFix = getSkill(p, "Bug Fix");
+    assert.equal(bugFix.description, "Standard bugfix workflow");
+    assert.match(bugFix.body, /Reproduce with a failing test/);
+    assert.equal(bugFix.file, "bug-fix.md");
+
+    // Saving again by the same name overwrites the same file rather than creating a second one.
+    saveSkill(p, "Bug Fix", "Updated", "New body.");
+    assert.equal(listSkills(p).length, 2);
+    assert.equal(getSkill(p, "Bug Fix").body, "New body.");
+
+    renameSkill(p, "Bug Fix", "Bugfix Workflow");
+    assert.equal(getSkill(p, "Bug Fix"), null);
+    assert.equal(getSkill(p, "Bugfix Workflow").body, "New body.");
+    assert.equal(getSkill(p, "Bugfix Workflow").file, "bugfix-workflow.md");
+    assert.ok(!existsSync(join(p.skills, "bug-fix.md")));
+
+    assert.equal(removeSkill(p, "Refactor"), true);
+    assert.equal(removeSkill(p, "Refactor"), false);
+    assert.deepEqual(listSkills(p).map((s) => s.name), ["Bugfix Workflow"]);
+  });
+
+  test("saveSkill rejects an empty name or empty body", () => {
+    assert.throws(() => saveSkill(p, "", "d", "body"));
+    assert.throws(() => saveSkill(p, "name", "d", "   "));
+  });
+
+  test("slugify makes filesystem-safe, collision-resistant filenames", () => {
+    assert.equal(slugify("Bug Fix!"), "bug-fix");
+    assert.equal(slugify("  ---  "), "skill");
+    assert.equal(slugify("API/Endpoint Review"), "api-endpoint-review");
   });
 });
 

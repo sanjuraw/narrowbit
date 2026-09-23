@@ -24,6 +24,7 @@ import {
   type ProviderName,
 } from "./providers/models.js";
 import { runTask, safeAbsPath } from "./runtime.js";
+import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
 import { sh } from "./util.js";
 
@@ -259,6 +260,7 @@ export function startUi(opts: UiOptions) {
       runningTask: run?.running && run.root === root ? run.taskId : null,
       lead: cfg.agent?.boss ?? true,
       history: initialized ? taskHistory(p) : [],
+      skills: listSkills(p),
     };
   };
 
@@ -442,6 +444,23 @@ export function startUi(opts: UiOptions) {
           cfg.agent = { ...cfg.agent, provider, effort, models, ...(typeof body.lead === "boolean" ? { boss: body.lead } : {}) };
           ensureDirs(p);
           saveConfig(p, cfg);
+          return json(res, 200, state());
+        }
+        case "/api/skills": {
+          if (!root) return json(res, 400, { error: "no repository open" });
+          const p = paths(root);
+          const name = String(body.name ?? "").trim();
+          try {
+            ensureDirs(p);
+            saveSkill(p, name, String(body.description ?? ""), String(body.body ?? ""));
+          } catch (e: any) {
+            return json(res, 400, { error: e.message });
+          }
+          return json(res, 200, state());
+        }
+        case "/api/skills/delete": {
+          if (!root) return json(res, 400, { error: "no repository open" });
+          removeSkill(paths(root), String(body.name ?? ""));
           return json(res, 200, state());
         }
         case "/api/limits/refresh": {

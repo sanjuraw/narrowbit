@@ -90,6 +90,8 @@ export interface Paths {
   sessions: string;
   /** Owned-runtime state (events.ts/evidence.ts): one dir per task, `<id>/events.jsonl` + `<id>/evidence/`. */
   runtime: string;
+  /** User-authored, reusable task templates (skills.ts): one `<slug>.md` per skill. */
+  skills: string;
 }
 
 export function paths(root: string): Paths {
@@ -106,6 +108,7 @@ export function paths(root: string): Paths {
     benchmarks: join(nb, "benchmarks"),
     sessions: join(nb, "sessions"),
     runtime: join(nb, "runtime"),
+    skills: join(nb, "skills"),
   };
 }
 
@@ -124,7 +127,7 @@ export function findRoot(start = process.cwd()): string {
 }
 
 export function ensureDirs(p: Paths): void {
-  for (const d of [p.nb, p.memory, p.tasks, p.logs, p.benchmarks, p.sessions, p.runtime]) mkdirSync(d, { recursive: true, mode: 0o700 });
+  for (const d of [p.nb, p.memory, p.tasks, p.logs, p.benchmarks, p.sessions, p.runtime, p.skills]) mkdirSync(d, { recursive: true, mode: 0o700 });
   // Self-ignoring: Narrowbit state never shows up in git status or diffs.
   const gi = join(p.nb, ".gitignore");
   if (!existsSync(gi)) writeFileSync(gi, "*\n");

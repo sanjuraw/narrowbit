@@ -18,6 +18,7 @@ import { availableModels, DEFAULT_TIERS, EFFORT_LEVELS, isProvider, PHASES, PROV
 import { keySource, setKey } from "./keys.js";
 import { fmtLimits, readLimits, refreshClaude, refreshCodex } from "./limits.js";
 import { runTask } from "./runtime.js";
+import { getSkill, listSkills, removeSkill, renameSkill, saveSkill } from "./skills.js";
 import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
 import { fmtNum, now, sh } from "./util.js";
@@ -49,7 +50,7 @@ function parseArgs(argv: string[]): Args {
 
 const VALUE_FLAGS = new Set([
   "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip",
-  "max-steps", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue",
+  "max-steps", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description",
 ]);
 
 const HELP = `narrowbit — minimum sufficient context for coding agents
@@ -95,6 +96,11 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit memory add <type> "<text>" [--reason ..] [--attempt ..] [--result ..] [--files a,b]
       types: ${MEMORY_TYPES.join(", ")}
   narrowbit memory list [type]        narrowbit memory resolve <id>   narrowbit memory supersede <id>
+
+  narrowbit skills [show <name>]      list skills, or print one          reusable task templates
+  narrowbit skills add "<name>" "<instructions>" [--description "..."]   create or overwrite a skill
+  narrowbit skills rename "<old>" "<new>"       narrowbit skills remove "<name>"
+  narrowbit agent --skill "<name>" ["<task>"]   run the agent with a skill's instructions applied
 
   narrowbit claude "<task>" [--dry-run] [-- <claude args>]   launch Claude Code with Narrowbit context + MCP tools
   narrowbit install claude [--no-hook]                        register MCP server + UserPromptSubmit hook in this repo
@@ -389,10 +395,20 @@ export async function main(argv: string[]): Promise<number> {
     }
     case "agent": {
       requireInit(p);
-      const text = pos.join(" ");
-      if (!text) {
-        process.stderr.write('usage: narrowbit agent "<task>" [--provider <name>] [--model X | --explore X --execute X --escalate X] [--effort medium] [--max-steps N] [--force] [--dry-run]\n');
+      let text = pos.join(" ");
+      if (!text && !args.flags.skill) {
+        process.stderr.write('usage: narrowbit agent "<task>" [--skill <name>] [--provider <name>] [--model X | --explore X --execute X --escalate X] [--effort medium] [--max-steps N] [--force] [--dry-run]\n');
         return 2;
+      }
+      if (args.flags.skill) {
+        const s = getSkill(p, String(args.flags.skill));
+        if (!s) {
+          process.stderr.write(`narrowbit: no skill named "${args.flags.skill}" (narrowbit skills to list)\n`);
+          return 2;
+        }
+        // The skill is a reusable instruction template, not the task itself — any task text given
+        // is the specific request; the skill supplies the standing "how" around it.
+        text = text ? `${s.body}\n\n${text}` : s.body;
       }
       const g = gitState(root);
       // A follow-up (--continue) builds on the earlier request's uncommitted edits, so it skips this.
@@ -745,6 +761,59 @@ export async function main(argv: string[]): Promise<number> {
       }
       const list = m.load(sub && MEMORY_TYPES.includes(sub as MemoryType) ? (sub as MemoryType) : undefined).filter((e) => args.flags.all || e.status === "active");
       out(list.length ? list.map(renderMemory).join("\n") : "no memory entries");
+      return 0;
+    }
+    case "skills": {
+      ensureDirs(p);
+      const sub = pos[0];
+      if (sub === "add" || sub === "set") {
+        const name = pos[1];
+        const body = pos.slice(2).join(" ");
+        if (!name || !body) {
+          process.stderr.write('usage: narrowbit skills add "<name>" "<instructions>" [--description "..."]\n');
+          return 2;
+        }
+        try {
+          saveSkill(p, name, typeof args.flags.description === "string" ? args.flags.description : "", body);
+          out(`saved skill "${name}"`);
+          return 0;
+        } catch (e: any) {
+          process.stderr.write(`narrowbit: ${e.message}\n`);
+          return 2;
+        }
+      }
+      if (sub === "rename") {
+        const [oldName, newName] = [pos[1], pos[2]];
+        if (!oldName || !newName) {
+          process.stderr.write('usage: narrowbit skills rename "<old name>" "<new name>"\n');
+          return 2;
+        }
+        try {
+          renameSkill(p, oldName, newName);
+          out(`renamed "${oldName}" → "${newName}"`);
+          return 0;
+        } catch (e: any) {
+          process.stderr.write(`narrowbit: ${e.message}\n`);
+          return 1;
+        }
+      }
+      if (sub === "remove" || sub === "rm") {
+        const name = pos[1];
+        const ok = name ? removeSkill(p, name) : false;
+        out(ok ? `removed "${name}"` : `no skill named "${name}"`);
+        return ok ? 0 : 1;
+      }
+      if (sub === "show") {
+        const s = pos[1] ? getSkill(p, pos[1]) : null;
+        if (!s) {
+          out(`no skill named "${pos[1] ?? ""}"`);
+          return 1;
+        }
+        out(`${s.name}${s.description ? " — " + s.description : ""}\n\n${s.body}`);
+        return 0;
+      }
+      const list = listSkills(p);
+      out(list.length ? list.map((s) => `${s.name}${s.description ? " — " + s.description : ""}`).join("\n") : "no skills yet — narrowbit skills add \"<name>\" \"<instructions>\"");
       return 0;
     }
     case "claude": {
