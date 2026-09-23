@@ -124,10 +124,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .topbar { height: 48px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid transparent; }
 .topbar.scrolled { border-bottom-color: var(--line); }
 .topbar .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
-.crumb { display: flex; align-items: center; gap: 6px; width: 100%; flex: none; padding: 7px 20px; font-size: 12.5px; font-weight: 600; background: transparent; border: 0; border-bottom: 1px solid var(--line); text-align: left; }
-.crumb:hover { background: var(--panel-2); }
-.crumb .ci { font-size: 12px; }
-.crumb #crumbName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumb { display: flex; align-items: center; gap: 6px; width: fit-content; flex: none; margin: 0 0 8px 4px; padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--panel-2); border: 1px solid var(--line); text-align: left; }
+.crumb:hover { background: var(--line); }
+.crumb .ci { font-size: 11px; }
+.crumb #crumbName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 .repo-bar { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .repo-bar .rb-label { font-weight: 600; white-space: nowrap; flex: none; }
 .repo-bar .rb-recent { display: flex; align-items: center; gap: 4px; overflow-x: auto; flex: none; }
@@ -320,7 +320,6 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <button class="pill hidden" id="planMini"></button>
       <span class="pill hidden" id="treePill"></span>
     </div>
-    <button class="crumb hidden" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button>
     <div class="scroll" id="scroll">
       <div class="thread" id="thread">
         <div class="welcome hidden" id="welcome">
@@ -338,6 +337,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       </div>
     </div>
     <div class="composer-wrap">
+      <button class="crumb hidden" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button>
       <div class="composer">
         <div id="banner" class="banner hidden"></div>
         <textarea id="input" rows="1" placeholder="Describe a task…"></textarea>
