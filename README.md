@@ -11,16 +11,17 @@ Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens
 
 > **Status: early (0.1).** Expect rough edges. See "What is and isn't proven" below.
 
-## Install (from source)
+## Install
 
-Requires macOS, Node ≥ 22.13 and git. To use Claude, install and log in to the [`claude` CLI](https://docs.claude.com/en/docs/claude-code) first; for Codex, run `codex login`.
+macOS. The installer checks what you have, asks before installing anything missing (Homebrew, Node), clones this repo to `~/Narrowbit`, builds it, puts `narrowbit` on your PATH and builds the native app:
 
 ```bash
-git clone https://github.com/sanjuraw/narrowbit.git
-cd narrowbit
-npm install && npm run build && npm link      # puts `narrowbit` on your PATH
-scripts/build-mac-app.sh --install            # optional: native window (needs Xcode Command Line Tools)
+git clone https://github.com/sanjuraw/narrowbit.git ~/Narrowbit && ~/Narrowbit/scripts/install.sh
 ```
+
+Run `scripts/install.sh --check` first to only see what's missing. It can't sign in for you: to use Claude run `claude auth login` (or `codex login`, or add a free API key); the app's "get a model ready" card and `narrowbit doctor` show what's left. If the repo is private you need GitHub access (`gh auth login`).
+
+Manual install: Node ≥ 22.13, then `npm install && npm run build && npm link && scripts/build-mac-app.sh --install`.
 
 Then in any project folder: `narrowbit init`, and either `narrowbit ui` (browser/app) or `narrowbit agent "fix the failing test in src/foo.ts"`.
 
