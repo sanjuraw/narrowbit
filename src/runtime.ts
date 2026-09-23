@@ -145,12 +145,17 @@ export interface RuntimeOptions {
   /** Called with one line per step as the loop runs, for live CLI progress. Optional — the
    * event log (events.ts) is always the durable record regardless of whether this is set. */
   log?: (line: string) => void;
+  /** Asked before every `run` action. Resolving false refuses the command and tells the model so;
+   * unset means commands run without asking (benchmarks, trusted CLI use). */
+  approve?: (command: string) => Promise<boolean>;
+  /** Aborting stops the loop before its next model call (a call already in flight finishes first). */
+  signal?: AbortSignal;
 }
 
 
 export interface RuntimeResult {
   taskId: string;
-  outcome: "done" | "blocked" | "max_steps" | "error";
+  outcome: "done" | "blocked" | "max_steps" | "error" | "stopped";
   summary: string;
   steps: number;
   /** Count of executed actions by name (read/grep/search/edit/run/verify) — every one is Narrowbit's own, not Claude Code's. */
@@ -218,6 +223,13 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   let cumulativeCost = 0;
 
   for (; steps < maxSteps; steps++) {
+    if (opts.signal?.aborted) {
+      outcome = "stopped";
+      summary = "stopped by the user";
+      appendEvent(p, taskId, { actor: "user", type: "blocker", summary });
+      log(`[${steps}] stopped by the user`);
+      break;
+    }
     // Escalate only on signs of being stuck: repeated run/verify with no edit between them, or an
     // unusually long stretch without any edit. Counting every non-edit step (the first version)
     // put ordinary reading on Opus — on this repo's first real task, 5 plain reads/greps in a row
@@ -317,10 +329,10 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
     actionCounts[decision.action] = (actionCounts[decision.action] ?? 0) + 1;
     sinceLastEdit = decision.action === "edit" ? 0 : sinceLastEdit + 1;
     if (decision.action === "edit") hasEdited = true;
-    log(`[${steps}] (${turnModel}) ${decision.action}${decision.path ? ` ${decision.path}` : decision.query ? ` "${decision.query}"` : decision.pattern ? ` "${decision.pattern}"` : ""}`);
+    log(`[${steps}] (${turnModel}) ${decision.action}${decision.path ? ` ${decision.path}` : decision.query ? ` "${decision.query}"` : decision.pattern ? ` "${decision.pattern}"` : decision.command ? ` ${decision.command}` : ""}`);
     let resultText: string;
     try {
-      resultText = await executeAction(p, taskId, decision);
+      resultText = await executeAction(p, taskId, decision, opts.approve);
     } catch (e: any) {
       resultText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
       appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
@@ -378,7 +390,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
 }
 
 /** Executes one action and returns the (capped) result text to feed back as the next turn's prompt. */
-async function executeAction(p: Paths, taskId: string, d: Decision): Promise<string> {
+async function executeAction(p: Paths, taskId: string, d: Decision, approve?: RuntimeOptions["approve"]): Promise<string> {
   switch (d.action) {
     case "read": {
       const path = String(d.path ?? "");
@@ -466,7 +478,13 @@ async function executeAction(p: Paths, taskId: string, d: Decision): Promise<str
       return text;
     }
     case "run": {
-      const r = await runCommand(p, String(d.command ?? ""));
+      const command = String(d.command ?? "");
+      if (approve && !(await approve(command))) {
+        const text = `run: the user declined \`${command}\` — do not retry it; take a different approach, or report "blocked" if you can't continue without it`;
+        appendEvent(p, taskId, { actor: "user", type: "tool_result", summary: text, meta: { command, declined: true } });
+        return text;
+      }
+      const r = await runCommand(p, command);
       const capped = capSummary(r.rendered);
       const handle = writeEvidence(p, taskId, "command", r.rendered, capped);
       appendEvent(p, taskId, { actor: "system", type: "command", summary: capped, evidenceRef: handle.id, meta: { command: d.command, exit: r.exit } });

@@ -3,7 +3,7 @@ import { join, relative, resolve } from "node:path";
 import { benchmarkReport, benchmarkTemplate, runBenchmark } from "./bench.js";
 import { hookPrompt, installClaude, launchClaude } from "./claude.js";
 import { runCommand } from "./compress.js";
-import { DEFAULT_IGNORE, detectVerify, ensureDirs, findRoot, loadConfig, paths, saveConfig, type Paths } from "./config.js";
+import { ensureDirs, findRoot, loadConfig, paths, saveConfig, type Paths } from "./config.js";
 import { evalHistory } from "./eval.js";
 import { train } from "./train.js";
 import { changedSince, gitState } from "./git.js";
@@ -12,11 +12,13 @@ import { indexRepo, openStore } from "./indexer.js";
 import { serveMcp } from "./mcp.js";
 import { Memory, openMemory, MEMORY_TYPES, renderMemory, type MemoryType } from "./memory.js";
 import { buildPackage } from "./package.js";
+import { initProject } from "./project.js";
 import { expandTask, grepText, outlineText, refsText, searchText, symbolText, testsText } from "./query.js";
 import { availableModels, DEFAULT_TIERS, EFFORT_LEVELS, isProvider, PHASES, PROVIDERS, resolveSelection, type Phase, type ProviderName, type Selection } from "./providers/models.js";
 import { runTask } from "./runtime.js";
+import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
-import { fmtNum, now } from "./util.js";
+import { fmtNum, now, sh } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
 
 interface Args {
@@ -45,7 +47,7 @@ function parseArgs(argv: string[]): Args {
 
 const VALUE_FLAGS = new Set([
   "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip",
-  "max-steps", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate",
+  "max-steps", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port",
 ]);
 
 const HELP = `narrowbit — minimum sufficient context for coding agents
@@ -73,6 +75,8 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
       [--effort low|medium|high|xhigh|max] [--max-steps N] [--force] [--dry-run]
       verifies and remembers, driving the task end to end in THIS working tree (not a worktree —
       edits are real). Refuses to run on a dirty git tree unless --force.
+  narrowbit ui [--port 4747] [--no-open]   the app: run tasks, approve each command, review the diff,
+      commit or discard, pick models — in a local window (127.0.0.1 only). The macOS app wraps this.
   narrowbit models                    providers, numbered available models, and this repo's selection
   narrowbit models choose             pick provider, model 1 (explore), 2 (execute), 3 (escalate) and effort from numbered menus
   narrowbit models set <explore|execute|escalate|all> <model name or number> [--provider claude|codex]
@@ -160,22 +164,12 @@ export async function main(argv: string[]): Promise<number> {
   switch (cmd) {
     case "init": {
       requireProject(p, !!args.flags.force);
-      ensureDirs(p);
-      if (!existsSync(p.config)) {
-        const cfg = loadConfig(p);
-        cfg.verify = detectVerify(root);
-        saveConfig(p, cfg);
-      }
-      if (!existsSync(p.ignore)) writeFileSync(p.ignore, DEFAULT_IGNORE);
+      const { stats } = initProject(p, { index: !args.flags["no-index"] });
       out(`initialised ${relative(process.cwd(), p.nb) || p.nb}`);
       const cfg = loadConfig(p);
       const v = Object.entries(cfg.verify);
       out(v.length ? `verify commands: ${v.map(([k, c]) => `${k}=\`${c}\``).join(", ")}` : "verify commands: none detected (edit .narrowbit/config.json)");
-      if (!args.flags["no-index"]) {
-        const store = openStore(p);
-        printIndexStats(indexRepo(p, store));
-        store.close();
-      }
+      if (stats) printIndexStats(stats);
       return 0;
     }
     case "index": {
@@ -440,7 +434,7 @@ export async function main(argv: string[]): Promise<number> {
         log: (line) => process.stderr.write(line + "\n"),
       });
       const changed = headBefore ? changedSince(root, headBefore).filter((f) => !f.startsWith(".narrowbit/")) : [];
-      const label = result.outcome === "done" ? "DONE" : result.outcome === "blocked" ? "BLOCKED" : result.outcome === "error" ? "ERROR" : "STOPPED (step budget)";
+      const label = result.outcome === "done" ? "DONE" : result.outcome === "blocked" ? "BLOCKED" : result.outcome === "error" ? "ERROR" : result.outcome === "stopped" ? "STOPPED" : "STOPPED (step budget)";
       out(`\n${label}: ${result.summary}`);
       out(`${result.steps} step(s)${result.compactions ? `, ${result.compactions} compaction(s)` : ""} — files changed: ${changed.length ? changed.join(", ") : "(none)"}`);
       const state = fold(result.taskId, readEvents(p, result.taskId));
@@ -451,6 +445,27 @@ export async function main(argv: string[]): Promise<number> {
       out(`task: ${result.taskId}  (full log: .narrowbit/runtime/${result.taskId}/events.jsonl)`);
       if (result.outcome !== "done") out(`tip: review the diff before trusting this — the task did not report a clean completion.`);
       return result.outcome === "done" ? 0 : result.outcome === "blocked" ? 1 : 2;
+    }
+    case "ui": {
+      // --app: launched by the macOS app, which has no meaningful cwd — open the last-used repo
+      // instead, and exit when the app closes our stdin (so a crashed app never leaves us running).
+      const fromApp = !!args.flags.app;
+      const uiRoot = args.flags.root || (!fromApp && root !== "/" && root !== process.env.HOME) ? root : null;
+      const port = args.flags.port ? Number(args.flags.port) : fromApp ? 0 : 4747;
+      startUi({
+        root: uiRoot,
+        port,
+        onListening: (url) => {
+          out(`narrowbit ui: ${url}`);
+          if (!fromApp && !args.flags["no-open"] && process.platform === "darwin") sh("open", [url], process.cwd());
+          else if (!fromApp) out("open that address in a browser; Ctrl+C to stop");
+        },
+      });
+      if (fromApp) {
+        process.stdin.on("end", () => process.exit(0));
+        process.stdin.resume();
+      }
+      return await new Promise<number>(() => {});
     }
     case "models": {
       const cfg = loadConfig(p);

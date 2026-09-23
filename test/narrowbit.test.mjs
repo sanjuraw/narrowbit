@@ -478,3 +478,34 @@ test("task parser picks up locations, identifiers, errors", () => {
   assert.ok(t.paths.includes("payments/verify"));
   assert.ok(t.errors.length >= 1);
 });
+
+test("app server (ui.ts): refuses calls without the launch token or from a non-loopback Host", async () => {
+  const { startUi } = await dist("ui.js");
+  const root = makeFixture();
+  let url;
+  const server = startUi({ root, port: 0, onListening: (u) => (url = u) });
+  await new Promise((r) => server.once("listening", r));
+  try {
+    const u = new URL(url);
+    const token = u.searchParams.get("t");
+    const api = `${u.origin}/api/state`;
+    assert.equal((await fetch(api)).status, 401);
+    assert.equal((await fetch(api, { headers: { "x-narrowbit-token": "wrong" } })).status, 401);
+    const ok = await fetch(api, { headers: { "x-narrowbit-token": token } });
+    assert.equal(ok.status, 200);
+    // realpath: macOS tmp dirs live under /private, which git reports as the toplevel.
+    assert.equal((await ok.json()).name, root.split("/").pop());
+    // A page elsewhere reaching the port via DNS rebinding carries its own Host header.
+    const rebind = await new Promise((resolve) => {
+      import("node:http").then(({ request }) => {
+        const req = request({ host: "127.0.0.1", port: u.port, path: "/api/state", headers: { host: `evil.example:${u.port}`, "x-narrowbit-token": token } }, (res) => resolve(res.statusCode));
+        req.end();
+      });
+    });
+    assert.equal(rebind, 403);
+    assert.equal((await fetch(`${u.origin}/api/run`, { method: "POST", body: "{}" })).status, 401);
+  } finally {
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
