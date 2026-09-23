@@ -9,6 +9,7 @@ import { appendEvent, fold, readEvents } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./memory.js";
 import { callModel } from "./providers/claude-cli.js";
+import { DEFAULT_TIERS, type ModelTiers, type ProviderName } from "./providers/models.js";
 import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
 import { termsOf } from "./terms.js";
@@ -123,25 +124,16 @@ export function safeAbsPath(p: Paths, path: string): string | null {
   return rel.startsWith("..") || resolve(p.root) === abs ? null : abs;
 }
 
-export interface ModelTiers {
-  /** Turns before the first edit of the task: reading, searching, orienting. Cheap by design. */
-  explore?: string;
-  /** Turns after at least one edit has happened: normal editing/verification decisions. */
-  execute?: string;
-  /** Turns where the loop looks stuck (repeated failed checks with no edit, or a long stretch with
-   * no edit at all): the one place a stronger model is worth its cost. Directly motivated by a real result: two genuinely
-   * hard Hono tasks failed even at a 35-step budget on Sonnet alone — not a budget problem, a
-   * reasoning one. Escalating specifically when stuck, not by default, is the targeted fix. */
-  escalate?: string;
-}
-
 export interface RuntimeOptions {
   maxSteps?: number;
   budget?: number;
-  /** Back-compat: a single model for every turn. Ignored if `models` is given. */
+  /** Which provider drives the model calls. Defaults to "claude". */
+  provider?: ProviderName;
+  /** A single model for every phase. Ignored if `models` is given. */
   model?: string;
-  /** Per-phase model routing. Defaults to {explore: "haiku", execute: "sonnet", escalate: "opus"}. */
-  models?: ModelTiers;
+  /** Per-phase models (explore = before any edit, execute = editing/verifying, escalate = stuck);
+   * missing phases fall back to the provider's defaults in providers/models.ts. */
+  models?: Partial<ModelTiers>;
   /** --effort passed to every call: low | medium | high | xhigh | max. Defaults to "medium". */
   effort?: string;
   claudeBin?: string;
@@ -155,7 +147,6 @@ export interface RuntimeOptions {
   log?: (line: string) => void;
 }
 
-const DEFAULT_MODEL_TIERS: Required<ModelTiers> = { explore: "haiku", execute: "sonnet", escalate: "opus" };
 
 export interface RuntimeResult {
   taskId: string;
@@ -175,13 +166,17 @@ const STALL_THRESHOLD = 4;
 const MAX_TRANSIENT_RETRIES = 2;
 
 export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions = {}): Promise<RuntimeResult> {
+  const provider = opts.provider ?? "claude";
+  // Codex selection is resolvable and saveable today; its adapter (providers/codex-cli.ts) is not
+  // built yet, so refuse clearly rather than silently running on Claude instead.
+  if (provider !== "claude") throw new Error(`provider "${provider}" is not available yet — only "claude" can run tasks so far`);
   const cfg = loadConfig(p);
   const taskId = `rt-${shortId()}`;
   const store = openStore(p);
   indexRepo(p, store);
   const maxSteps = opts.maxSteps ?? 20;
   const role = opts.role ?? "execution";
-  const tiers = opts.model ? { explore: opts.model, execute: opts.model, escalate: opts.model } : { ...DEFAULT_MODEL_TIERS, ...opts.models };
+  const tiers = opts.models ? { ...DEFAULT_TIERS[provider], ...opts.models } : opts.model ? { explore: opts.model, execute: opts.model, escalate: opts.model } : DEFAULT_TIERS[provider];
   const effort = opts.effort ?? "medium";
   const compactThreshold = opts.compactThreshold ?? cfg.budget.max;
   const log = opts.log ?? (() => {});

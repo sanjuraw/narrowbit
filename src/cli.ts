@@ -13,6 +13,7 @@ import { serveMcp } from "./mcp.js";
 import { Memory, openMemory, MEMORY_TYPES, renderMemory, type MemoryType } from "./memory.js";
 import { buildPackage } from "./package.js";
 import { expandTask, grepText, outlineText, refsText, searchText, symbolText, testsText } from "./query.js";
+import { availableModels, DEFAULT_TIERS, EFFORT_LEVELS, isProvider, PHASES, PROVIDERS, resolveSelection, type Phase, type ProviderName, type Selection } from "./providers/models.js";
 import { runTask } from "./runtime.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
 import { fmtNum, now } from "./util.js";
@@ -44,7 +45,7 @@ function parseArgs(argv: string[]): Args {
 
 const VALUE_FLAGS = new Set([
   "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip",
-  "max-steps", "model", "effort", "claude-bin", "compact-threshold",
+  "max-steps", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate",
 ]);
 
 const HELP = `narrowbit — minimum sufficient context for coding agents
@@ -68,9 +69,15 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit verify [--full]           type-check, lint, focused tests for changed files
 
   narrowbit agent "<task>"            Narrowbit's own agent loop: reads, edits, runs commands,
-      [--max-steps N] [--model X] [--effort low|medium|high|xhigh|max] [--force] [--dry-run]
+      [--provider claude|codex] [--model X | --explore X --execute X --escalate X]
+      [--effort low|medium|high|xhigh|max] [--max-steps N] [--force] [--dry-run]
       verifies and remembers, driving the task end to end in THIS working tree (not a worktree —
       edits are real). Refuses to run on a dirty git tree unless --force.
+  narrowbit models                    providers, numbered available models, and this repo's selection
+  narrowbit models choose             pick provider, model 1 (explore), 2 (execute), 3 (escalate) and effort from numbered menus
+  narrowbit models set <explore|execute|escalate|all> <model name or number> [--provider claude|codex]
+  narrowbit models set provider <claude|codex>     narrowbit models set effort <level>
+  narrowbit models reset [--provider claude|codex]   back to the built-in defaults
 
   narrowbit memory add <type> "<text>" [--reason ..] [--attempt ..] [--result ..] [--files a,b]
       types: ${MEMORY_TYPES.join(", ")}
@@ -90,6 +97,11 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
 
 function out(s: string) {
   process.stdout.write(s.endsWith("\n") ? s : s + "\n");
+}
+
+function strFlag(args: Args, name: string): string | undefined {
+  const v = args.flags[name];
+  return typeof v === "string" ? v : undefined;
 }
 
 /** Refuse to set up in a folder that isn't a project (e.g. $HOME): it would index unrelated files. */
@@ -376,7 +388,7 @@ export async function main(argv: string[]): Promise<number> {
       requireInit(p);
       const text = pos.join(" ");
       if (!text) {
-        process.stderr.write('usage: narrowbit agent "<task>" [--max-steps N] [--model X] [--effort medium] [--force] [--dry-run]\n');
+        process.stderr.write('usage: narrowbit agent "<task>" [--provider claude|codex] [--model X | --explore X --execute X --escalate X] [--effort medium] [--max-steps N] [--force] [--dry-run]\n');
         return 2;
       }
       const g = gitState(root);
@@ -387,28 +399,42 @@ export async function main(argv: string[]): Promise<number> {
         return 2;
       }
       const headBefore = g.head;
+      const cfg = loadConfig(p);
+      let sel: Selection;
+      try {
+        sel = resolveSelection(cfg.agent, {
+          provider: strFlag(args, "provider"),
+          model: strFlag(args, "model"),
+          explore: strFlag(args, "explore"),
+          execute: strFlag(args, "execute"),
+          escalate: strFlag(args, "escalate"),
+          effort: strFlag(args, "effort"),
+        });
+      } catch (e: any) {
+        process.stderr.write(`narrowbit: ${e.message}\n`);
+        return 2;
+      }
+      const maxSteps = args.flags["max-steps"] ? Number(args.flags["max-steps"]) : 20;
+      const modelsLine = `provider=${sel.provider}  models: explore=${sel.tiers.explore} execute=${sel.tiers.execute} escalate=${sel.tiers.escalate}  effort=${sel.effort}`;
       if (args.flags["dry-run"]) {
-        const model = typeof args.flags.model === "string" ? args.flags.model : undefined;
-        const explore = model ?? "haiku";
-        const execute = model ?? "sonnet";
-        const escalate = model ?? "opus";
-        const effort = typeof args.flags.effort === "string" ? args.flags.effort : "medium";
-        const maxSteps = args.flags["max-steps"] ? Number(args.flags["max-steps"]) : 20;
-        const cfg = loadConfig(p);
         const verifyEntries = Object.entries(cfg.verify).filter(([, v]) => v);
         out(`narrowbit agent (dry run): ${text}`);
-        out(`models: explore=${explore} execute=${execute} escalate=${escalate}`);
-        out(`effort: ${effort}`);
+        out(modelsLine);
         out(`max steps: ${maxSteps}`);
         out(`verify: ${verifyEntries.length ? verifyEntries.map(([k, v]) => `${k}=${v}`).join(", ") : "(none)"}`);
         return 0;
       }
+      if (sel.provider !== "claude") {
+        process.stderr.write(`narrowbit: provider "${sel.provider}" can be selected but can't run tasks yet — its adapter isn't built. Use --provider claude for now.\n`);
+        return 2;
+      }
       out(`narrowbit agent: ${text}`);
-      out(`models: explore=haiku execute=sonnet escalate=opus (override with --model)  effort=${args.flags.effort ?? "medium"}\n`);
+      out(`${modelsLine}\n`);
       const result = await runTask(p, text, {
-        maxSteps: args.flags["max-steps"] ? Number(args.flags["max-steps"]) : undefined,
-        model: typeof args.flags.model === "string" ? args.flags.model : undefined,
-        effort: typeof args.flags.effort === "string" ? args.flags.effort : undefined,
+        maxSteps,
+        provider: sel.provider,
+        models: sel.tiers,
+        effort: sel.effort,
         claudeBin: typeof args.flags["claude-bin"] === "string" ? args.flags["claude-bin"] : undefined,
         compactThreshold: args.flags["compact-threshold"] ? Number(args.flags["compact-threshold"]) : undefined,
         log: (line) => process.stderr.write(line + "\n"),
@@ -425,6 +451,138 @@ export async function main(argv: string[]): Promise<number> {
       out(`task: ${result.taskId}  (full log: .narrowbit/runtime/${result.taskId}/events.jsonl)`);
       if (result.outcome !== "done") out(`tip: review the diff before trusting this — the task did not report a clean completion.`);
       return result.outcome === "done" ? 0 : result.outcome === "blocked" ? 1 : 2;
+    }
+    case "models": {
+      const cfg = loadConfig(p);
+      const sub = pos[0];
+      if (!sub) {
+        let current: Selection;
+        try {
+          current = resolveSelection(cfg.agent);
+        } catch (e: any) {
+          process.stderr.write(`narrowbit: ${e.message} — fix .narrowbit/config.json or run \`narrowbit models set provider claude\`\n`);
+          return 2;
+        }
+        out(`default provider: ${current.provider}   effort: ${current.effort}${existsSync(p.config) ? "" : "   (built-in defaults; nothing saved for this repo yet)"}\n`);
+        for (const prov of PROVIDERS) {
+          const s = resolveSelection(cfg.agent, { provider: prov });
+          const avail = availableModels(prov);
+          out(`${prov === current.provider ? "*" : " "} ${prov}${prov === "claude" ? "" : "   (selection only — adapter not built yet)"}`);
+          for (const ph of PHASES) out(`    ${ph.padEnd(9)} ${s.tiers[ph]}${s.tiers[ph] === DEFAULT_TIERS[prov][ph] ? "" : `   (default ${DEFAULT_TIERS[prov][ph]})`}`);
+          out(`    available: ${avail.models.length ? avail.models.map((m, i) => `${i + 1}) ${m}`).join("  ") : "(unknown)"}   — ${avail.note}`);
+        }
+        return 0;
+      }
+      if (sub === "choose") {
+        if (!process.stdin.isTTY) {
+          process.stderr.write("narrowbit: `models choose` is interactive — in scripts use `narrowbit models set <slot> <number|name>`\n");
+          return 2;
+        }
+        const { createInterface } = await import("node:readline/promises");
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const pick = async (title: string, options: readonly string[], current: string): Promise<string> => {
+          out(`\n${title}`);
+          options.forEach((o, i) => out(`  ${i + 1}) ${o}${o === current ? "   ← current" : ""}`));
+          for (;;) {
+            const a = (await rl.question(`choose 1-${options.length}, or Enter to keep ${current}: `)).trim();
+            if (!a) return current;
+            const n = Number(a);
+            if (Number.isInteger(n) && n >= 1 && n <= options.length) return options[n - 1];
+            out(`  "${a}" isn't one of the numbers above`);
+          }
+        };
+        try {
+          const agent = (cfg.agent ??= {});
+          const start = resolveSelection(isProvider(agent.provider ?? "claude") ? agent : { ...agent, provider: "claude" });
+          const provider = (await pick("Provider", PROVIDERS, start.provider)) as ProviderName;
+          const current = resolveSelection(agent, { provider });
+          const avail = availableModels(provider);
+          if (!avail.models.length) {
+            process.stderr.write(`narrowbit: no model list for ${provider} — ${avail.note}\n`);
+            return 2;
+          }
+          const slots: Record<Phase, string> = {
+            explore: "Model 1 — explore: reading and orienting, before any edit (a cheap model is usually enough)",
+            execute: "Model 2 — execute: making edits and verifying them",
+            escalate: "Model 3 — escalate: only when the loop is stuck (your strongest model)",
+          };
+          const saved = ((agent.models ??= {})[provider] ??= {});
+          for (const ph of PHASES) saved[ph] = await pick(slots[ph], avail.models, current.tiers[ph]);
+          agent.effort = await pick("Effort", EFFORT_LEVELS, current.effort);
+          agent.provider = provider;
+          ensureDirs(p);
+          saveConfig(p, cfg);
+          out(`\nsaved for this repo: provider=${provider}  ${PHASES.map((ph) => `${ph}=${saved[ph]}`).join("  ")}  effort=${agent.effort}`);
+          if (provider !== "claude") out(`note: ${provider} can be selected but can't run tasks until its adapter is built.`);
+          return 0;
+        } catch (e: any) {
+          // Ctrl+C / Ctrl+D mid-menu: nothing has been saved yet, so just say so.
+          if (e?.name === "AbortError" || e?.code === "ABORT_ERR") {
+            out("\ncancelled — nothing saved");
+            return 1;
+          }
+          throw e;
+        } finally {
+          rl.close();
+        }
+      }
+      if (sub !== "set" && sub !== "reset") {
+        process.stderr.write("usage: narrowbit models [choose | set <explore|execute|escalate|all|provider|effort> <value> [--provider X] | reset [--provider X]]\n");
+        return 2;
+      }
+      const agent = (cfg.agent ??= {});
+      const provider = strFlag(args, "provider") ?? agent.provider ?? "claude";
+      if (!isProvider(provider)) {
+        process.stderr.write(`narrowbit: unknown provider "${provider}" (expected ${PROVIDERS.join(" or ")})\n`);
+        return 2;
+      }
+      if (sub === "reset") {
+        if (agent.models) delete agent.models[provider];
+        ensureDirs(p);
+        saveConfig(p, cfg);
+        out(`${provider}: models reset to defaults (${PHASES.map((ph) => `${ph}=${DEFAULT_TIERS[provider][ph]}`).join(" ")})`);
+        return 0;
+      }
+      const [key, value] = [pos[1], pos[2]];
+      if (!key || !value) {
+        process.stderr.write("usage: narrowbit models set <explore|execute|escalate|all|provider|effort> <value> [--provider claude|codex]\n");
+        return 2;
+      }
+      if (key === "provider") {
+        if (!isProvider(value)) {
+          process.stderr.write(`narrowbit: unknown provider "${value}" (expected ${PROVIDERS.join(" or ")})\n`);
+          return 2;
+        }
+        agent.provider = value;
+      } else if (key === "effort") {
+        agent.effort = value;
+      } else if (key === "all" || (PHASES as readonly string[]).includes(key)) {
+        const avail = availableModels(provider);
+        // A number picks from the numbered "available" list that `narrowbit models` prints.
+        let model = value;
+        if (/^\d+$/.test(value)) {
+          const i = Number(value) - 1;
+          if (!avail.models[i]) {
+            process.stderr.write(`narrowbit: no model number ${value} for ${provider} (${avail.models.map((m, j) => `${j + 1}) ${m}`).join("  ") || "none listed"})\n`);
+            return 2;
+          }
+          model = avail.models[i];
+        } else if (provider === "codex" && avail.models.length && !avail.models.includes(value)) {
+          process.stderr.write(`narrowbit: warning — "${value}" isn't in the local Codex catalog (${avail.models.join(", ")}); saving anyway\n`);
+        }
+        const phases: Phase[] = key === "all" ? [...PHASES] : [key as Phase];
+        const saved = ((agent.models ??= {})[provider] ??= {});
+        for (const ph of phases) saved[ph] = model;
+      } else {
+        process.stderr.write(`narrowbit: unknown setting "${key}" (expected explore, execute, escalate, all, provider or effort)\n`);
+        return 2;
+      }
+      ensureDirs(p);
+      saveConfig(p, cfg);
+      const shown = key === "provider" ? (value as ProviderName) : provider;
+      const updated = resolveSelection(cfg.agent, { provider: shown });
+      out(`saved. ${shown}: ${PHASES.map((ph) => `${ph}=${updated.tiers[ph]}`).join(" ")}   default provider: ${agent.provider ?? "claude"}   effort: ${updated.effort}`);
+      return 0;
     }
     case "memory": {
       ensureDirs(p);

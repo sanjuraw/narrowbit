@@ -27,6 +27,7 @@ const { appendEvent, readEvents, fold } = await dist("events.js");
 const { writeEvidence, readEvidence } = await dist("evidence.js");
 const { project } = await dist("context.js");
 const { parseDecision, capSummary, safeAbsPath } = await dist("runtime.js");
+const { resolveSelection, DEFAULT_TIERS } = await dist("providers/models.js");
 
 const nb = (cwd, ...args) => execFileSync(process.execPath, [BIN, ...args], { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
 
@@ -438,6 +439,34 @@ describe("runtime loop helpers (no model calls — keeps npm test free of Claude
     assert.equal(safeAbsPath(p, "../../etc/passwd"), null);
     assert.equal(safeAbsPath(p, "/etc/passwd"), null);
     assert.equal(safeAbsPath(p, "."), null);
+  });
+});
+
+describe("model selection (providers/models.ts)", () => {
+  test("defaults per provider when nothing is saved or passed", () => {
+    assert.deepEqual(resolveSelection(undefined), { provider: "claude", tiers: DEFAULT_TIERS.claude, effort: "medium" });
+    assert.deepEqual(resolveSelection(undefined, { provider: "codex" }).tiers, { explore: "gpt-5.6-luna", execute: "gpt-5.6-terra", escalate: "gpt-5.6-sol" });
+  });
+
+  test("precedence: per-slot flag > --model > saved config > default", () => {
+    const saved = { provider: "claude", effort: "high", models: { claude: { explore: "sonnet", escalate: "fable" } } };
+    assert.deepEqual(resolveSelection(saved).tiers, { explore: "sonnet", execute: "sonnet", escalate: "fable" });
+    assert.equal(resolveSelection(saved).effort, "high");
+    assert.deepEqual(resolveSelection(saved, { model: "opus" }).tiers, { explore: "opus", execute: "opus", escalate: "opus" });
+    assert.deepEqual(resolveSelection(saved, { model: "opus", explore: "haiku" }).tiers, { explore: "haiku", execute: "opus", escalate: "opus" });
+    assert.equal(resolveSelection(saved, { effort: "low" }).effort, "low");
+  });
+
+  test("saved models are per provider, and switching provider doesn't leak them", () => {
+    const saved = { provider: "codex", models: { claude: { explore: "sonnet" } } };
+    assert.equal(resolveSelection(saved).provider, "codex");
+    assert.equal(resolveSelection(saved).tiers.explore, "gpt-5.6-luna");
+    assert.equal(resolveSelection(saved, { provider: "claude" }).tiers.explore, "sonnet");
+  });
+
+  test("unknown provider is an error, not a silent fallback", () => {
+    assert.throws(() => resolveSelection({ provider: "gemini" }), /unknown provider/);
+    assert.throws(() => resolveSelection(undefined, { provider: "gemini" }), /unknown provider/);
   });
 });
 

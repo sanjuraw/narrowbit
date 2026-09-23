@@ -23,6 +23,15 @@ export interface NarrowbitConfig {
   maxFileBytes: number;
   /** Extra read-only folders of Markdown notes used as project memory (e.g. a folder in an Obsidian vault). */
   memoryDirs: string[];
+  /** `narrowbit agent` defaults for this repo; CLI flags override. See providers/models.ts. */
+  agent?: AgentConfig;
+}
+
+export interface AgentConfig {
+  provider?: string;
+  effort?: string;
+  /** Per-provider model per phase, e.g. { claude: { explore: "haiku" }, codex: { escalate: "gpt-5.6-sol" } }. */
+  models?: Record<string, { explore?: string; execute?: string; escalate?: string }>;
 }
 
 export const DEFAULT_CONFIG: NarrowbitConfig = {
