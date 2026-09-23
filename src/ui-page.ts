@@ -61,6 +61,14 @@ header .repo-name { font-weight: 600; white-space: nowrap; overflow: hidden; tex
 .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; display: inline-block; }
 header .spacer { flex: 1; }
+.limits { display: flex; gap: 14px; border: 0; background: none; padding: 4px 6px; font-size: 11.5px; color: var(--muted); }
+.limits .prov { display: flex; align-items: center; gap: 6px; }
+.limits .name { font-weight: 600; color: var(--text); }
+.limits .win { display: inline-flex; align-items: center; gap: 4px; }
+.limits .bar { width: 34px; height: 5px; border-radius: 3px; background: var(--panel-2); overflow: hidden; display: inline-block; }
+.limits .bar i { display: block; height: 100%; background: var(--ok); }
+.limits .bar i.mid { background: var(--warn); } .limits .bar i.high { background: var(--bad); }
+@media (max-width: 900px) { .limits .win .lbl { display: none; } }
 
 .layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); height: calc(100% - 52px); }
 aside { border-right: 1px solid var(--line); overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 18px; }
@@ -168,6 +176,7 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
   </div>
   <button class="link" id="switchRepo">Switch…</button>
   <span class="spacer"></span>
+  <button class="limits" id="limits" title="Subscription usage — click to check now"></button>
   <span class="pill hidden" id="runPill"><span class="spinner"></span> running</span>
 </header>
 
@@ -645,6 +654,7 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
     if (!$("commitMsg").value && runTask) $("commitMsg").value = runTask.split("\n")[0].slice(0, 72);
     loadDiff();
     load();
+    loadLimits();
     if (native) native.postMessage({ type: "finished", text: (LABEL[ev.outcome] || ev.outcome) + ": " + ev.summary });
   }
   function connectStream() {
@@ -711,6 +721,44 @@ h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
       load();
     }).catch(function (e) { showError(e.message); });
   };
+
+  // ---------- subscription limits ----------
+  function until(t) {
+    if (!t) return "";
+    var m = Math.round((t * 1000 - Date.now()) / 60000);
+    return m <= 0 ? "resetting" : m < 90 ? "resets in " + m + "m" : m < 2880 ? "resets in " + Math.round(m / 60) + "h" : "resets " + new Date(t * 1000).toLocaleString(undefined, { weekday: "short", hour: "numeric" });
+  }
+  function renderLimits(L) {
+    var box = clear($("limits"));
+    var tips = [];
+    [["claude", "Claude"], ["codex", "Codex"]].forEach(function (pair) {
+      var l = L[pair[0]];
+      var p = el("span", { cls: "prov" }, el("span", { cls: "name", text: pair[1] }));
+      if (!l || (!l.fiveHour && !l.weekly)) {
+        p.appendChild(el("span", { text: l && l.error ? (/login/.test(l.error) ? "log in to see" : "unavailable") : "—" }));
+        tips.push(pair[1] + ": " + (l && l.error ? l.error : "no reading yet"));
+      } else {
+        [["5h", l.fiveHour, "5-hour"], ["wk", l.weekly, "Weekly"]].forEach(function (w) {
+          if (!w[1]) return;
+          var pct = w[1].usedPercent;
+          p.appendChild(el("span", { cls: "win" }, el("span", { cls: "lbl", text: w[0] }),
+            el("span", { cls: "bar" }, el("i", { cls: pct >= 90 ? "high" : pct >= 70 ? "mid" : "", style: "width:" + Math.min(100, pct) + "%" })),
+            el("span", { text: Math.round(pct) + "%" })));
+          tips.push(pair[1] + " " + w[2] + ": " + pct + "% used, " + until(w[1].resetsAt));
+        });
+        if (l.error) tips.push(pair[1] + ": last check failed — " + l.error);
+      }
+      box.appendChild(p);
+    });
+    box.title = tips.join("\n") + "\n\nClick to check now (Claude: one tiny Haiku call).";
+  }
+  function loadLimits() { api("/api/limits").then(renderLimits).catch(function () {}); }
+  $("limits").onclick = function () {
+    $("limits").style.opacity = ".5";
+    api("/api/limits/refresh", {}).then(renderLimits).catch(function (e) { showError(e.message); }).then(function () { $("limits").style.opacity = ""; });
+  };
+  loadLimits();
+  setInterval(loadLimits, 60000);
 
   load();
 })();

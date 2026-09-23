@@ -16,6 +16,7 @@ import { initProject } from "./project.js";
 import { expandTask, grepText, outlineText, refsText, searchText, symbolText, testsText } from "./query.js";
 import { availableModels, DEFAULT_TIERS, EFFORT_LEVELS, isProvider, PHASES, PROVIDER_INFO, PROVIDERS, resolveSelection, unavailableReason, type Phase, type ProviderName, type Selection } from "./providers/models.js";
 import { keySource, setKey } from "./keys.js";
+import { fmtLimits, readLimits, refreshClaude, refreshCodex } from "./limits.js";
 import { runTask } from "./runtime.js";
 import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
@@ -84,6 +85,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit models set provider <claude|codex>     narrowbit models set effort <level>
   narrowbit models reset [--provider <name>]   back to the built-in defaults
   narrowbit models endpoint <provider> <base-url|default> [--key-env NAME]   point an API/local provider elsewhere
+  narrowbit limits [--refresh]        Claude and Codex subscription usage: 5-hour and weekly windows
   narrowbit keys [list]               which API keys are set    narrowbit keys set|remove <provider>
       providers: claude, codex (subscriptions); openrouter (free & paid), groq, gemini (free tiers),
       openai, deepseek (paid); ollama, lmstudio (local, free); custom (any OpenAI-compatible server)
@@ -472,6 +474,18 @@ export async function main(argv: string[]): Promise<number> {
         process.stdin.resume();
       }
       return await new Promise<number>(() => {});
+    }
+    case "limits": {
+      // Codex is asked directly (free); Claude's reading comes from the latest call, or --refresh
+      // makes one tiny Haiku call to get a current one.
+      const [claude, codex] = await Promise.all([
+        args.flags.refresh || !readLimits().claude ? refreshClaude(strFlag(args, "claude-bin")) : Promise.resolve(readLimits().claude),
+        refreshCodex(),
+      ]);
+      out(fmtLimits("Claude", claude));
+      out(fmtLimits("Codex ", codex));
+      if (!args.flags.refresh && claude) out("(Claude's reading is from its most recent call; --refresh checks now with one tiny Haiku call)");
+      return 0;
     }
     case "keys": {
       // API keys live in ~/.narrowbit/keys.json (0600), shared by every repo; env vars win.

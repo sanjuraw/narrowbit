@@ -557,3 +557,22 @@ test("openai-compat adapter: keeps the conversation per session, cumulative cost
     server.close();
   }
 });
+
+test("limits: reads both windows from Claude Code's rate_limit_event", async () => {
+  const { parseClaudeLimits } = await dist("limits.js");
+  // Shape captured from Claude Code 2.1.278's stream-json output.
+  const raw = [
+    '{"type":"system","subtype":"init"}',
+    '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1790632800,"rateLimitType":"seven_day","utilization":0.56,"isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.67,"resetsAt":1790172600},"seven_day":{"utilization":0.56,"resetsAt":1790632800}}}}',
+    '{"type":"result","subtype":"success"}',
+  ].join("\n");
+  const l = parseClaudeLimits(raw);
+  assert.deepEqual(l.fiveHour, { usedPercent: 67, resetsAt: 1790172600 });
+  assert.deepEqual(l.weekly, { usedPercent: 56, resetsAt: 1790632800 });
+  assert.equal(l.status, "allowed_warning");
+  // Older output with a single window still yields that window.
+  const old = parseClaudeLimits('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":5,"rateLimitType":"five_hour","utilization":0.1}}');
+  assert.deepEqual(old.fiveHour, { usedPercent: 10, resetsAt: 5 });
+  assert.equal(old.weekly, null);
+  assert.equal(parseClaudeLimits('{"type":"result"}'), null);
+});

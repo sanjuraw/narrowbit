@@ -122,6 +122,12 @@ Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens
   - **Model switches read as injection.** Mid-session routing makes Claude Code restate the running model; the model treated the contradiction as prompt injection and saved a durable memory telling future tasks to ignore such lines (retired via `narrowbit memory resolve`). **Fixed:** `SYSTEM_INSTRUCTIONS` states that turns are routed to different Claude models and conflicting identity statements are expected.
   - Implication for the n=40 verdict: those benchmarks ran *before* the done gate existed, so their success numbers depended on the external verify command catching false claims — fine for the benchmark, but real-use reliability was untested until now. Model-routing changes since the benchmark are also unmeasured at scale.
 
+- **Model selection, any provider, Mac app, limits (2026-09-23).** Direction from the user: they want to use it like an app, with any model. Built on top of the unchanged runtime loop:
+  - **Selection** (`providers/models.ts`): a provider plus three numbered slots (1 explore, 2 execute, 3 escalate) and an effort level, saved per repo in `.narrowbit/config.json` `agent`. Set via `narrowbit models choose|set|reset` or the app.
+  - **Providers**: Claude (subscription CLI); Codex (selectable but no adapter yet — blocked on `codex login`); and OpenRouter (free & paid), Groq, Gemini (free tiers), OpenAI, DeepSeek (paid), Ollama, LM Studio (local), custom — all through one OpenAI-compatible adapter (`providers/openai-compat.ts`, conversation kept per session and resent each turn). Keys: env var, else `~/.narrowbit/keys.json` (0600). **None of the API/local providers has been measured on a real task yet** — the adapter is tested only against a mock server; per the model-policy section, small/free models need an A/B before being trusted.
+  - **App** (`narrowbit ui` + `mac/`): local server on 127.0.0.1 (per-launch token + loopback Host check) driving `runTask()`, with per-command approval (`RuntimeOptions.approve`, closes the "run executes anything" gap in the app; the CLI still runs commands unasked), Stop (`signal`), diff review, commit/discard, history. `mac/` is a SwiftPM WKWebView shell (no Xcode needed): `scripts/build-mac-app.sh [--install]`. Smoke-tested end to end on a fixture: denial, approval, routing, done gate, verify, diff.
+  - **Limits** (`limits.ts`, `narrowbit limits`, app header): Claude's 5-hour/weekly usage comes from the `rate_limit_event` Claude Code emits on every call (recorded for free); Codex's from `account/rateLimits/read` on `codex app-server` (no model call; verified the protocol, needs `codex login`).
+
 ## Product principles (from the brief)
 
 1. Deterministic computation first, AI reasoning second. Use the index, git and parsers for "where is X", "who imports Y", "which tests failed".
@@ -142,7 +148,8 @@ Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens
 ```bash
 npm install
 npm run build          # tsc → dist/
-npm test               # build + node --test test/*.test.mjs (22 tests)
+npm test               # build + node --test test/*.test.mjs (35 tests)
+scripts/build-mac-app.sh [--install]   # Narrowbit.app via SwiftPM (Command Line Tools suffice)
 npm run typecheck
 node bin/narrowbit.js help
 ```
@@ -178,6 +185,12 @@ Requires Node ≥ 22.13 (uses `node:sqlite`). Only runtime dependency: `typescri
 | `evidence.ts` | Redacted, handle-addressed storage for large content (file/diff/command output) |
 | `context.ts` | `project()`: budget-bounded, summary-first render of a folded state; used at compaction boundaries |
 | `providers/claude-cli.ts` | Model adapter: `claude` CLI under the user's subscription, tool-free per-turn calls, session resume, model routing |
+| `providers/models.ts` | Provider registry, three-slot model selection, endpoints, live model catalogs |
+| `providers/openai-compat.ts` | Adapter for every API/local provider (OpenAI-compatible chat API) |
+| `keys.ts` | API keys: env var, else `~/.narrowbit/keys.json` (0600) |
+| `limits.ts` | Claude/Codex 5-hour and weekly subscription usage |
+| `ui.ts` / `ui-page.ts` | `narrowbit ui`: local app server + its single page; `mac/` wraps it natively |
+| `project.ts` | `initProject()`, shared by `narrowbit init` and the app |
 | `runtime.ts` | `narrowbit agent`'s loop: read/grep/search/edit/run/verify/recall/remember, one JSON action per model turn |
 | `streamjson.ts` | Shared `claude -p --output-format stream-json` parser (usage/turns/cost/tool calls), used by `bench.ts` and `providers/claude-cli.ts` |
 

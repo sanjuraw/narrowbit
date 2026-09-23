@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { recordClaudeLimits } from "../limits.js";
 import { extractText, parseStream } from "../streamjson.js";
 
 /**
@@ -96,6 +97,8 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
       clearTimeout(timer);
       const raw = Buffer.concat(chunks).toString("utf8");
       const s = parseStream(raw);
+      // Every call reports the subscription's 5-hour/weekly usage; keep the latest for `narrowbit limits` and the app.
+      recordClaudeLimits(raw);
       const fatal = /"error":"authentication_failed"|Not logged in|Invalid API key/.test(raw + stderr);
       resolve({
         text: extractText(raw),

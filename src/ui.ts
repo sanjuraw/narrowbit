@@ -8,6 +8,7 @@ import { fold, readEvents } from "./events.js";
 import { changedSince, gitState } from "./git.js";
 import { initProject } from "./project.js";
 import { keySource, setKey } from "./keys.js";
+import { readLimits, refreshClaude, refreshCodex } from "./limits.js";
 import {
   availableModels,
   DEFAULT_TIERS,
@@ -331,6 +332,13 @@ export function startUi(opts: UiOptions) {
         return;
       }
 
+      if (route === "GET /api/limits") {
+        // Codex's check is free, so refresh it when stale; Claude's updates with every call.
+        const l = readLimits();
+        if (!l.codex || Date.now() - new Date(l.codex.checkedAt).getTime() > 2 * 60_000) await refreshCodex();
+        return json(res, 200, readLimits());
+      }
+
       if (route === "GET /api/models") {
         if (!root) return json(res, 400, { error: "no repository open" });
         const prov = url.searchParams.get("provider") ?? "";
@@ -397,6 +405,10 @@ export function startUi(opts: UiOptions) {
           ensureDirs(p);
           saveConfig(p, cfg);
           return json(res, 200, state());
+        }
+        case "/api/limits/refresh": {
+          await Promise.all([refreshClaude(), refreshCodex()]);
+          return json(res, 200, readLimits());
         }
         case "/api/key": {
           // The user's own key, typed into their own app: stored in ~/.narrowbit/keys.json (0600)
