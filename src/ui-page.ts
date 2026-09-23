@@ -506,7 +506,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     renderRepo();
     show($("repoOverlay"), false);
     showRepoBar(!S.root);
-    if (!S.root) { show($("welcome"), true); show($("setupCard"), false); renderComposer(); return; }
+    if (!S.root) { show($("welcome"), true); show($("setupCard"), false); if (S.providers) { draft = { root: null, provider: S.selection.provider, effort: S.selection.effort }; renderSettings(); renderConnectors(); } renderComposer(); return; }
     if (!draft || draft.root !== S.root) draft = { root: S.root, provider: S.selection.provider, effort: S.selection.effort };
     run.active = S.running; if (S.running) run.taskId = S.runningTask;
     renderSessions(); renderSettings(); renderComposer(); renderSkills(); renderConnectors();

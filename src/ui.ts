@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync,
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { ensureDirs, loadConfig, paths, saveConfig, type Paths } from "./config.js";
+import { ensureDirs, loadConfig, paths, saveConfig, type AgentConfig, type Paths } from "./config.js";
 import { getConnector, listConnectors, removeConnector, saveConnector } from "./connectors.js";
 import { fold, readEvents, type Event } from "./events.js";
 import { changedSince, gitState } from "./git.js";
@@ -211,8 +211,41 @@ export function startUi(opts: UiOptions) {
     for (const c of clients) c.write(frame);
   };
 
+  const buildProviders = (agent: AgentConfig | undefined) => {
+    // Model lists are fetched separately (/api/models): some are network calls, and only the
+    // provider on screen needs one.
+    // Codex's login state can't be checked synchronously here (it's a subprocess call) — reuse
+    // whatever the limits refresh already learned (GET /api/limits keeps it fresh, ~2min TTL) so
+    // the provider picker can say "not logged in" up front instead of only failing mid-task.
+    const codexLoginError = readLimits().codex?.error;
+    return Object.fromEntries(
+      PROVIDERS.map((prov) => {
+        const info = PROVIDER_INFO[prov];
+        const s = resolveSelection(agent, { provider: prov });
+        const ep = resolveEndpoint(prov, agent);
+        return [
+          prov,
+          {
+            ...info,
+            tiers: s.tiers,
+            defaults: DEFAULT_TIERS[prov],
+            baseUrl: ep?.baseUrl ?? null,
+            needsKey: ep?.needsKey ?? false,
+            keySource: info.kind === "subscription" ? null : keySource(prov, agent?.endpoints?.[prov]?.keyEnv ?? info.keyEnv),
+            unavailable: prov === "codex" && codexLoginError?.includes("not logged in") ? "Codex isn't logged in — run `codex login` in a terminal, then try again." : unavailableReason(s, agent),
+          },
+        ];
+      }),
+    );
+  };
+
   const state = () => {
-    if (!root) return { root: null, recent: loadRecent() };
+    if (!root) {
+      // No repository yet: settings are per-repo so nothing can be saved, but the provider/model
+      // lists must still render or the picker looks empty on a fresh profile.
+      const selection = resolveSelection(undefined);
+      return { root: null, recent: loadRecent(), selection, providers: buildProviders(undefined), phases: PHASES, efforts: EFFORT_LEVELS, lead: true, connectors: listConnectors(), skills: [], history: [] };
+    }
     const p = paths(root);
     const initialized = existsSync(p.db);
     const g = gitState(root);
@@ -225,31 +258,7 @@ export function startUi(opts: UiOptions) {
       selectionError = e.message;
       selection = resolveSelection(undefined);
     }
-    // Model lists are fetched separately (/api/models): some are network calls, and only the
-    // provider on screen needs one.
-    // Codex's login state can't be checked synchronously here (it's a subprocess call) — reuse
-    // whatever the limits refresh already learned (GET /api/limits keeps it fresh, ~2min TTL) so
-    // the provider picker can say "not logged in" up front instead of only failing mid-task.
-    const codexLoginError = readLimits().codex?.error;
-    const providers = Object.fromEntries(
-      PROVIDERS.map((prov) => {
-        const info = PROVIDER_INFO[prov];
-        const s = resolveSelection(cfg.agent, { provider: prov });
-        const ep = resolveEndpoint(prov, cfg.agent);
-        return [
-          prov,
-          {
-            ...info,
-            tiers: s.tiers,
-            defaults: DEFAULT_TIERS[prov],
-            baseUrl: ep?.baseUrl ?? null,
-            needsKey: ep?.needsKey ?? false,
-            keySource: info.kind === "subscription" ? null : keySource(prov, cfg.agent?.endpoints?.[prov]?.keyEnv ?? info.keyEnv),
-            unavailable: prov === "codex" && codexLoginError?.includes("not logged in") ? "Codex isn't logged in — run `codex login` in a terminal, then try again." : unavailableReason(s, cfg.agent),
-          },
-        ];
-      }),
-    );
+    const providers = buildProviders(cfg.agent);
     return {
       root,
       name: basename(root),
