@@ -4,8 +4,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { ensureDirs, loadConfig, paths, saveConfig, type Paths } from "./config.js";
+import { getConnector, listConnectors, removeConnector, saveConnector } from "./connectors.js";
 import { fold, readEvents, type Event } from "./events.js";
 import { changedSince, gitState } from "./git.js";
+import { listConnectorTools } from "./mcpClient.js";
 import { initProject } from "./project.js";
 import { keySource, setKey } from "./keys.js";
 import { readLimits, refreshClaude, refreshCodex } from "./limits.js";
@@ -261,6 +263,7 @@ export function startUi(opts: UiOptions) {
       lead: cfg.agent?.boss ?? true,
       history: initialized ? taskHistory(p) : [],
       skills: listSkills(p),
+      connectors: listConnectors(),
     };
   };
 
@@ -462,6 +465,38 @@ export function startUi(opts: UiOptions) {
           if (!root) return json(res, 400, { error: "no repository open" });
           removeSkill(paths(root), String(body.name ?? ""));
           return json(res, 200, state());
+        }
+        case "/api/connectors": {
+          const name = String(body.name ?? "").trim();
+          const command = String(body.command ?? "").trim();
+          const cargs = typeof body.args === "string" ? body.args.trim().split(/\s+/).filter(Boolean) : [];
+          const env: Record<string, string> = {};
+          if (typeof body.env === "string") {
+            for (const pair of body.env.split(",")) {
+              const eq = pair.indexOf("=");
+              if (eq > 0) env[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+            }
+          }
+          try {
+            saveConnector(name, command, cargs, env);
+          } catch (e: any) {
+            return json(res, 400, { error: e.message });
+          }
+          return json(res, 200, state());
+        }
+        case "/api/connectors/delete": {
+          removeConnector(String(body.name ?? ""));
+          return json(res, 200, state());
+        }
+        case "/api/connectors/test": {
+          const c = getConnector(String(body.name ?? ""));
+          if (!c) return json(res, 400, { error: `no connector named "${body.name}"` });
+          try {
+            const tools = await listConnectorTools(c, 20_000);
+            return json(res, 200, { ok: true, tools: tools.map((t) => t.name) });
+          } catch (e: any) {
+            return json(res, 200, { ok: false, error: e.message });
+          }
         }
         case "/api/limits/refresh": {
           await Promise.all([refreshClaude(), refreshCodex()]);

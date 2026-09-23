@@ -254,6 +254,15 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .drawer .db { overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 4px; }
 .drawer h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); margin: 12px 0 6px; }
 .drawer h3:first-child { margin-top: 0; }
+.drawer h3 small { display: block; text-transform: none; letter-spacing: normal; font-weight: 400; color: var(--muted); margin-top: 2px; }
+.connector-form { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.connector-form input { font-size: 12.5px; padding: 7px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); }
+.connector-form button { align-self: flex-start; }
+.conn-row { display: flex; align-items: center; gap: 6px; padding: 4px 0; font-size: 13px; }
+.conn-row .cn { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conn-row .cc { color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+.conn-row button { flex: none; border: 0; background: transparent; color: var(--faint); padding: 3px 6px; border-radius: 6px; font-size: 12px; }
+.conn-row button:hover { background: var(--panel-2); color: var(--bad); }
 .pinfo { font-size: 12px; color: var(--muted); margin: 6px 0 8px; }
 .pinfo a { color: var(--accent); }
 .subrow { display: flex; gap: 6px; margin: 2px 0 8px; align-items: center; flex-wrap: wrap; }
@@ -377,6 +386,17 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <label class="check"><input type="checkbox" id="askChk"><span>Ask before running commands<small>Reads, edits and verify run freely; shell commands wait for you.</small></span></label>
     <div class="note hidden" id="providerNote"></div>
     <div class="saved" id="savedMsg"></div>
+
+    <h3>Connectors<small>MCP servers the agent can call out to — GitHub, Slack, anything with an MCP server</small></h3>
+    <div id="connectorsList"></div>
+    <div class="connector-form">
+      <input type="text" id="connName" placeholder="Name (e.g. github)">
+      <input type="text" id="connCommand" placeholder="Command (e.g. npx)">
+      <input type="text" id="connArgs" placeholder="Args, space-separated (e.g. -y @modelcontextprotocol/server-github)">
+      <input type="text" id="connEnv" placeholder="Env (optional): KEY=value,KEY2=value2">
+      <button id="addConnector">Add connector</button>
+    </div>
+    <div class="note hidden" id="connectorErr" style="color:var(--bad)"></div>
   </div>
 </div>
 
@@ -488,7 +508,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (!S.root) { show($("welcome"), true); show($("setupCard"), false); renderComposer(); return; }
     if (!draft || draft.root !== S.root) draft = { root: S.root, provider: S.selection.provider, effort: S.selection.effort };
     run.active = S.running; if (S.running) run.taskId = S.runningTask;
-    renderSessions(); renderSettings(); renderComposer(); renderSkills();
+    renderSessions(); renderSettings(); renderComposer(); renderSkills(); renderConnectors();
     show($("setupCard"), !S.initialized);
     if (first) {
       if (S.running && S.runningTask) openSession(S.runningTask);
@@ -572,6 +592,36 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     api("/api/skills", { name: name, description: desc, body: bodyText })
       .then(function (st) { apply(st); show($("skillOverlay"), false); })
       .catch(function (e) { var n = $("skillErr"); n.textContent = e.message; show(n, true); });
+  };
+
+  // ---------- connectors (MCP servers the agent can call out to) ----------
+  function renderConnectors() {
+    var box = clear($("connectorsList"));
+    var list = (S && S.connectors) || [];
+    if (!list.length) { box.appendChild(el("div", { cls: "muted", style: "font-size:12.5px;padding:4px 0", text: "No connectors yet." })); return; }
+    list.forEach(function (c) {
+      box.appendChild(el("div", { cls: "conn-row" },
+        el("span", { cls: "cn", title: c.command + " " + c.args.join(" ") }, c.name),
+        el("button", { title: "Connect once and list its tools", onclick: function () { testConnector(c.name); } }, "Test"),
+        el("button", { title: "Remove connector", onclick: function () { deleteConnector(c.name); } }, "×")));
+    });
+  }
+  function testConnector(name) {
+    flash($("savedMsg"), "Testing " + name + "…");
+    api("/api/connectors/test", { name: name }).then(function (r) {
+      flash($("savedMsg"), r.ok ? name + ": " + r.tools.length + " tool(s) — " + r.tools.join(", ") : name + ": " + r.error);
+    }).catch(function (e) { flash($("savedMsg"), e.message); });
+  }
+  function deleteConnector(name) {
+    api("/api/connectors/delete", { name: name }).then(apply).catch(function (e) { banner("bad", e.message); });
+  }
+  $("addConnector").onclick = function () {
+    var name = $("connName").value.trim(), command = $("connCommand").value.trim(), argsStr = $("connArgs").value.trim(), envStr = $("connEnv").value.trim();
+    if (!name || !command) { var n = $("connectorErr"); n.textContent = "Name and command are both required."; show(n, true); return; }
+    show($("connectorErr"), false);
+    api("/api/connectors", { name: name, command: command, args: argsStr, env: envStr })
+      .then(function (st) { apply(st); $("connName").value = ""; $("connCommand").value = ""; $("connArgs").value = ""; $("connEnv").value = ""; })
+      .catch(function (e) { var n = $("connectorErr"); n.textContent = e.message; show(n, true); });
   };
 
   // ---------- settings drawer ----------

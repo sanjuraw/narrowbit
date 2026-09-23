@@ -18,6 +18,8 @@ import { availableModels, DEFAULT_TIERS, EFFORT_LEVELS, isProvider, PHASES, PROV
 import { keySource, setKey } from "./keys.js";
 import { fmtLimits, readLimits, refreshClaude, refreshCodex } from "./limits.js";
 import { runTask } from "./runtime.js";
+import { getConnector, listConnectors, removeConnector, saveConnector } from "./connectors.js";
+import { listConnectorTools } from "./mcpClient.js";
 import { getSkill, listSkills, removeSkill, renameSkill, saveSkill } from "./skills.js";
 import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
@@ -50,7 +52,7 @@ function parseArgs(argv: string[]): Args {
 
 const VALUE_FLAGS = new Set([
   "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip",
-  "max-steps", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description",
+  "max-steps", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description", "env",
 ]);
 
 const HELP = `narrowbit — minimum sufficient context for coding agents
@@ -101,6 +103,10 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit skills add "<name>" "<instructions>" [--description "..."]   create or overwrite a skill
   narrowbit skills rename "<old>" "<new>"       narrowbit skills remove "<name>"
   narrowbit agent --skill "<name>" ["<task>"]   run the agent with a skill's instructions applied
+
+  narrowbit connectors                list configured connectors — any MCP server the agent can call out to
+  narrowbit connectors add "<name>" [--env K=V,K2=V2] -- <command> [args...]   e.g. GitHub's MCP server
+  narrowbit connectors test "<name>"  connect once, list its tools     narrowbit connectors remove "<name>"
 
   narrowbit claude "<task>" [--dry-run] [-- <claude args>]   launch Claude Code with Narrowbit context + MCP tools
   narrowbit install claude [--no-hook]                        register MCP server + UserPromptSubmit hook in this repo
@@ -761,6 +767,57 @@ export async function main(argv: string[]): Promise<number> {
       }
       const list = m.load(sub && MEMORY_TYPES.includes(sub as MemoryType) ? (sub as MemoryType) : undefined).filter((e) => args.flags.all || e.status === "active");
       out(list.length ? list.map(renderMemory).join("\n") : "no memory entries");
+      return 0;
+    }
+    case "connectors": {
+      const sub = pos[0];
+      if (sub === "add") {
+        const name = pos[1];
+        const [command, ...cargs] = args.rest;
+        if (!name || !command) {
+          process.stderr.write('usage: narrowbit connectors add "<name>" [--env KEY=VAL,KEY2=VAL2] -- <command> [args...]\n');
+          return 2;
+        }
+        const env: Record<string, string> = {};
+        if (typeof args.flags.env === "string") {
+          for (const pair of args.flags.env.split(",")) {
+            const eq = pair.indexOf("=");
+            if (eq > 0) env[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+          }
+        }
+        try {
+          saveConnector(name, command, cargs, env);
+          out(`saved connector "${name}" (${command} ${cargs.join(" ")})`);
+          return 0;
+        } catch (e: any) {
+          process.stderr.write(`narrowbit: ${e.message}\n`);
+          return 2;
+        }
+      }
+      if (sub === "remove" || sub === "rm") {
+        const name = pos[1];
+        const ok = name ? removeConnector(name) : false;
+        out(ok ? `removed "${name}"` : `no connector named "${name}"`);
+        return ok ? 0 : 1;
+      }
+      if (sub === "test") {
+        const name = pos[1];
+        const c = name ? getConnector(name) : null;
+        if (!c) {
+          out(`no connector named "${name}"`);
+          return 1;
+        }
+        try {
+          const tools = await listConnectorTools(c, 20_000);
+          out(`"${c.name}" is reachable — ${tools.length} tool(s): ${tools.map((t) => t.name).join(", ") || "(none)"}`);
+          return 0;
+        } catch (e: any) {
+          process.stderr.write(`narrowbit: ${e.message}\n`);
+          return 1;
+        }
+      }
+      const list = listConnectors();
+      out(list.length ? list.map((c) => `${c.name} — ${c.command} ${c.args.join(" ")}`).join("\n") : 'no connectors yet — narrowbit connectors add "<name>" -- <command> [args...]');
       return 0;
     }
     case "skills": {

@@ -3,10 +3,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { loadConfig, type Paths } from "./config.js";
 import { runCommand } from "./compress.js";
+import { getConnector, listConnectors } from "./connectors.js";
 import { project } from "./context.js";
 import { writeEvidence } from "./evidence.js";
 import { appendEvent, fold, readEvents, subscribe, type Event, type PlanStep } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
+import { callConnectorTool, listConnectorTools } from "./mcpClient.js";
 import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./memory.js";
 import { callModel, type ModelCallOptions, type ModelCallResult } from "./providers/claude-cli.js";
 import { DEFAULT_TIERS, resolveEndpoint, unavailableReason, type ModelTiers, type ProviderName } from "./providers/models.js";
@@ -89,8 +91,12 @@ const SYSTEM_INSTRUCTIONS = `You are driving a coding task through a tool-free r
 {"action":"verify"}
 {"action":"recall","query":"<topic, e.g. the area of code or kind of problem>"}
 {"action":"remember","type":"fact"|"decision"|"constraint"|"convention"|"failure"|"bug"|"command"|"environment","text":"<durable knowledge, one or two sentences>","reason"?:"<why>","attempt"?:"<for failures: what was tried>","result"?:"<for failures: what happened>","files"?:["<path>"]}
+{"action":"connector","server":"<connector name>","tool":"<tool name>","args":{...}}
 {"action":"done","summary":"<what changed and why it satisfies the task>"}
 {"action":"blocked","reason":"<what you need that you don't have>"}
+
+"connector" calls a tool on a connected external MCP server (GitHub, Slack, whatever is configured
+— see the "Connected external tools" list below, if any; only call a server/tool named there).
 
 Batch actions in one array when you already know what comes next regardless of the outcome — e.g.
 read a file then edit it, or edit then verify. Don't batch past a step whose result would change
@@ -152,6 +158,10 @@ interface Decision {
   attempt?: string;
   result?: string;
   files?: string[];
+  /** connector action: which configured MCP server (connectors.ts) and which of its tools. */
+  server?: string;
+  tool?: string;
+  args?: Record<string, unknown>;
   /** One line for a user watching (rendered in the app). */
   note?: string;
   /** 1-based plan steps finished by this action. */
@@ -247,6 +257,24 @@ export interface RuntimeResult {
   compactions: number;
 }
 
+/** One discovery call per configured connector, in parallel, at task start only (not per turn).
+ * A broken/slow connector degrades to a one-line note in the prompt, never blocks the task. */
+async function discoverConnectors(): Promise<string> {
+  const connectors = listConnectors();
+  if (!connectors.length) return "";
+  const lines = await Promise.all(
+    connectors.map(async (c) => {
+      try {
+        const tools = await listConnectorTools(c, 8_000);
+        return `- ${c.name}: ${tools.map((t) => t.name).join(", ") || "(no tools)"}`;
+      } catch (e: any) {
+        return `- ${c.name}: unavailable right now (${String(e?.message ?? e).slice(0, 100)})`;
+      }
+    }),
+  );
+  return `\n\nConnected external tools:\n${lines.join("\n")}`;
+}
+
 const MAX_PARSE_RETRIES = 3;
 /** Consecutive run/verify actions without an intervening edit before the loop nudges instead of letting it spin. */
 const STALL_THRESHOLD = 4;
@@ -280,6 +308,11 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const role = opts.role ?? "execution";
   const compactThreshold = opts.compactThreshold ?? cfg.budget.max;
   const log = opts.log ?? (() => {});
+  // Zero-cost when no connectors are configured (listConnectors() is a sync file read, no
+  // subprocess spawned); otherwise one discovery call per connector at task start, not per turn —
+  // matches SYSTEM_INSTRUCTIONS being sent once per session, not resent every step.
+  const connectorsBlock = await discoverConnectors();
+  const systemPrompt = SYSTEM_INSTRUCTIONS + connectorsBlock;
   let hasEdited = false;
   // "done" gate. First real-repo use (narrowbit agent on this repo): Haiku replied "done" on its
   // second call with a confident, detailed summary of changes it never made — no read, no edit,
@@ -371,7 +404,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     const turnModel = stuck ? tiers.escalate : hasEdited ? tiers.execute : tiers.explore;
     const callOpts = {
       cwd: p.root,
-      systemPrompt: freshSessionPending ? SYSTEM_INSTRUCTIONS : undefined,
+      systemPrompt: freshSessionPending ? systemPrompt : undefined,
       prompt: nextPrompt,
       model: turnModel,
       effort,
@@ -751,6 +784,28 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       const text = `remembered [${e.id}] (${type}): ${e.text.slice(0, 100)}`;
       appendEvent(p, taskId, { actor: "system", type: "decision", summary: text, meta: { memoryId: e.id, memoryType: type } });
       return text;
+    }
+    case "connector": {
+      const serverName = String(d.server ?? "");
+      const toolName = String(d.tool ?? "");
+      const connector = getConnector(serverName);
+      if (!connector) {
+        const text = `connector: refused — no connector named "${serverName}" is configured (narrowbit connectors list)`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text });
+        return text;
+      }
+      try {
+        const r = await callConnectorTool(connector, toolName, d.args ?? {});
+        const capped = capSummary(r.text);
+        const text = `${serverName}.${toolName}${r.isError ? " (error)" : ""}:\n${capped}`;
+        const handle = writeEvidence(p, taskId, "other", r.text, capped);
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, evidenceRef: handle.id, meta: { server: serverName, tool: toolName } });
+        return text;
+      } catch (e: any) {
+        const text = `${serverName}.${toolName}: failed — ${String(e?.message ?? e).slice(0, 300)}`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text });
+        return text;
+      }
     }
     default: {
       const text = `unknown action "${d.action}"; ignored`;
