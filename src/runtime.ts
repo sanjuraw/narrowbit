@@ -183,6 +183,14 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   const compactThreshold = opts.compactThreshold ?? cfg.budget.max;
   const log = opts.log ?? (() => {});
   let hasEdited = false;
+  // "done" gate. First real-repo use (narrowbit agent on this repo): Haiku replied "done" on its
+  // second call with a confident, detailed summary of changes it never made — no read, no edit,
+  // clean git tree — and the loop exited 0. Benchmarks never exposed this because an external
+  // verify command judged success there; in real use nothing does. So "done" is challenged once,
+  // deterministically, if no edit was actually applied, or if files changed since the last verify.
+  let editsApplied = 0;
+  let editedSinceVerify = false;
+  const doneChallenges = new Set<string>();
 
   appendEvent(p, taskId, { actor: "user", type: "decision", summary: "task received", meta: { goal: taskText } });
 
@@ -274,6 +282,22 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
     parseRetries = 0;
 
     if (decision.action === "done") {
+      let challenge: string | null = null;
+      if (editsApplied === 0 && !doneChallenges.has("no-edit")) {
+        doneChallenges.add("no-edit");
+        challenge = Object.keys(actionCounts).length === 0
+          ? "You have not taken a single action yet — nothing has been read or changed, so the task cannot be complete. Start by reading the relevant file."
+          : 'No file has been changed in this task. If the task requires a code change, you have not made it yet — continue working. If it genuinely needs no change, reply "done" again and say why.';
+      } else if (editedSinceVerify && !doneChallenges.has("no-verify")) {
+        doneChallenges.add("no-verify");
+        challenge = 'You changed files but have not run "verify" since your last edit. Verify before declaring done.';
+      }
+      if (challenge) {
+        appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `done rejected: ${challenge}` });
+        log(`[${steps}] (${turnModel}) done rejected — ${challenge.split(/[.—]/)[0].trim()}`);
+        nextPrompt = `${challenge}\n\nWhat is the next action? Respond with JSON only.`;
+        continue;
+      }
       outcome = "done";
       summary = decision.summary ?? "done";
       appendEvent(p, taskId, { actor: "model", type: "decision", summary: `done: ${summary}` });
@@ -300,6 +324,13 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
     }
     log(`      → ${resultText.split("\n")[0].slice(0, 100)}`);
+    // executeAction returns "edited <path>" only when the file was actually written; a refused
+    // edit (old text not found / not unique) doesn't count as progress for the done gate.
+    if (decision.action === "edit" && resultText.startsWith("edited ")) {
+      editsApplied++;
+      editedSinceVerify = true;
+    }
+    if (decision.action === "verify") editedSinceVerify = false;
     const stalling = sinceLastEdit >= STALL_THRESHOLD && (decision.action === "run" || decision.action === "verify");
     if (stalling) {
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `${sinceLastEdit} steps without an edit — nudging toward the implementation file` });
