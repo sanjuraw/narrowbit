@@ -492,6 +492,7 @@ export async function main(argv: string[]): Promise<number> {
       startUi({
         root: uiRoot,
         port,
+        restartOnUpdate: fromApp,
         onListening: (url) => {
           out(`narrowbit ui: ${url}`);
           if (!fromApp && !args.flags["no-open"] && process.platform === "darwin") sh("open", [url], process.cwd());

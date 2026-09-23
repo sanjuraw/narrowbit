@@ -256,6 +256,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .drawer h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); margin: 12px 0 6px; }
 .drawer h3:first-child { margin-top: 0; }
 .drawer h3 small { display: block; text-transform: none; letter-spacing: normal; font-weight: 400; color: var(--muted); margin-top: 2px; }
+.upd { display: flex; align-items: center; gap: 10px; flex: none; padding: 8px 16px; background: var(--accent-soft); border-bottom: 1px solid var(--line); font-size: 13px; }
+.upd .u-msg { flex: 1; min-width: 0; }
+.upd .u-list { color: var(--muted); font-size: 12px; }
 .gs { border: 1px solid var(--line); background: var(--panel); border-radius: 14px; padding: 16px 18px; margin: 0 0 16px; }
 .gs h2 { font-family: var(--serif); font-weight: 400; font-size: 19px; margin: 0 0 4px; }
 .gs .gs-sub { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
@@ -327,6 +330,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   </aside>
 
   <main>
+    <div class="upd hidden" id="updBar"></div>
     <div class="topbar" id="topbar">
       <button class="ghost" id="menuBtn" aria-label="Menu">☰</button>
       <div class="repo-bar hidden" id="repoBar">
@@ -605,6 +609,28 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       .then(function (st) { apply(st); show($("skillOverlay"), false); })
       .catch(function (e) { var n = $("skillErr"); n.textContent = e.message; show(n, true); });
   };
+
+  // ---------- updates from GitHub (one click) ----------
+  var U = null;
+  function loadUpdate(refresh) {
+    return api("/api/update" + (refresh ? "?refresh=1" : "")).then(function (u) { U = u; renderUpdate(); }).catch(function () {});
+  }
+  function renderUpdate() {
+    var bar = $("updBar");
+    var show_ = !!(U && U.canApply && store("dismissedUpdate") !== U.latest);
+    show(bar, show_);
+    if (!show_) return;
+    clear(bar);
+    var msg = el("span", { cls: "u-msg" }, el("strong", { text: "Update available" }), " — " + U.behind + " new change" + (U.behind === 1 ? "" : "s") + " on GitHub. ", el("span", { cls: "u-list", text: U.changes.slice(0, 3).join(" · ") }));
+    var go = el("button", { cls: "primary", text: "Update now", onclick: function () {
+      go.disabled = true; later.disabled = true; go.textContent = "Updating…";
+      api("/api/update/apply", {}).then(function (r) {
+        clear(bar).appendChild(el("span", { cls: "u-msg", text: r.restarting ? "Updated " + r.from + " → " + r.to + ". Restarting…" : "Updated " + r.from + " → " + r.to + ". Quit and reopen Narrowbit (or restart narrowbit ui) to use it." }));
+      }).catch(function (e) { go.disabled = false; later.disabled = false; go.textContent = "Update now"; banner("bad", e.message); });
+    } });
+    var later = el("button", { cls: "link", text: "Later", onclick: function () { store("dismissedUpdate", U.latest); renderUpdate(); } });
+    bar.appendChild(msg); bar.appendChild(go); bar.appendChild(later);
+  }
 
   // ---------- first-run: what can I use right now? ----------
   var R = null;
@@ -1257,6 +1283,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   loadLimits();
   setInterval(loadLimits, 60000);
   loadReadiness(false);
+  loadUpdate(false);
+  setInterval(function () { loadUpdate(true); }, 3 * 60 * 60 * 1000);
 
   load();
 })();

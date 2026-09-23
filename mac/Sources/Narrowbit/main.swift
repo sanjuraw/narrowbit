@@ -84,6 +84,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         p.terminationHandler = { [weak self] proc in
             DispatchQueue.main.async {
                 guard let self else { return }
+                // Exit code 75 = "updated, please restart me": relaunch the server and reload the window.
+                if proc.terminationStatus == 75 {
+                    self.loaded = false
+                    self.startServer()
+                    return
+                }
                 let why = self.stderrText.isEmpty ? "exit code \(proc.terminationStatus)" : self.stderrText
                 self.showMessage(
                     "Narrowbit's engine stopped",

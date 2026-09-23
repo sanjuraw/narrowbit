@@ -27,6 +27,7 @@ import {
   type ProviderName,
 } from "./providers/models.js";
 import { runTask, safeAbsPath } from "./runtime.js";
+import { applyUpdate, checkUpdate } from "./update.js";
 import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
 import { sh } from "./util.js";
@@ -193,6 +194,8 @@ function workingDiff(root: string, skipUntracked: Set<string> = new Set()) {
 export interface UiOptions {
   root: string | null;
   port: number;
+  /** Exit with code 75 after an update so the macOS app (which relaunches on 75) loads the new code. */
+  restartOnUpdate?: boolean;
   onListening: (url: string) => void;
 }
 
@@ -390,6 +393,8 @@ export function startUi(opts: UiOptions) {
         return;
       }
 
+      if (route === "GET /api/update") return json(res, 200, await checkUpdate(url.searchParams.has("refresh")));
+
       if (route === "GET /api/readiness") return json(res, 200, await checkReadiness(url.searchParams.has("refresh")));
 
       if (route === "GET /api/limits") {
@@ -512,6 +517,17 @@ export function startUi(opts: UiOptions) {
             return json(res, 200, { ok: true, tools: tools.map((t) => t.name) });
           } catch (e: any) {
             return json(res, 200, { ok: false, error: e.message });
+          }
+        }
+        case "/api/update/apply": {
+          if (run?.running) return json(res, 409, { error: "Stop the running task before updating." });
+          try {
+            const r = await applyUpdate();
+            json(res, 200, { ok: true, ...r, restarting: !!opts.restartOnUpdate });
+            if (opts.restartOnUpdate) setTimeout(() => process.exit(75), 600);
+            return;
+          } catch (e: any) {
+            return json(res, 400, { error: e.message });
           }
         }
         case "/api/limits/refresh": {
