@@ -16,6 +16,7 @@ const PAGE = String.raw`<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Narrowbit</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cg fill='%23c96442'%3E%3Crect x='20' y='25' width='8' height='50'/%3E%3Crect x='20' y='25' width='20' height='8'/%3E%3Crect x='20' y='67' width='20' height='8'/%3E%3Crect x='72' y='25' width='8' height='50'/%3E%3Crect x='60' y='25' width='20' height='8'/%3E%3Crect x='60' y='67' width='20' height='8'/%3E%3Crect x='44' y='44' width='12' height='12'/%3E%3C/g%3E%3C/svg%3E">
 <style>
 :root {
   --bg: #faf9f5; --side: #f3f1ea; --panel: #ffffff; --panel-2: #f0eee6; --line: #e5e2d9; --line-2: #d9d5c9;
@@ -76,8 +77,8 @@ kbd { font: 11px var(--mono); border: 1px solid var(--line-2); border-bottom-wid
 aside { background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
 .side-top { display: flex; align-items: center; justify-content: space-between; padding: 14px 12px 8px 16px; }
 .brand { font-weight: 700; letter-spacing: -.01em; display: flex; align-items: center; gap: 8px; }
-.brand .mark { width: 18px; height: 18px; border-radius: 5px; background: var(--accent); display: inline-block; position: relative; }
-.brand .mark::after { content: ""; position: absolute; inset: 5px; border-radius: 2px; background: var(--side); }
+.brand .mark { width: 18px; height: 18px; display: inline-block; flex: none; }
+.brand .mark rect { fill: var(--accent); }
 .new-btn { display: flex; align-items: center; gap: 8px; width: calc(100% - 20px); margin: 4px 10px 10px; padding: 8px 10px; border-radius: 9px; background: var(--panel); box-shadow: var(--shadow); border: 1px solid var(--line); font-weight: 600; }
 .new-btn .plus { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; font-size: 15px; line-height: 1; }
 .repo-btn { display: flex; flex-direction: column; align-items: flex-start; width: calc(100% - 20px); margin: 0 10px 8px; border: 0; background: transparent; padding: 6px 8px; text-align: left; border-radius: 8px; }
@@ -270,7 +271,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 <body>
 <div class="app" id="app">
   <aside>
-    <div class="side-top"><span class="brand"><span class="mark"></span>Narrowbit</span></div>
+    <div class="side-top"><span class="brand"><svg class="mark" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="20" y="25" width="8" height="50"/><rect x="20" y="25" width="20" height="8"/><rect x="20" y="67" width="20" height="8"/><rect x="72" y="25" width="8" height="50"/><rect x="60" y="25" width="20" height="8"/><rect x="60" y="67" width="20" height="8"/><rect x="44" y="44" width="12" height="12"/></svg>Narrowbit</span></div>
     <button class="new-btn" id="newBtn"><span class="plus">+</span>New task <span style="margin-left:auto"><kbd>⌘</kbd> <kbd>K</kbd></span></button>
     <button class="repo-btn" id="repoBtn" title="Switch repository"><span class="rn" id="repoName">No repository</span><span class="rb" id="repoBranch"></span></button>
     <div class="side-label">Sessions</div>

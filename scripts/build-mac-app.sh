@@ -9,6 +9,16 @@ APP=mac/build/Narrowbit.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "mac/.build/release/Narrowbit" "$APP/Contents/MacOS/Narrowbit"
+# Build AppIcon.icns from the single 1024x1024 source (mac/Resources/icon.png) — iconset needs
+# every size named explicitly; macOS applies the rounded-square mask/shadow itself at display time.
+ICONSET=$(mktemp -d)/AppIcon.iconset
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+  sips -z $size $size mac/Resources/icon.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  sips -z $((size * 2)) $((size * 2)) mac/Resources/icon.png --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+rm -rf "$(dirname "$ICONSET")"
 VERSION=$(node -p 'require("./package.json").version')
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -18,6 +28,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>Narrowbit</string>
   <key>CFBundleIdentifier</key><string>dev.narrowbit.app</string>
   <key>CFBundleExecutable</key><string>Narrowbit</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
