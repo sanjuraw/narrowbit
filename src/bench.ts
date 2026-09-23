@@ -41,6 +41,8 @@ export interface BenchArm {
   runtime?: boolean;
   /** runtime arm only: cap on loop steps (default 20). */
   runtimeMaxSteps?: number;
+  /** runtime arm only: lead mode (plan + review). Defaults to runTask's own default (true). */
+  boss?: boolean;
   /** Extra args for `claude` in this arm. */
   args?: string[];
   /** Extra system prompt text (e.g. a "context hygiene" baseline arm). */
@@ -222,7 +224,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
           let s: ReturnType<typeof parseStream>;
           if (arm.runtime) {
             log(`${tag}: running narrowbit's own loop…`);
-            const result = await runTask(wp, t.prompt, { model: spec.model, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin });
+            const result = await runTask(wp, t.prompt, { model: spec.model, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss });
             const ledger = fold(result.taskId, readEvents(wp, result.taskId)).ledgerByRole;
             const roles = Object.values(ledger);
             const sum = (k: "inputTokens" | "cacheCreationTokens" | "cacheReadTokens" | "outputTokens") => roles.reduce((a, x) => a + x[k], 0);
