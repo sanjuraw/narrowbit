@@ -68,7 +68,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit verify [--full]           type-check, lint, focused tests for changed files
 
   narrowbit agent "<task>"            Narrowbit's own agent loop: reads, edits, runs commands,
-      [--max-steps N] [--model X] [--effort low|medium|high|xhigh|max] [--force]
+      [--max-steps N] [--model X] [--effort low|medium|high|xhigh|max] [--force] [--dry-run]
       verifies and remembers, driving the task end to end in THIS working tree (not a worktree —
       edits are real). Refuses to run on a dirty git tree unless --force.
 
@@ -376,7 +376,7 @@ export async function main(argv: string[]): Promise<number> {
       requireInit(p);
       const text = pos.join(" ");
       if (!text) {
-        process.stderr.write('usage: narrowbit agent "<task>" [--max-steps N] [--model X] [--effort medium] [--force]\n');
+        process.stderr.write('usage: narrowbit agent "<task>" [--max-steps N] [--model X] [--effort medium] [--force] [--dry-run]\n');
         return 2;
       }
       const g = gitState(root);
@@ -387,6 +387,22 @@ export async function main(argv: string[]): Promise<number> {
         return 2;
       }
       const headBefore = g.head;
+      if (args.flags["dry-run"]) {
+        const model = typeof args.flags.model === "string" ? args.flags.model : undefined;
+        const explore = model ?? "haiku";
+        const execute = model ?? "sonnet";
+        const escalate = model ?? "opus";
+        const effort = typeof args.flags.effort === "string" ? args.flags.effort : "medium";
+        const maxSteps = args.flags["max-steps"] ? Number(args.flags["max-steps"]) : 20;
+        const cfg = loadConfig(p);
+        const verifyEntries = Object.entries(cfg.verify).filter(([, v]) => v);
+        out(`narrowbit agent (dry run): ${text}`);
+        out(`models: explore=${explore} execute=${execute} escalate=${escalate}`);
+        out(`effort: ${effort}`);
+        out(`max steps: ${maxSteps}`);
+        out(`verify: ${verifyEntries.length ? verifyEntries.map(([k, v]) => `${k}=${v}`).join(", ") : "(none)"}`);
+        return 0;
+      }
       out(`narrowbit agent: ${text}`);
       out(`models: explore=haiku execute=sonnet escalate=opus (override with --model)  effort=${args.flags.effort ?? "medium"}\n`);
       const result = await runTask(p, text, {
