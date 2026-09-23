@@ -800,9 +800,15 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       }
       try {
         const r = await callConnectorTool(connector, toolName, d.args ?? {});
-        const capped = capSummary(r.text);
+        // Every other action (read/grep/search/run) redacts at its source (package.ts/query.ts/
+        // compress.ts) before capSummary/writeEvidence ever see it — an external connector's output
+        // is the one kind of text this runtime doesn't control the origin of, so it needs the same
+        // treatment explicitly here, not just writeEvidence's own internal redact() of the disk copy
+        // (which wouldn't cover the text that re-enters the model's context or the visible event log).
+        const cleaned = redact(r.text);
+        const capped = capSummary(cleaned);
         const text = `${serverName}.${toolName}${r.isError ? " (error)" : ""}:\n${capped}`;
-        const handle = writeEvidence(p, taskId, "other", r.text, capped);
+        const handle = writeEvidence(p, taskId, "other", cleaned, capped);
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, evidenceRef: handle.id, meta: { server: serverName, tool: toolName } });
         return text;
       } catch (e: any) {
