@@ -18,6 +18,11 @@ type Message = { role: "system" | "user" | "assistant"; content: string };
 
 const sessions = new Map<string, { messages: Message[]; costUsd: number }>();
 
+/** Whether a session's conversation is still held in this process (a follow-up can resume it). */
+export function hasSession(id: string): boolean {
+  return sessions.has(id);
+}
+
 function contentText(c: unknown): string {
   if (typeof c === "string") return c;
   if (Array.isArray(c)) return c.map((p: any) => (typeof p === "string" ? p : (p?.text ?? ""))).join("");

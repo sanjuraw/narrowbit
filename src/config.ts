@@ -34,6 +34,8 @@ export interface AgentConfig {
   models?: Record<string, { explore?: string; execute?: string; escalate?: string }>;
   /** Per-provider endpoint overrides for API/local providers, e.g. { custom: { baseUrl: "http://…/v1", keyEnv: "MY_KEY" } }. */
   endpoints?: Record<string, { baseUrl?: string; keyEnv?: string }>;
+  /** Lead mode: model 3 plans the task up front and reviews the diff before "done". Default on. */
+  boss?: boolean;
 }
 
 export const DEFAULT_CONFIG: NarrowbitConfig = {

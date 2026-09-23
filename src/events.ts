@@ -60,7 +60,21 @@ export function appendEvent(p: Paths, taskId: string, e: Omit<Event, "id" | "tas
   ensureTaskDir(p, taskId);
   const full: Event = { actor: e.actor, type: e.type, summary: e.summary, evidenceRef: e.evidenceRef, tokens: e.tokens, meta: e.meta, id: e.id ?? shortId(), taskId, at: e.at ?? now() };
   appendFileSync(eventsFile(p, taskId), JSON.stringify(full) + "\n", { mode: 0o600 });
+  for (const fn of listeners.get(taskId) ?? []) fn(full);
   return full;
+}
+
+const listeners = new Map<string, Set<(e: Event) => void>>();
+
+/** Live feed of a task's events as they're appended (the app renders these); returns an unsubscribe. */
+export function subscribe(taskId: string, fn: (e: Event) => void): () => void {
+  const set = listeners.get(taskId) ?? new Set();
+  set.add(fn);
+  listeners.set(taskId, set);
+  return () => {
+    set.delete(fn);
+    if (!set.size) listeners.delete(taskId);
+  };
 }
 
 export function readEvents(p: Paths, taskId: string): Event[] {

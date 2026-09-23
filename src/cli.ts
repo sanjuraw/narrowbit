@@ -49,7 +49,7 @@ function parseArgs(argv: string[]): Args {
 
 const VALUE_FLAGS = new Set([
   "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip",
-  "max-steps", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env",
+  "max-steps", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue",
 ]);
 
 const HELP = `narrowbit — minimum sufficient context for coding agents
@@ -75,6 +75,8 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit agent "<task>"            Narrowbit's own agent loop: reads, edits, runs commands,
       [--provider <name>] [--model X | --explore X --execute X --escalate X]
       [--effort low|medium|high|xhigh|max] [--max-steps N] [--force] [--dry-run]
+      [--no-boss] [--continue <task-id>]   lead mode (default): model 3 plans first and reviews the
+      diff before "done"; --continue sends a follow-up to an earlier task
       verifies and remembers, driving the task end to end in THIS working tree (not a worktree —
       edits are real). Refuses to run on a dirty git tree unless --force.
   narrowbit ui [--port 4747] [--no-open]   the app: run tasks, approve each command, review the diff,
@@ -393,7 +395,8 @@ export async function main(argv: string[]): Promise<number> {
         return 2;
       }
       const g = gitState(root);
-      if (g.isRepo && (g.dirty.length || g.staged.length) && !args.flags.force) {
+      // A follow-up (--continue) builds on the earlier request's uncommitted edits, so it skips this.
+      if (g.isRepo && (g.dirty.length || g.staged.length) && !args.flags.force && !strFlag(args, "continue")) {
         process.stderr.write(
           `narrowbit: working tree has uncommitted changes (${g.dirty.length + g.staged.length} file(s)) — commit or stash first, or pass --force to let the agent's edits mix with them.\n`,
         );
@@ -416,7 +419,7 @@ export async function main(argv: string[]): Promise<number> {
         return 2;
       }
       const maxSteps = args.flags["max-steps"] ? Number(args.flags["max-steps"]) : 20;
-      const modelsLine = `provider=${sel.provider}  models: explore=${sel.tiers.explore} execute=${sel.tiers.execute} escalate=${sel.tiers.escalate}  effort=${sel.effort}`;
+      const modelsLine = `provider=${sel.provider}  models: explore=${sel.tiers.explore} execute=${sel.tiers.execute} escalate=${sel.tiers.escalate}  effort=${sel.effort}  lead mode: ${args.flags["no-boss"] || cfg.agent?.boss === false ? "off" : `on (${sel.tiers.escalate} plans + reviews)`}`;
       if (args.flags["dry-run"]) {
         const verifyEntries = Object.entries(cfg.verify).filter(([, v]) => v);
         out(`narrowbit agent (dry run): ${text}`);
@@ -434,6 +437,8 @@ export async function main(argv: string[]): Promise<number> {
       out(`${modelsLine}\n`);
       const result = await runTask(p, text, {
         maxSteps,
+        boss: args.flags["no-boss"] ? false : (cfg.agent?.boss ?? true),
+        continueTask: strFlag(args, "continue"),
         provider: sel.provider,
         models: sel.tiers,
         effort: sel.effort,

@@ -5,21 +5,29 @@ import { loadConfig, type Paths } from "./config.js";
 import { runCommand } from "./compress.js";
 import { project } from "./context.js";
 import { writeEvidence } from "./evidence.js";
-import { appendEvent, fold, readEvents } from "./events.js";
+import { appendEvent, fold, readEvents, subscribe, type Event, type PlanStep } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./memory.js";
-import { callModel, type ModelCallOptions } from "./providers/claude-cli.js";
+import { callModel, type ModelCallOptions, type ModelCallResult } from "./providers/claude-cli.js";
 import { DEFAULT_TIERS, resolveEndpoint, unavailableReason, type ModelTiers, type ProviderName } from "./providers/models.js";
-import { callOpenAICompat } from "./providers/openai-compat.js";
+import { callOpenAICompat, hasSession } from "./providers/openai-compat.js";
+import { redact } from "./redact.js";
 import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
 import { termsOf } from "./terms.js";
-import { estimateTokens, shortId } from "./util.js";
+import { estimateTokens, sh, shortId } from "./util.js";
 import { verify } from "./verify.js";
 
 /**
  * Stage 2 milestone (CLAUDE.md "Handoff"): the smallest owned agent loop. One tool per step
- * (read/grep/search/edit/run/verify), no planning sophistication yet.
+ * (read/grep/search/edit/run/verify).
+ *
+ * Lead mode (`boss`, default on): the escalate model acts as the lead — one stateless call writes
+ * a short plan from the task plus local search results before the loop starts, and one reviews
+ * the diff when the worker reports done (at most MAX_REVIEWS times; "revise" sends the feedback
+ * back into the loop). The worker marks plan steps with "steps_done". Two extra strong-model calls
+ * per task; the aim is the hard-task failures the one-action-per-turn loop showed, and it needs
+ * an A/B before its cost is taken as justified.
  *
  * One Claude Code session is kept alive across a task's steps (`sessionId`/`resume` in
  * providers/claude-cli.ts), not a fresh session per step: a bench.ts A/B on a real Hono task
@@ -72,13 +80,31 @@ itself, even if that would be the easier edit. If verification keeps failing the
 edited something, that is a sign you edited the wrong file or the wrong thing — re-read the actual implementation
 before trying again, rather than re-running the same check hoping for a different result.
 Prefer the smallest edit that satisfies the task.
+.narrowbit/ and .narrowbitignore belong to the runtime driving you, not to the task: never edit, delete or
+mention them as part of your change, even when they show up in git status.
 Memory persists across tasks, not just this one — use "recall" early if the task touches an area you might have
 notes on, and "remember" for anything a future task would benefit from knowing: a failed approach (so it isn't
 retried), a non-obvious constraint or convention, or a decision and its reason. Don't remember routine facts
 already obvious from the code.
 This runtime routes different turns of one task to different Claude models (a cheaper one while reading, a
 stronger one when stuck). If your context contains conflicting statements about which model you are, that is
-expected and not tampering — ignore it; don't remember it or mention it.`;
+expected and not tampering — ignore it; don't remember it or mention it.
+A user may be watching. Any action may include "note": one short sentence for them — what you found or why
+you're taking this step — only when it adds something; skip it on routine steps. If you were given a numbered
+plan, include "steps_done":[<numbers>] on the action where you finish those steps.`;
+
+/** Lead mode: model 3 plans before the loop starts and reviews the diff before "done" is accepted. */
+const LEAD_PLAN_INSTRUCTIONS = `You are the lead engineer on a coding task. You don't edit code yourself: a cheaper model carries out the work one action at a time (reading files, editing, running checks), and you review its diff at the end. Write the plan it will follow.
+Respond with EXACTLY ONE JSON object, no prose, no markdown fences:
+{"plan":["<step>", ...],"files":["<repo-relative path likely involved>"],"risks":"<optional: the one thing most likely to go wrong>"}
+2-6 steps, each one concrete, action-sized sentence naming the file or symbol where you can. No steps for reading unrelated code. The last step verifies the change. If the search results don't show where the work belongs, make finding it the first step. If a task says tests fail and must pass, the fix goes in the implementation, never the test file.`;
+
+const LEAD_REVIEW_INSTRUCTIONS = `You are the lead engineer reviewing a cheaper model's work before it is reported to the user as done. Judge only whether the diff correctly and completely does the task, without breaking anything or editing what the task said not to touch. Don't ask for style changes, extra tests or refactors the task didn't ask for — the bar is "correct and complete", not "how you would have written it".
+Respond with EXACTLY ONE JSON object, no prose:
+{"verdict":"approve"} or {"verdict":"revise","feedback":"<specific: what is wrong or missing, and where>"}`;
+
+/** Reviews per task (and per follow-up); after this many, "done" is accepted as the worker reports it. */
+const MAX_REVIEWS = 2;
 
 interface Decision {
   action: string;
@@ -98,6 +124,10 @@ interface Decision {
   attempt?: string;
   result?: string;
   files?: string[];
+  /** One line for a user watching (rendered in the app). */
+  note?: string;
+  /** 1-based plan steps finished by this action. */
+  steps_done?: number[];
 }
 
 export function parseDecision(text: string): Decision | null {
@@ -151,6 +181,13 @@ export interface RuntimeOptions {
   approve?: (command: string) => Promise<boolean>;
   /** Aborting stops the loop before its next model call (a call already in flight finishes first). */
   signal?: AbortSignal;
+  /** Lead mode: the escalate model plans up front and reviews the diff before "done". Default true. */
+  boss?: boolean;
+  /** Continue an earlier task with `taskText` as a follow-up request, in the same event log —
+   * resuming its model session when it still exists, else from a deterministic digest. */
+  continueTask?: string;
+  /** Every event appended for this task, as it happens (the app renders these). */
+  onEvent?: (e: Event) => void;
 }
 
 
@@ -172,6 +209,16 @@ const STALL_THRESHOLD = 4;
 const MAX_TRANSIENT_RETRIES = 2;
 
 export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions = {}): Promise<RuntimeResult> {
+  const taskId = opts.continueTask ?? `rt-${shortId()}`;
+  const unsubscribe = opts.onEvent ? subscribe(taskId, opts.onEvent) : null;
+  try {
+    return await runLoop(p, taskId, taskText, opts);
+  } finally {
+    unsubscribe?.();
+  }
+}
+
+async function runLoop(p: Paths, taskId: string, taskText: string, opts: RuntimeOptions): Promise<RuntimeResult> {
   const provider = opts.provider ?? "claude";
   const cfg = loadConfig(p);
   const tiers = opts.models ? { ...DEFAULT_TIERS[provider], ...opts.models } : opts.model ? { explore: opts.model, execute: opts.model, escalate: opts.model } : DEFAULT_TIERS[provider];
@@ -182,7 +229,6 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   if (unavailable) throw new Error(unavailable);
   const endpoint = resolveEndpoint(provider, cfg.agent);
   const call = endpoint ? (o: ModelCallOptions) => callOpenAICompat(endpoint, o) : callModel;
-  const taskId = `rt-${shortId()}`;
   const store = openStore(p);
   indexRepo(p, store);
   const maxSteps = opts.maxSteps ?? 20;
@@ -199,7 +245,28 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   let editedSinceVerify = false;
   const doneChallenges = new Set<string>();
 
-  appendEvent(p, taskId, { actor: "user", type: "decision", summary: "task received", meta: { goal: taskText } });
+  const prior = opts.continueTask ? readEvents(p, taskId) : [];
+  const continuing = prior.length > 0;
+  const boss = opts.boss ?? true;
+  if (continuing) appendEvent(p, taskId, { actor: "user", type: "decision", summary: `follow-up: ${taskText}`, meta: { followUp: taskText } });
+  else
+    appendEvent(p, taskId, {
+      actor: "user",
+      type: "decision",
+      summary: "task received",
+      // Untracked files that predate the task aren't its work; the lead review must not judge them.
+      meta: { goal: taskText, untrackedAtStart: untrackedFiles(p) },
+    });
+  const goal = continuing ? (fold(taskId, prior).goal ?? taskText) : taskText;
+  let plan: LeadPlan | null = continuing ? planFromEvents(prior) : null;
+  const firstEvent = continuing ? prior[0] : readEvents(p, taskId)[0];
+  const preexisting = new Set<string>(Array.isArray(firstEvent?.meta?.untrackedAtStart) ? (firstEvent.meta.untrackedAtStart as string[]) : []);
+  const lead = { p, taskId, call, model: tiers.escalate, effort, role, preexisting };
+  if (boss && !continuing) {
+    log(`[plan] (${tiers.escalate}) planning`);
+    plan = await leadPlan(lead, taskText, store);
+    if (plan) log(`      → ${plan.steps.length} steps`);
+  }
 
   let outcome: RuntimeResult["outcome"] = "max_steps";
   let summary = "";
@@ -213,11 +280,11 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   let sinceLastEdit = 0;
   let checksSinceEdit = 0;
   const actionCounts: Record<string, number> = {};
-  let sessionId = randomUUID();
+  let sessionId: string = randomUUID();
   // true at the start of every session (the task's first, or right after a compaction): the next
   // call must send SYSTEM_INSTRUCTIONS and must NOT resume, since there is nothing to resume yet.
   let freshSessionPending = true;
-  let nextPrompt = `Task: ${taskText}\n\nRespond with your first action as JSON.`;
+  let nextPrompt = `Task: ${taskText}\n\n${plan ? renderPlanForWorker(plan) + "\n\n" : ""}Respond with your first action as JSON.`;
   // callModel's costUsd is Claude Code's CUMULATIVE cost for the whole resumed session, not a
   // per-call charge (confirmed by direct measurement: it strictly increases call over call, unlike
   // every other usage field, which the Anthropic API reports per-request). Track the running total
@@ -225,6 +292,23 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   // correct instead of re-counting every prior call's cost on every later one. Reset at each
   // compaction, since a new session's costUsd is again cumulative from zero for that new session.
   let cumulativeCost = 0;
+  if (continuing) {
+    // Resume the earlier session when it still exists (cheaper: the conversation is cached);
+    // otherwise start fresh from the same deterministic digest compaction uses.
+    const last = [...prior].reverse().find((e) => e.type === "model_call" && typeof e.meta?.sessionId === "string" && e.tokens?.role === role);
+    const lastSession = last?.meta?.sessionId as string | undefined;
+    const resumable = lastSession && last?.meta?.provider === provider && (provider === "claude" || hasSession(lastSession));
+    if (resumable) {
+      sessionId = lastSession;
+      freshSessionPending = false;
+      cumulativeCost = Number(last?.meta?.sessionCost ?? 0);
+      nextPrompt = `Follow-up request from the user: ${taskText}\n\nThe earlier work is already in the files. Respond with your next action as JSON.`;
+    } else {
+      const digest = project(fold(taskId, prior), { budget: cfg.budget.initial });
+      nextPrompt = `You are continuing an earlier task (original goal: ${goal}). Progress so far:\n\n${digest}\n\nNew request from the user: ${taskText}\n\nUse read/grep/search for anything you need in full. Respond with your next action as JSON.`;
+    }
+  }
+  let reviews = 0;
 
   for (; steps < maxSteps; steps++) {
     if (opts.signal?.aborted) {
@@ -275,6 +359,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
         outputTokens: res.usage.output,
         costUsd: callCost,
       },
+      meta: { sessionId, sessionCost: totalCost, provider },
     });
     if (res.isError) {
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `model call failed: ${res.errorMessage ?? "unknown error"}` });
@@ -298,6 +383,10 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       continue;
     }
     parseRetries = 0;
+    if (plan && Array.isArray(decision.steps_done) && decision.steps_done.length) {
+      const marked = markSteps(plan, decision.steps_done);
+      if (marked) appendEvent(p, taskId, { actor: "model", type: "plan", summary: `plan: ${plan.steps.filter((x) => x.status === "done").length}/${plan.steps.length} done`, meta: planMeta(plan) });
+    }
 
     if (decision.action === "done") {
       let challenge: string | null = null;
@@ -316,9 +405,26 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
         nextPrompt = `${challenge}\n\nWhat is the next action? Respond with JSON only.`;
         continue;
       }
+      if (boss && editsApplied > 0 && reviews < MAX_REVIEWS) {
+        reviews++;
+        log(`[${steps}] (${tiers.escalate}) lead review`);
+        const review = await leadReview(lead, goal, taskText !== goal ? taskText : null, plan, decision.summary ?? "");
+        if (review?.verdict === "revise") {
+          log(`      → changes requested: ${review.feedback.slice(0, 100)}`);
+          // A revision reopens the verify challenge: the fix must be checked again.
+          doneChallenges.delete("no-verify");
+          nextPrompt = `The lead engineer reviewed your diff and asked for changes:\n${review.feedback}\n\nMake them, verify, then report done again. What is the next action? Respond with JSON only.`;
+          continue;
+        }
+        if (review) log("      → approved");
+      }
       outcome = "done";
       summary = decision.summary ?? "done";
-      appendEvent(p, taskId, { actor: "model", type: "decision", summary: `done: ${summary}` });
+      if (plan && plan.steps.some((x) => x.status !== "done")) {
+        markSteps(plan, plan.steps.map((_, i) => i + 1));
+        appendEvent(p, taskId, { actor: "model", type: "plan", summary: `plan: ${plan.steps.length}/${plan.steps.length} done`, meta: planMeta(plan) });
+      }
+      appendEvent(p, taskId, { actor: "model", type: "decision", summary: `done: ${summary}`, meta: { note: decision.note } });
       log(`[${steps}] (${turnModel}) done: ${summary}`);
       break;
     }
@@ -334,6 +440,12 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
     sinceLastEdit = decision.action === "edit" ? 0 : sinceLastEdit + 1;
     if (decision.action === "edit") hasEdited = true;
     log(`[${steps}] (${turnModel}) ${decision.action}${decision.path ? ` ${decision.path}` : decision.query ? ` "${decision.query}"` : decision.pattern ? ` "${decision.pattern}"` : decision.command ? ` ${decision.command}` : ""}`);
+    appendEvent(p, taskId, {
+      actor: "model",
+      type: "tool_call",
+      summary: `${decision.action}${decision.path ? ` ${decision.path}` : decision.command ? ` ${decision.command}` : decision.query ? ` "${decision.query}"` : decision.pattern ? ` "${decision.pattern}"` : ""}`,
+      meta: { action: decision.action, path: decision.path, command: decision.command, query: decision.query, pattern: decision.pattern, glob: decision.glob, start: decision.start, end: decision.end, note: decision.note, model: turnModel },
+    });
     let resultText: string;
     try {
       resultText = await executeAction(p, taskId, decision, opts.approve);
@@ -356,7 +468,8 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       (decision.action === "verify" && resultText.startsWith("VERIFICATION FAILED")) || (decision.action === "run" && /^\$ .*\(exit [1-9]/.test(resultText));
     if (decision.action === "edit") checksSinceEdit = 0;
     else if (checkFailed) checksSinceEdit++;
-    const stalling = sinceLastEdit >= STALL_THRESHOLD && (decision.action === "run" || decision.action === "verify");
+    // Only a failing check signals spinning; a passing verify after cleanup steps is just finishing.
+    const stalling = sinceLastEdit >= STALL_THRESHOLD && checkFailed;
     if (stalling) {
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `${sinceLastEdit} steps without an edit — nudging toward the implementation file` });
       log(`      ! stalling (${sinceLastEdit} steps without an edit) — nudging`);
@@ -389,6 +502,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   }
 
   if (outcome === "max_steps") log(`[${steps}] hit the step budget (${maxSteps}) without finishing`);
+  appendEvent(p, taskId, { actor: "system", type: "decision", summary: `outcome: ${outcome}`, meta: { outcome, summary, steps } });
   store.close();
   return { taskId, outcome, summary, steps, actionCounts, compactions };
 }
@@ -439,6 +553,11 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       const abs = safeAbsPath(p, path);
       const oldText = d.old ?? "";
       const newText = d.new ?? "";
+      if (/^\.narrowbit(ignore$|\/)/.test(relative(p.root, abs ?? ""))) {
+        const text = `edit ${path}: refused — that's Narrowbit's own file, not part of the task`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
+        return text;
+      }
       if (!abs) {
         const text = `edit ${path}: refused — path escapes repo root`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
@@ -478,7 +597,8 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       store.close();
       const deltaLines = Math.max(oldText.split("\n").length, newText.split("\n").length);
       const text = `edited ${path} (~${deltaLines} line(s) changed)`;
-      appendEvent(p, taskId, { actor: "system", type: "edit", summary: text, meta: { path } });
+      // old/new are kept (capped, redacted) so the app can show the change inline; never re-sent to a model.
+      appendEvent(p, taskId, { actor: "system", type: "edit", summary: text, meta: { path, old: redact(oldText.slice(0, 6000)), new: redact(newText.slice(0, 6000)) } });
       return text;
     }
     case "run": {
@@ -541,4 +661,138 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       return text;
     }
   }
+}
+
+interface LeadPlan {
+  steps: PlanStep[];
+  files: string[];
+  risks?: string;
+  by: string;
+}
+
+interface LeadCtx {
+  p: Paths;
+  taskId: string;
+  call: (o: ModelCallOptions) => Promise<ModelCallResult>;
+  model: string;
+  effort: string;
+  role: string;
+  /** Untracked files that existed before the task — excluded from the reviewed diff. */
+  preexisting: Set<string>;
+}
+
+function untrackedFiles(p: Paths): string[] {
+  return sh("git", ["ls-files", "--others", "--exclude-standard"], p.root).stdout.split("\n").filter((f) => f && !f.startsWith(".narrowbit/"));
+}
+
+function planMeta(plan: LeadPlan) {
+  return { steps: plan.steps, files: plan.files, risks: plan.risks, by: plan.by };
+}
+
+function planFromEvents(events: Event[]): LeadPlan | null {
+  const last = [...events].reverse().find((e) => e.type === "plan" && Array.isArray(e.meta?.steps));
+  if (!last) return null;
+  const m = last.meta as { steps: PlanStep[]; files?: string[]; risks?: string; by?: string };
+  return { steps: m.steps.map((x) => ({ ...x })), files: m.files ?? [], risks: m.risks, by: m.by ?? "" };
+}
+
+/** Marks 1-based steps done; returns whether anything changed. */
+function markSteps(plan: LeadPlan, nums: number[]): boolean {
+  let changed = false;
+  for (const n of nums) {
+    const step = plan.steps[Number(n) - 1];
+    if (step && step.status !== "done") {
+      step.status = "done";
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function renderPlanForWorker(plan: LeadPlan): string {
+  return [
+    "Plan from the lead engineer (follow it, but trust the code over the plan where they disagree):",
+    ...plan.steps.map((x, i) => `${i + 1}. ${x.text}`),
+    plan.files.length ? `Likely files: ${plan.files.join(", ")}` : "",
+    plan.risks ? `Watch out: ${plan.risks}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** One stateless call to the lead model; logs its usage under `purpose` and parses a JSON reply. */
+async function leadCall(ctx: LeadCtx, purpose: "planning" | "review", system: string, prompt: string): Promise<any | null> {
+  const res = await ctx.call({ cwd: ctx.p.root, systemPrompt: system, prompt, model: ctx.model, effort: ctx.effort, role: purpose });
+  appendEvent(ctx.p, ctx.taskId, {
+    actor: "model",
+    type: "model_call",
+    summary: res.isError ? `${purpose}: model call failed` : `${purpose}: ${res.text.slice(0, 120)}`,
+    // A stateless call's cost is its own, not a running session total.
+    tokens: { model: ctx.model, role: purpose, inputTokens: res.usage.input, cacheCreationTokens: res.usage.cacheCreate, cacheReadTokens: res.usage.cacheRead, outputTokens: res.usage.output, costUsd: res.costUsd ?? 0 },
+  });
+  if (res.isError) return null;
+  const t = res.text.trim();
+  const json = t.startsWith("{") ? t : /\{[\s\S]*\}/.exec(t)?.[0];
+  try {
+    return json ? JSON.parse(json) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function leadPlan(ctx: LeadCtx, taskText: string, store: ReturnType<typeof openStore>): Promise<LeadPlan | null> {
+  const search = capSummary(searchText(ctx.p, store, taskText), 1500);
+  const d = await leadCall(ctx, "planning", LEAD_PLAN_INSTRUCTIONS, `Task: ${taskText}\n\nRepository search results for the task:\n${search}\n\nRespond with the plan JSON.`);
+  const steps = Array.isArray(d?.plan) ? d.plan.filter((x: unknown) => typeof x === "string" && x.trim()).slice(0, 8) : [];
+  if (!steps.length) {
+    appendEvent(ctx.p, ctx.taskId, { actor: "system", type: "blocker", summary: "lead plan unavailable — continuing without one" });
+    return null;
+  }
+  const plan: LeadPlan = {
+    steps: steps.map((text: string) => ({ text: text.trim(), status: "pending" as const })),
+    files: Array.isArray(d.files) ? d.files.filter((x: unknown) => typeof x === "string").slice(0, 8) : [],
+    risks: typeof d.risks === "string" && d.risks.trim() ? d.risks.trim() : undefined,
+    by: ctx.model,
+  };
+  appendEvent(ctx.p, ctx.taskId, { actor: "model", type: "plan", summary: `plan: ${plan.steps.length} steps`, meta: planMeta(plan) });
+  return plan;
+}
+
+async function leadReview(
+  ctx: LeadCtx,
+  goal: string,
+  followUp: string | null,
+  plan: LeadPlan | null,
+  workerSummary: string,
+): Promise<{ verdict: "approve" | "revise"; feedback: string } | null> {
+  let diff = sh("git", ["diff", "HEAD", "--", ".", ":(exclude).narrowbit"], ctx.p.root).stdout;
+  const untracked = untrackedFiles(ctx.p).filter((f) => !ctx.preexisting.has(f) && f !== ".narrowbitignore");
+  for (const f of untracked.slice(0, 10)) {
+    const abs = safeAbsPath(ctx.p, f);
+    if (!abs || !existsSync(abs)) continue;
+    const body = readFileSync(abs, "utf8").split("\n").slice(0, 150).map((l) => `+${l}`).join("\n");
+    diff += `\n--- /dev/null\n+++ b/${f} (new file)\n${body}`;
+  }
+  const MAX = 16_000;
+  if (diff.length > MAX) diff = diff.slice(0, MAX) + "\n… (diff truncated)";
+  const lastVerify = fold(ctx.taskId, readEvents(ctx.p, ctx.taskId)).lastVerify;
+  const prompt = [
+    `Task: ${goal}`,
+    followUp ? `Latest follow-up request: ${followUp}` : "",
+    plan ? `Plan:\n${plan.steps.map((x, i) => `${i + 1}. ${x.text}`).join("\n")}` : "",
+    `Worker's summary: ${workerSummary}`,
+    lastVerify ? `Last verification: ${capSummary(lastVerify.summary, 400)}` : "Last verification: none run",
+    `Diff:\n${redact(diff) || "(no changes)"}`,
+    "Respond with the verdict JSON.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const d = await leadCall(ctx, "review", LEAD_REVIEW_INSTRUCTIONS, prompt);
+  if (d?.verdict !== "approve" && d?.verdict !== "revise") {
+    appendEvent(ctx.p, ctx.taskId, { actor: "system", type: "blocker", summary: "lead review unavailable — accepting the worker's result" });
+    return null;
+  }
+  const feedback = d.verdict === "revise" ? String(d.feedback ?? "").trim() || "The change is incomplete; re-check the task." : "";
+  appendEvent(ctx.p, ctx.taskId, { actor: "model", type: "decision", summary: d.verdict === "approve" ? "lead review: approved" : `lead review: changes requested — ${feedback}`, meta: { review: d.verdict, feedback, by: ctx.model } });
+  return { verdict: d.verdict, feedback };
 }
