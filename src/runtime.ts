@@ -36,6 +36,15 @@ import { verify } from "./verify.js";
  * events.ts's fold()) — no summarization call needed, since every turn's result was already
  * captured as a short summary at write time. events.ts/evidence.ts log every call and action for
  * the usage ledger and for evidence handles, independent of what the model itself remembers.
+ *
+ * Model routing (`ModelTiers`): Haiku while exploring (no edit made yet — reading, searching,
+ * orienting), Sonnet once actually editing/verifying, Opus specifically when the loop is stalling
+ * (one turn before STALL_THRESHOLD's nudge would fire). The escalation isn't a cost optimization
+ * on its own — it directly targets a measured gap: two genuinely hard Hono tasks failed on Sonnet
+ * alone even at a 35-step budget, not a step-budget problem but a reasoning one; escalating only
+ * when stuck, not by default, spends the stronger model where it was shown to matter. Verified
+ * that `--model` can change mid-session on a `--resume` call (the CLI honors it per-call; it does
+ * not lock a session to its first model). `--effort` (default "medium") is passed to every call.
  */
 
 const SYSTEM_INSTRUCTIONS = `You are driving a coding task through a tool-free reasoning interface. You cannot run tools yourself — instead, on every turn, respond with EXACTLY ONE JSON object (no markdown fences, no prose outside the JSON) describing the next action for the runtime to take on your behalf:
@@ -111,10 +120,27 @@ export function safeAbsPath(p: Paths, path: string): string | null {
   return rel.startsWith("..") || resolve(p.root) === abs ? null : abs;
 }
 
+export interface ModelTiers {
+  /** Turns before the first edit of the task: reading, searching, orienting. Cheap by design. */
+  explore?: string;
+  /** Turns after at least one edit has happened: normal editing/verification decisions. */
+  execute?: string;
+  /** Turns at or past the stall threshold (context.ts's project() saw the loop spinning): the one
+   * place a stronger model is worth its cost. Directly motivated by a real result: two genuinely
+   * hard Hono tasks failed even at a 35-step budget on Sonnet alone — not a budget problem, a
+   * reasoning one. Escalating specifically when stuck, not by default, is the targeted fix. */
+  escalate?: string;
+}
+
 export interface RuntimeOptions {
   maxSteps?: number;
   budget?: number;
+  /** Back-compat: a single model for every turn. Ignored if `models` is given. */
   model?: string;
+  /** Per-phase model routing. Defaults to {explore: "haiku", execute: "sonnet", escalate: "opus"}. */
+  models?: ModelTiers;
+  /** --effort passed to every call: low | medium | high | xhigh | max. Defaults to "medium". */
+  effort?: string;
   claudeBin?: string;
   role?: string;
   /** Context size (input + cache-creation + cache-read tokens, from the most recent call) above
@@ -122,6 +148,8 @@ export interface RuntimeOptions {
    * `cfg.budget.max`. */
   compactThreshold?: number;
 }
+
+const DEFAULT_MODEL_TIERS: Required<ModelTiers> = { explore: "haiku", execute: "sonnet", escalate: "opus" };
 
 export interface RuntimeResult {
   taskId: string;
@@ -147,8 +175,10 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   indexRepo(p, store);
   const maxSteps = opts.maxSteps ?? 20;
   const role = opts.role ?? "execution";
-  const model = opts.model ?? "sonnet";
+  const tiers = opts.model ? { explore: opts.model, execute: opts.model, escalate: opts.model } : { ...DEFAULT_MODEL_TIERS, ...opts.models };
+  const effort = opts.effort ?? "medium";
   const compactThreshold = opts.compactThreshold ?? cfg.budget.max;
+  let hasEdited = false;
 
   appendEvent(p, taskId, { actor: "user", type: "decision", summary: "task received", meta: { goal: taskText } });
 
@@ -177,30 +207,26 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
   let cumulativeCost = 0;
 
   for (; steps < maxSteps; steps++) {
-    let res = await callModel({
+    // Escalate a turn early (one short of the stall nudge) rather than after — the point is to
+    // get unstuck, not to confirm it's stuck. Otherwise: cheap while exploring, normal once editing.
+    const turnModel = sinceLastEdit >= STALL_THRESHOLD - 1 ? tiers.escalate : hasEdited ? tiers.execute : tiers.explore;
+    const callOpts = {
       cwd: p.root,
       systemPrompt: freshSessionPending ? SYSTEM_INSTRUCTIONS : undefined,
       prompt: nextPrompt,
-      model,
+      model: turnModel,
+      effort,
       role,
       claudeBin: opts.claudeBin,
       sessionId,
       resume: !freshSessionPending,
-    });
+    };
+    let res = await callModel(callOpts);
     // A non-fatal error (timeout, killed process, no result event) is presumed transient, not a
     // real problem with the request — retry the identical call before giving up on the task.
     for (let transientRetries = 0; res.isError && !res.fatal && transientRetries < MAX_TRANSIENT_RETRIES; transientRetries++) {
       appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `step ${steps}: model call failed (${res.errorMessage ?? "no result"}), retrying (${transientRetries + 1}/${MAX_TRANSIENT_RETRIES})` });
-      res = await callModel({
-        cwd: p.root,
-        systemPrompt: freshSessionPending ? SYSTEM_INSTRUCTIONS : undefined,
-        prompt: nextPrompt,
-        model,
-        role,
-        claudeBin: opts.claudeBin,
-        sessionId,
-        resume: !freshSessionPending,
-      });
+      res = await callModel(callOpts);
     }
     freshSessionPending = false;
     const totalCost = res.costUsd ?? cumulativeCost;
@@ -211,7 +237,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
       type: "model_call",
       summary: res.isError ? `step ${steps}: model call failed` : `step ${steps}: ${res.text.slice(0, 120)}`,
       tokens: {
-        model,
+        model: turnModel,
         role,
         inputTokens: res.usage.input,
         cacheCreationTokens: res.usage.cacheCreate,
@@ -256,6 +282,7 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
 
     actionCounts[decision.action] = (actionCounts[decision.action] ?? 0) + 1;
     sinceLastEdit = decision.action === "edit" ? 0 : sinceLastEdit + 1;
+    if (decision.action === "edit") hasEdited = true;
     let resultText: string;
     try {
       resultText = await executeAction(p, taskId, decision);

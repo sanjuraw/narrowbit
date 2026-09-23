@@ -38,6 +38,8 @@ export interface ModelCallOptions {
   systemPrompt?: string;
   prompt: string;
   model?: string;
+  /** low | medium | high | xhigh | max. Passed straight through to `--effort`. */
+  effort?: string;
   /** Usage-ledger attribution bucket, e.g. "planning" | "retrieval" | "execution" | "verification". */
   role: string;
   claudeBin?: string;
@@ -71,6 +73,7 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
   else if (opts.sessionId) args.push("--session-id", opts.sessionId);
   else args.push("--no-session-persistence");
   if (opts.systemPrompt !== undefined) args.push("--system-prompt", opts.systemPrompt);
+  if (opts.effort) args.push("--effort", opts.effort);
   args.push(
     "--model",
     opts.model ?? "sonnet",
