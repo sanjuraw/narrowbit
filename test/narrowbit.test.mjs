@@ -26,7 +26,7 @@ const { termsOf } = await dist("terms.js");
 const { appendEvent, readEvents, fold } = await dist("events.js");
 const { writeEvidence, readEvidence } = await dist("evidence.js");
 const { project } = await dist("context.js");
-const { parseDecision, capSummary, safeAbsPath } = await dist("runtime.js");
+const { parseDecision, parseDecisions, capSummary, safeAbsPath } = await dist("runtime.js");
 const { resolveSelection, DEFAULT_TIERS } = await dist("providers/models.js");
 
 const nb = (cwd, ...args) => execFileSync(process.execPath, [BIN, ...args], { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
@@ -422,6 +422,22 @@ describe("runtime loop helpers (no model calls — keeps npm test free of Claude
     assert.deepEqual(parseDecision('sure, here:\n```json\n{"action":"read","path":"a.ts"}\n```'), { action: "read", path: "a.ts" });
     assert.equal(parseDecision("not json at all"), null);
     assert.equal(parseDecision('{"summary":"missing action field"}'), null);
+  });
+
+  test("parseDecisions accepts a batched array, falls back to a single object, caps oversized batches, and skips malformed entries", () => {
+    assert.deepEqual(parseDecisions('[{"action":"read","path":"a.ts"},{"action":"verify"}]'), [{ action: "read", path: "a.ts" }, { action: "verify" }]);
+    assert.deepEqual(parseDecisions('{"action":"done","summary":"ok"}'), [{ action: "done", summary: "ok" }]);
+    const oversized = JSON.stringify(Array.from({ length: 9 }, (_, i) => ({ action: "read", path: `f${i}.ts` })));
+    assert.equal(parseDecisions(oversized).length, 5);
+    assert.deepEqual(parseDecisions('[{"action":"read","path":"a.ts"},{"no":"action field"},{"action":"verify"}]'), [{ action: "read", path: "a.ts" }, { action: "verify" }]);
+    assert.equal(parseDecisions("not json at all"), null);
+    assert.equal(parseDecisions("[]"), null);
+    // A model can echo Claude Code's own <function_calls> wrapping around the array; a naive
+    // greedy {...} match would grab across both objects and fail to parse — the array regex must win.
+    assert.deepEqual(
+      parseDecisions('<function_calls>\n[{"action":"read","path":"a.ts"},{"action":"read","path":"b.ts"}]\n</function_calls>'),
+      [{ action: "read", path: "a.ts" }, { action: "read", path: "b.ts" }],
+    );
   });
 
   test("capSummary passes short text through and truncates long text with a pointer to ask again", () => {

@@ -19,8 +19,26 @@ import { estimateTokens, sh, shortId } from "./util.js";
 import { verify } from "./verify.js";
 
 /**
- * Stage 2 milestone (CLAUDE.md "Handoff"): the smallest owned agent loop. One tool per step
- * (read/grep/search/edit/run/verify).
+ * Stage 2 milestone (CLAUDE.md "Handoff"): the smallest owned agent loop.
+ *
+ * Action batching (`MAX_BATCH_ACTIONS`): each turn is one model call but can carry up to N actions
+ * (read/grep/search/edit/run/verify/recall/remember), executed in order, before the next model
+ * call. Built because two genuinely hard Hono tasks kept failing under the original one-action-
+ * per-turn loop even with model escalation and lead-mode review (see CLAUDE.md's "Owned runtime,
+ * remaining 25 tasks" and "Lead mode A/B'd" entries) — neither a stronger model nor a plan/review
+ * pass changes the mechanism of needing 15-20 model calls to do what a human would do in 4-5 edits.
+ * A batch stops early — the model sees exactly why and everything already executed, not silently
+ * dropped — the moment continuing would build on a wrong assumption: an edit refused, verify
+ * failed, or a command exited non-zero. Not yet re-measured against the two hard tasks it was
+ * built for; that comparison is the actual test of whether this closes the gap.
+ *
+ * Lead mode (`boss`, default on): the escalate model acts as the lead — one stateless call writes
+ * a short plan from the task plus local search results before the loop starts, and one reviews
+ * the diff when the worker reports done (at most MAX_REVIEWS times; "revise" sends the feedback
+ * back into the loop). The worker marks plan steps with "steps_done". Two extra strong-model calls
+ * per task. A/B'd directly against the two hard tasks (CLAUDE.md, 2026-09-23): partial help on the
+ * harder one (1/2 vs 0/2 success), no effect on the other, at a real 24-27% token/cost premium —
+ * it doesn't touch the one-action-per-turn mechanism, batching does.
  *
  * Lead mode (`boss`, default on): the escalate model acts as the lead — one stateless call writes
  * a short plan from the task plus local search results before the loop starts, and one reviews
@@ -57,7 +75,11 @@ import { verify } from "./verify.js";
  * not lock a session to its first model). `--effort` (default "medium") is passed to every call.
  */
 
-const SYSTEM_INSTRUCTIONS = `You are driving a coding task through a tool-free reasoning interface. You cannot run tools yourself — instead, on every turn, respond with EXACTLY ONE JSON object (no markdown fences, no prose outside the JSON) describing the next action for the runtime to take on your behalf:
+/** Batch cap: bounds how much one turn can do (and how much a bad guess can waste) before the
+ * model gets to react to what actually happened. */
+const MAX_BATCH_ACTIONS = 5;
+
+const SYSTEM_INSTRUCTIONS = `You are driving a coding task through a tool-free reasoning interface. You cannot run tools yourself — instead, on every turn, respond with JSON describing the next action(s) for the runtime to take on your behalf (no markdown fences, no prose outside the JSON): either a single action object, or a JSON array of up to ${MAX_BATCH_ACTIONS} action objects to run in order in that one turn. Each action is one of:
 
 {"action":"read","path":"<repo-relative path>","start"?:<line>,"end"?:<line>}
 {"action":"grep","pattern":"<text>","glob"?:"<pathspec>"}
@@ -70,6 +92,12 @@ const SYSTEM_INSTRUCTIONS = `You are driving a coding task through a tool-free r
 {"action":"done","summary":"<what changed and why it satisfies the task>"}
 {"action":"blocked","reason":"<what you need that you don't have>"}
 
+Batch actions in one array when you already know what comes next regardless of the outcome — e.g.
+read a file then edit it, or edit then verify. Don't batch past a step whose result would change
+what you'd do next: the runtime stops a batch early, and tells you why, if an edit is refused, a
+verify fails, or a command exits nonzero — anything queued after that point was planned on an
+assumption that just turned out wrong. Everything before that point in the batch still runs; you
+only lose the unreached tail. When you're genuinely unsure what happens next, send one action.
 Read before you edit. "old" must match the file's current text EXACTLY (including whitespace) and must appear
 exactly once — copy it verbatim from what you last read, quoting only as much surrounding context as needed to
 make it unique. Never restate the whole file: "old"/"new" should cover only the lines that actually change. If a
@@ -130,16 +158,33 @@ interface Decision {
   steps_done?: number[];
 }
 
-export function parseDecision(text: string): Decision | null {
+/** Parses one turn's response into 1-MAX_BATCH_ACTIONS decisions: a bare action object, or a JSON
+ * array of action objects (batching). Excess entries past the cap are dropped, not rejected —
+ * a model that over-batches still gets the actions up to the limit rather than a wasted retry. */
+export function parseDecisions(text: string): Decision[] | null {
   const trimmed = text.trim();
-  const candidate = trimmed.startsWith("{") ? trimmed : (/\{[\s\S]*\}/.exec(trimmed)?.[0] ?? null);
-  if (!candidate) return null;
-  try {
-    const d = JSON.parse(candidate);
-    return typeof d.action === "string" ? d : null;
-  } catch {
-    return null;
+  // A greedy object-shaped regex over an array of objects (e.g. wrapped in stray tags the model
+  // echoed from elsewhere) matches from the first { to the last }, skipping the enclosing [ ] and
+  // producing invalid JSON — so the array candidate must be tried, not just the object one, and
+  // whichever candidate actually parses wins rather than picking one by a fixed priority alone.
+  const candidates = [trimmed, /\[[\s\S]*\]/.exec(trimmed)?.[0], /\{[\s\S]*\}/.exec(trimmed)?.[0]];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+    const items = Array.isArray(parsed) ? parsed : [parsed];
+    const decisions = items.filter((d): d is Decision => !!d && typeof d === "object" && typeof (d as any).action === "string");
+    if (decisions.length) return decisions.slice(0, MAX_BATCH_ACTIONS);
   }
+  return null;
+}
+
+export function parseDecision(text: string): Decision | null {
+  return parseDecisions(text)?.[0] ?? null;
 }
 
 /** Cap what re-enters context directly; anything longer is still fully available via the evidence handle. */
@@ -369,8 +414,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       break;
     }
 
-    const decision = parseDecision(res.text);
-    if (!decision) {
+    const decisions = parseDecisions(res.text);
+    if (!decisions) {
       parseRetries++;
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `could not parse a JSON action from the model's response (attempt ${parseRetries}/${MAX_PARSE_RETRIES}): ${res.text.slice(0, 200)}` });
       log(`[${steps}] (${turnModel}) unparseable response, retry ${parseRetries}/${MAX_PARSE_RETRIES}`);
@@ -379,107 +424,147 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         summary = "unparseable model response";
         break;
       }
-      nextPrompt = "Your last response was not valid JSON. Respond with EXACTLY one JSON object as instructed, nothing else — no prose, no markdown fences.";
+      nextPrompt = "Your last response was not valid JSON. Respond with a single action object, or a JSON array of action objects, nothing else — no prose, no markdown fences.";
       continue;
     }
     parseRetries = 0;
-    if (plan && Array.isArray(decision.steps_done) && decision.steps_done.length) {
-      const marked = markSteps(plan, decision.steps_done);
-      if (marked) appendEvent(p, taskId, { actor: "model", type: "plan", summary: `plan: ${plan.steps.filter((x) => x.status === "done").length}/${plan.steps.length} done`, meta: planMeta(plan) });
-    }
 
-    if (decision.action === "done") {
-      let challenge: string | null = null;
-      if (editsApplied === 0 && !doneChallenges.has("no-edit")) {
-        doneChallenges.add("no-edit");
-        challenge = Object.keys(actionCounts).length === 0
-          ? "You have not taken a single action yet — nothing has been read or changed, so the task cannot be complete. Start by reading the relevant file."
-          : 'No file has been changed in this task. If the task requires a code change, you have not made it yet — continue working. If it genuinely needs no change, reply "done" again and say why.';
-      } else if (editedSinceVerify && !doneChallenges.has("no-verify")) {
-        doneChallenges.add("no-verify");
-        challenge = 'You changed files but have not run "verify" since your last edit. Verify before declaring done.';
+    // Execute the batch in order. batchResults accumulates every executed action's result text;
+    // stopReason is set (and the loop broken) the moment continuing would build on a wrong
+    // assumption — an edit refused, a failed verify/command — so the tail of the batch goes
+    // unexecuted rather than compounding a mistake the model hasn't seen yet.
+    const batchResults: string[] = [];
+    let stopReason: string | null = null;
+    let doneRejected: string | null = null;
+    let taskEnded = false;
+    let lastCheckFailed = false;
+
+    for (let i = 0; i < decisions.length; i++) {
+      const decision = decisions[i];
+      const tag = decisions.length > 1 ? `[${i + 1}/${decisions.length}] ` : "";
+
+      if (plan && Array.isArray(decision.steps_done) && decision.steps_done.length) {
+        const marked = markSteps(plan, decision.steps_done);
+        if (marked) appendEvent(p, taskId, { actor: "model", type: "plan", summary: `plan: ${plan.steps.filter((x) => x.status === "done").length}/${plan.steps.length} done`, meta: planMeta(plan) });
       }
-      if (challenge) {
-        appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `done rejected: ${challenge}` });
-        log(`[${steps}] (${turnModel}) done rejected — ${challenge.split(/[.—]/)[0].trim()}`);
-        nextPrompt = `${challenge}\n\nWhat is the next action? Respond with JSON only.`;
-        continue;
-      }
-      if (boss && editsApplied > 0 && reviews < MAX_REVIEWS) {
-        reviews++;
-        log(`[${steps}] (${tiers.escalate}) lead review`);
-        const review = await leadReview(lead, goal, taskText !== goal ? taskText : null, plan, decision.summary ?? "");
-        if (review?.verdict === "revise") {
-          log(`      → changes requested: ${review.feedback.slice(0, 100)}`);
-          // A revision reopens the verify challenge: the fix must be checked again.
-          doneChallenges.delete("no-verify");
-          nextPrompt = `The lead engineer reviewed your diff and asked for changes:\n${review.feedback}\n\nMake them, verify, then report done again. What is the next action? Respond with JSON only.`;
-          continue;
+
+      if (decision.action === "done") {
+        let challenge: string | null = null;
+        if (editsApplied === 0 && !doneChallenges.has("no-edit")) {
+          doneChallenges.add("no-edit");
+          challenge = Object.keys(actionCounts).length === 0
+            ? "You have not taken a single action yet — nothing has been read or changed, so the task cannot be complete. Start by reading the relevant file."
+            : 'No file has been changed in this task. If the task requires a code change, you have not made it yet — continue working. If it genuinely needs no change, reply "done" again and say why.';
+        } else if (editedSinceVerify && !doneChallenges.has("no-verify")) {
+          doneChallenges.add("no-verify");
+          challenge = 'You changed files but have not run "verify" since your last edit. Verify before declaring done.';
         }
-        if (review) log("      → approved");
+        if (challenge) {
+          appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `done rejected: ${challenge}` });
+          log(`[${steps}] (${turnModel}) ${tag}done rejected — ${challenge.split(/[.—]/)[0].trim()}`);
+          doneRejected = `${challenge}\n\nWhat is the next action? Respond with JSON only.`;
+          break;
+        }
+        if (boss && editsApplied > 0 && reviews < MAX_REVIEWS) {
+          reviews++;
+          log(`[${steps}] (${tiers.escalate}) lead review`);
+          const review = await leadReview(lead, goal, taskText !== goal ? taskText : null, plan, decision.summary ?? "");
+          if (review?.verdict === "revise") {
+            log(`      → changes requested: ${review.feedback.slice(0, 100)}`);
+            // A revision reopens the verify challenge: the fix must be checked again.
+            doneChallenges.delete("no-verify");
+            doneRejected = `The lead engineer reviewed your diff and asked for changes:\n${review.feedback}\n\nMake them, verify, then report done again. What is the next action? Respond with JSON only.`;
+            break;
+          }
+          if (review) log("      → approved");
+        }
+        outcome = "done";
+        summary = decision.summary ?? "done";
+        if (plan && plan.steps.some((x) => x.status !== "done")) {
+          markSteps(plan, plan.steps.map((_, i2) => i2 + 1));
+          appendEvent(p, taskId, { actor: "model", type: "plan", summary: `plan: ${plan.steps.length}/${plan.steps.length} done`, meta: planMeta(plan) });
+        }
+        appendEvent(p, taskId, { actor: "model", type: "decision", summary: `done: ${summary}`, meta: { note: decision.note } });
+        log(`[${steps}] (${turnModel}) ${tag}done: ${summary}`);
+        taskEnded = true;
+        break;
       }
-      outcome = "done";
-      summary = decision.summary ?? "done";
-      if (plan && plan.steps.some((x) => x.status !== "done")) {
-        markSteps(plan, plan.steps.map((_, i) => i + 1));
-        appendEvent(p, taskId, { actor: "model", type: "plan", summary: `plan: ${plan.steps.length}/${plan.steps.length} done`, meta: planMeta(plan) });
+      if (decision.action === "blocked") {
+        outcome = "blocked";
+        summary = decision.reason ?? "blocked";
+        appendEvent(p, taskId, { actor: "model", type: "blocker", summary });
+        log(`[${steps}] (${turnModel}) ${tag}blocked: ${summary}`);
+        taskEnded = true;
+        break;
       }
-      appendEvent(p, taskId, { actor: "model", type: "decision", summary: `done: ${summary}`, meta: { note: decision.note } });
-      log(`[${steps}] (${turnModel}) done: ${summary}`);
-      break;
-    }
-    if (decision.action === "blocked") {
-      outcome = "blocked";
-      summary = decision.reason ?? "blocked";
-      appendEvent(p, taskId, { actor: "model", type: "blocker", summary });
-      log(`[${steps}] (${turnModel}) blocked: ${summary}`);
-      break;
+
+      actionCounts[decision.action] = (actionCounts[decision.action] ?? 0) + 1;
+      sinceLastEdit = decision.action === "edit" ? 0 : sinceLastEdit + 1;
+      if (decision.action === "edit") hasEdited = true;
+      log(`[${steps}] (${turnModel}) ${tag}${decision.action}${decision.path ? ` ${decision.path}` : decision.query ? ` "${decision.query}"` : decision.pattern ? ` "${decision.pattern}"` : decision.command ? ` ${decision.command}` : ""}`);
+      appendEvent(p, taskId, {
+        actor: "model",
+        type: "tool_call",
+        summary: `${decision.action}${decision.path ? ` ${decision.path}` : decision.command ? ` ${decision.command}` : decision.query ? ` "${decision.query}"` : decision.pattern ? ` "${decision.pattern}"` : ""}`,
+        meta: { action: decision.action, path: decision.path, command: decision.command, query: decision.query, pattern: decision.pattern, glob: decision.glob, start: decision.start, end: decision.end, note: decision.note, model: turnModel },
+      });
+      let resultText: string;
+      try {
+        resultText = await executeAction(p, taskId, decision, opts.approve);
+      } catch (e: any) {
+        resultText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
+      }
+      log(`      → ${resultText.split("\n")[0].slice(0, 100)}`);
+      batchResults.push(`${tag}${resultText}`);
+      // executeAction returns "edited <path>" only when the file was actually written; a refused
+      // edit (old text not found / not unique) doesn't count as progress for the done gate.
+      const editRefused = decision.action === "edit" && !resultText.startsWith("edited ");
+      if (decision.action === "edit" && !editRefused) {
+        editsApplied++;
+        editedSinceVerify = true;
+      }
+      // Running one of the repo's own verify commands (e.g. `npm test`) and passing counts as verifying:
+      // making the model repeat it through "verify" just to satisfy the done gate wastes a turn.
+      const verifyCommands = Object.values(cfg.verify).filter(Boolean) as string[];
+      const ranVerifyCommand = decision.action === "run" && /^\$ .*\(exit 0/.test(resultText) && verifyCommands.some((c) => (decision.command ?? "").trim() === c || (decision.command ?? "").trim() === c.replace(/ --silent$/, ""));
+      if ((decision.action === "verify" && !resultText.startsWith("VERIFICATION FAILED")) || ranVerifyCommand) editedSinceVerify = false;
+      // Only a *failed* check counts toward escalation — edit → typecheck → verify → done is normal,
+      // not stuck. The markers are our own output formats: verify.ts's report header and
+      // compress.ts's "$ cmd  (exit N; …)" head line.
+      const checkFailed =
+        (decision.action === "verify" && resultText.startsWith("VERIFICATION FAILED")) || (decision.action === "run" && /^\$ .*\(exit [1-9]/.test(resultText));
+      if (decision.action === "edit") checksSinceEdit = 0;
+      else if (checkFailed) checksSinceEdit++;
+      lastCheckFailed = checkFailed;
+
+      // Stop the batch here if what comes next in it was planned on an assumption this action
+      // just disproved — anything still queued goes unexecuted, and the model sees why.
+      if (editRefused) stopReason = "the edit above was refused";
+      else if (decision.action === "verify" && checkFailed) stopReason = "verification failed";
+      else if (decision.action === "run" && checkFailed) stopReason = "the command above exited non-zero";
+      if (stopReason) break;
     }
 
-    actionCounts[decision.action] = (actionCounts[decision.action] ?? 0) + 1;
-    sinceLastEdit = decision.action === "edit" ? 0 : sinceLastEdit + 1;
-    if (decision.action === "edit") hasEdited = true;
-    log(`[${steps}] (${turnModel}) ${decision.action}${decision.path ? ` ${decision.path}` : decision.query ? ` "${decision.query}"` : decision.pattern ? ` "${decision.pattern}"` : decision.command ? ` ${decision.command}` : ""}`);
-    appendEvent(p, taskId, {
-      actor: "model",
-      type: "tool_call",
-      summary: `${decision.action}${decision.path ? ` ${decision.path}` : decision.command ? ` ${decision.command}` : decision.query ? ` "${decision.query}"` : decision.pattern ? ` "${decision.pattern}"` : ""}`,
-      meta: { action: decision.action, path: decision.path, command: decision.command, query: decision.query, pattern: decision.pattern, glob: decision.glob, start: decision.start, end: decision.end, note: decision.note, model: turnModel },
-    });
-    let resultText: string;
-    try {
-      resultText = await executeAction(p, taskId, decision, opts.approve);
-    } catch (e: any) {
-      resultText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
-      appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
+    if (taskEnded) break;
+
+    if (doneRejected) {
+      nextPrompt = doneRejected;
+      continue;
     }
-    log(`      → ${resultText.split("\n")[0].slice(0, 100)}`);
-    // executeAction returns "edited <path>" only when the file was actually written; a refused
-    // edit (old text not found / not unique) doesn't count as progress for the done gate.
-    if (decision.action === "edit" && resultText.startsWith("edited ")) {
-      editsApplied++;
-      editedSinceVerify = true;
-    }
-    // Running one of the repo's own verify commands (e.g. `npm test`) and passing counts as verifying:
-    // making the model repeat it through "verify" just to satisfy the done gate wastes a turn.
-    const verifyCommands = Object.values(cfg.verify).filter(Boolean) as string[];
-    const ranVerifyCommand = decision.action === "run" && /^\$ .*\(exit 0/.test(resultText) && verifyCommands.some((c) => (decision.command ?? "").trim() === c || (decision.command ?? "").trim() === c.replace(/ --silent$/, ""));
-    if ((decision.action === "verify" && !resultText.startsWith("VERIFICATION FAILED")) || ranVerifyCommand) editedSinceVerify = false;
-    // Only a *failed* check counts toward escalation — edit → typecheck → verify → done is normal,
-    // not stuck. The markers are our own output formats: verify.ts's report header and
-    // compress.ts's "$ cmd  (exit N; …)" head line.
-    const checkFailed =
-      (decision.action === "verify" && resultText.startsWith("VERIFICATION FAILED")) || (decision.action === "run" && /^\$ .*\(exit [1-9]/.test(resultText));
-    if (decision.action === "edit") checksSinceEdit = 0;
-    else if (checkFailed) checksSinceEdit++;
+
     // Only a failing check signals spinning; a passing verify after cleanup steps is just finishing.
-    const stalling = sinceLastEdit >= STALL_THRESHOLD && checkFailed;
+    const stalling = sinceLastEdit >= STALL_THRESHOLD && lastCheckFailed;
     if (stalling) {
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `${sinceLastEdit} steps without an edit — nudging toward the implementation file` });
       log(`      ! stalling (${sinceLastEdit} steps without an edit) — nudging`);
     }
     const nudge = stalling
       ? `\n\nSTOP: you've taken ${sinceLastEdit} steps without editing anything. Re-running the same check will not fix it. Read the actual implementation file the test exercises (not the test file) and make a real change before checking again.`
+      : "";
+    const combined = batchResults.join("\n\n") || "(no actions executed)";
+    const stopNote = stopReason
+      ? `\n\n(stopped the batch early — ${stopReason}; ${decisions.length - batchResults.length} planned action(s) after it were not run)`
       : "";
 
     // Compact on the context the model just processed, not a fixed turn count: a task with big
@@ -499,9 +584,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         meta: { previousSessionId, contextTokens },
       });
       log(`      ~ compacted (${contextTokens} context tokens) — new session`);
-      nextPrompt = `You are continuing this task after a context compaction. Nothing was lost, only compacted — use read/grep/search again for anything you need in full, rather than assuming what you remember is still current. Progress so far:\n\n${digest}\n\nMost recent result:\n${resultText}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
+      nextPrompt = `You are continuing this task after a context compaction. Nothing was lost, only compacted — use read/grep/search again for anything you need in full, rather than assuming what you remember is still current. Progress so far:\n\n${digest}\n\nMost recent result(s):\n${combined}${stopNote}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
     } else {
-      nextPrompt = `${resultText}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
+      nextPrompt = `${combined}${stopNote}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
     }
   }
 
