@@ -321,6 +321,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <div class="sessions" id="sessions"></div>
     <div class="side-label">Skills<button class="add-skill" id="addSkillBtn" title="New skill">+</button></div>
     <div class="skills" id="skillsList"></div>
+    <div class="side-label" id="memLabel">Memory</div>
+    <div class="skills" id="memList"></div>
     <div class="side-foot">
       <button class="settings" id="settingsBtn"><span style="font-size:16px">⚙</span><span style="min-width:0"><span>Models &amp; settings</span><span class="sub" id="settingsSub"></span></span></button>
       <button class="limits" id="limits" title="Subscription usage"></button>
@@ -519,7 +521,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (!S.root) { show($("welcome"), true); show($("setupCard"), false); if (S.providers) { draft = { root: null, provider: S.selection.provider, effort: S.selection.effort }; renderSettings(); renderConnectors(); renderGetStarted(); } renderComposer(); return; }
     if (!draft || draft.root !== S.root) draft = { root: S.root, provider: S.selection.provider, effort: S.selection.effort };
     run.active = S.running; if (S.running) run.taskId = S.runningTask;
-    renderSessions(); renderSettings(); renderComposer(); renderSkills(); renderConnectors(); renderGetStarted();
+    renderSessions(); renderSettings(); renderComposer(); renderSkills(); renderMemory(); renderConnectors(); renderGetStarted();
     show($("setupCard"), !S.initialized);
     if (first) {
       if (S.running && S.runningTask) openSession(S.runningTask);
@@ -567,6 +569,18 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       box.appendChild(el("div", { cls: "skill-row" },
         el("button", { cls: "skill", title: sk.description || sk.name, onclick: function () { useSkill(sk); } }, sk.name),
         sk.builtin ? el("span") : el("button", { cls: "skill-del", title: "Remove skill", onclick: function (e) { e.stopPropagation(); deleteSkill(sk.name); } }, "×")));
+    });
+  }
+  function renderMemory() {
+    var box = clear($("memList")), list = (S && S.memory) || [];
+    $("memLabel").textContent = "Memory" + (list.length ? " (" + list.length + ")" : "");
+    if (!list.length) { box.appendChild(el("div", { cls: "muted", style: "font-size:12.5px;padding:6px 10px", text: "Nothing remembered yet." })); return; }
+    list.forEach(function (m) {
+      var detail = el("div", { cls: "muted mem-detail hidden", style: "font-size:12px;padding:2px 10px 8px;white-space:pre-wrap", text: m.text + (m.reason ? "\n\nWhy: " + m.reason : "") + "\n\n" + m.type + " · " + m.date });
+      box.appendChild(el("div", { cls: "skill-row" },
+        el("button", { cls: "skill", title: m.text, onclick: function () { detail.classList.toggle("hidden"); } }, "[" + m.type + "] " + m.text),
+        el("button", { cls: "skill-del", title: "Forget this note", onclick: function (e) { e.stopPropagation(); api("/api/memory/remove", { id: m.id }).then(apply).catch(function (er) { banner("bad", er.message); }); } }, "×")));
+      box.appendChild(detail);
     });
   }
   function useSkill(sk) {

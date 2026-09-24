@@ -13,6 +13,7 @@ import { keySource, setKey } from "./keys.js";
 import { readLimits, refreshClaude, refreshCodex } from "./limits.js";
 import { checkReadiness, formatReadiness } from "./readiness.js";
 import { auditRepo } from "./audit.js";
+import { openMemory } from "./memory.js";
 import { redact } from "./redact.js";
 import {
   availableModels,
@@ -326,6 +327,7 @@ export function startUi(opts: UiOptions) {
       lead: effAgent(cfg)?.boss ?? true,
       history: initialized ? taskHistory(p) : [],
       skills: listSkills(p),
+      memory: openMemory(p).load().filter((e) => e.status === "active" && !e.external).map((e) => ({ id: e.id, type: e.type, text: e.text, reason: e.reason ?? "", date: e.date })),
       connectors: listConnectors().map(publicConnector),
     };
   };
@@ -533,6 +535,13 @@ export function startUi(opts: UiOptions) {
           } catch (e: any) {
             return json(res, 400, { error: e.message });
           }
+          return json(res, 200, state());
+        }
+        case "/api/memory/remove": {
+          if (!root) return json(res, 400, { error: "no repository open" });
+          // Marked resolved, not deleted: the note stays on disk (and in the vault) but is never recalled again.
+          const e = openMemory(paths(root)).setStatus(String(body.id ?? ""), "resolved");
+          if (!e) return json(res, 404, { error: "no such note (or it's read-only)" });
           return json(res, 200, state());
         }
         case "/api/skills/delete": {

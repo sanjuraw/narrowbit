@@ -200,6 +200,9 @@ describe("app page with a folder open", () => {
     appendEvent(p, "rt-auth-test", { actor: "user", type: "decision", summary: "task received", meta: { goal: "sign-in problem" } });
     appendEvent(p, "rt-auth-test", { actor: "system", type: "decision", summary: "outcome: error", meta: { outcome: "error", summary: "codex CLI is not logged in", steps: 0, errorKind: "auth" } });
 
+    const { openMemory } = await import(join(ROOT, "dist", "memory.js"));
+    openMemory(p).add({ type: "decision", text: "Use pnpm, not npm, in this repo", reason: "lockfile is pnpm-lock.yaml" });
+
     app = await startApp({ cwd: repo, home });
     page = await openPage(app.url);
     await page.until(() => !page.$("crumb").classList.contains("empty") && page.$("crumbName").textContent, "the repo pill");
@@ -257,6 +260,17 @@ describe("app page with a folder open", () => {
       assert.deepEqual(Object.values(st.providers.custom.tiers), Array(3).fill("deepseek-ai/deepseek-v4.1-flash"), "unset slots follow the first choice instead of staying blank");
       await new Promise((r) => setTimeout(r, 300));
     } finally { pg.close(); mock.close(); }
+  });
+
+  test("notes the agent remembered are listed, can be opened to read, and forgotten with a click", async () => {
+    const row = await page.until(() => [...page.w.document.querySelectorAll("#memList .skill-row")].find((r) => /pnpm/.test(r.textContent)), "the memory note");
+    assert.match(page.$("memLabel").textContent, /Memory \(1\)/);
+    row.querySelector(".skill").click();
+    assert.match(page.$("memList").textContent, /lockfile is pnpm-lock\.yaml/, "opening a note shows its reason");
+    row.querySelector(".skill-del").click();
+    await page.until(() => /Nothing remembered yet/.test(page.$("memList").textContent), "the note to disappear");
+    const st = await fetch(`${app.base}/api/state`, { headers: { "x-narrowbit-token": app.token } }).then((r) => r.json());
+    assert.deepEqual(st.memory, [], "and the server no longer lists it");
   });
 
   test("every project lists the built-in skills, without a delete button; user skills get one", async () => {
