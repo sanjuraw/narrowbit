@@ -240,6 +240,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
               durationMs: Date.now() - t0,
               costUsd: costUsd || null,
               isError: result.outcome === "error",
+              errorText: result.outcome === "error" ? result.summary : "",
               usage: { input: sum("inputTokens"), cacheCreate: sum("cacheCreationTokens"), cacheRead: sum("cacheReadTokens"), output: sum("outputTokens") },
             };
             if (result.outcome === "error") log(`${tag}: runtime loop error — ${result.summary}`);

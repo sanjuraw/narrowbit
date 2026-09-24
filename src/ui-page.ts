@@ -253,7 +253,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .upd { display: flex; align-items: center; gap: 10px; flex: none; padding: 8px 16px; background: var(--accent-soft); border-bottom: 1px solid var(--line); font-size: 13px; }
 .upd .u-msg { flex: 1; min-width: 0; }
 .upd .u-list { color: var(--muted); font-size: 12px; }
+.errcard { border: 1px solid var(--line); border-left: 3px solid var(--warn); background: var(--panel); border-radius: 10px; padding: 12px 14px; margin: 0 0 18px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; font-size: 13px; }
 .ver { font-size: 11px; color: var(--faint); padding: 0 6px; }
+.diag { width: 100%; font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); padding: 8px; }
 .about { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; font-size: 13px; }
 .gs { border: 1px solid var(--line); background: var(--panel); border-radius: 14px; padding: 16px 18px; margin: 0 0 16px; }
 .gs h2 { font-family: var(--serif); font-weight: 400; font-size: 19px; margin: 0 0 4px; }
@@ -602,6 +604,15 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var msg = !U ? "Checking for updates…" : U.canApply ? "Update available (" + U.behind + " new change" + (U.behind === 1 ? "" : "s") + ") — use the banner at the top." : U.behind > 0 ? (U.reason || "A newer version is available.") : U.supported ? "Up to date." : (U.reason || "Update check unavailable.");
     a.appendChild(el("div", { cls: "muted", style: "font-size:12.5px", text: msg }));
     a.appendChild(el("button", { text: "Check now", onclick: function () { loadUpdate(true); } }));
+    var box = el("textarea", { cls: "diag hidden", readonly: "readonly", rows: "8" });
+    a.appendChild(el("button", { text: "Copy diagnostics", title: "Version, setup status and recent problems (secrets removed) to paste into a bug report", onclick: function () {
+      api("/api/diagnostics").then(function (r) {
+        var done = function () { flash($("savedMsg"), "Diagnostics copied"); };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(r.text).then(done).catch(function () { box.value = r.text; show(box, true); box.select(); });
+        else { box.value = r.text; show(box, true); box.select(); }
+      }).catch(function (e) { banner("bad", e.message); });
+    } }));
+    a.appendChild(box);
   }
 
   // ---------- updates from GitHub (one click) ----------
@@ -877,6 +888,25 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   $("sendBtn").onclick = function () { send(false); };
   $("stopBtn").onclick = function () { api("/api/stop", {}).catch(function (e) { banner("bad", e.message); }); };
 
+  function errorCard(m) {
+    var head, body, actions = [];
+    if (m.errorKind === "limit") {
+      head = "Usage limit reached";
+      body = (m.resets ? "It resets " + m.resets + ". " : "") + "Wait for it to reset, or switch to another model or provider and send your message again.";
+      actions.push(el("button", { cls: "primary", text: "Switch model", onclick: openDrawer }));
+    } else if (m.errorKind === "auth") {
+      head = "Not signed in";
+      body = (m.summary || "The model provider rejected the sign-in.") + " Sign in, then send your message again.";
+      actions.push(el("button", { cls: "primary", text: "Open settings", onclick: function () { openDrawer(); loadReadiness(true); } }));
+    } else {
+      head = "Couldn't reach the model provider";
+      body = "Check your internet connection and try again. " + (m.summary ? "(" + String(m.summary).slice(0, 120) + ")" : "");
+    }
+    var card = el("div", { cls: "errcard" }, el("strong", { text: head }), el("div", { cls: "muted", text: body }));
+    actions.forEach(function (a) { card.appendChild(a); });
+    return card;
+  }
+
   // ---------- conversation view ----------
   function resetView(taskId) {
     view = { taskId: taskId, seen: {}, step: null, plan: null, tokens: 0, cost: 0, segTokens: 0, segCost: 0, segSteps: 0, segStart: null, approvals: {}, pendingNew: false, working: null, finished: {} };
@@ -1060,8 +1090,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         el("span", { text: fmt(view.segTokens) + " tokens" }),
         el("span", { text: money(view.segCost) + (S && S.selection.provider === "claude" ? " notional" : "") }));
       if (view.segStart) line.appendChild(el("span", { text: dur(new Date(e.at).getTime() - view.segStart) }));
-      if (m.outcome === "error" && m.summary) line.appendChild(el("span", { cls: "o-blocked", text: m.summary }));
+      var known = m.errorKind === "limit" || m.errorKind === "auth" || m.errorKind === "network";
+      if (m.outcome === "error" && m.summary && !known) line.appendChild(el("span", { cls: "o-blocked", text: m.summary }));
       add(line);
+      if (m.outcome === "error" && known) add(errorCard(m));
       return;
     }
     if (e.type === "handoff") { add(el("div", { cls: "divider", text: "context compacted — continuing in a fresh session" })); return; }

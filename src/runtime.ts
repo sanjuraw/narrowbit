@@ -10,6 +10,7 @@ import { appendEvent, fold, readEvents, subscribe, type Event, type PlanStep } f
 import { indexRepo, openStore } from "./indexer.js";
 import { callConnectorTool, listConnectorTools } from "./mcpClient.js";
 import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./memory.js";
+import { classifyModelError, isPermanentModelError } from "./errors.js";
 import { callModel, type ModelCallOptions, type ModelCallResult } from "./providers/claude-cli.js";
 import { callCodex } from "./providers/codex-cli.js";
 import { DEFAULT_TIERS, resolveEndpoint, unavailableReason, type ModelTiers, type ProviderName } from "./providers/models.js";
@@ -421,7 +422,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     // would fail identically on every retry with the same id — observed once in a 40-task run
     // (cause unconfirmed; regenerating is a cheap, safe guard either way) — so that specific error
     // gets a new random id before the retry instead of repeating the same doomed call.
-    for (let transientRetries = 0; res.isError && !res.fatal && transientRetries < MAX_TRANSIENT_RETRIES; transientRetries++) {
+    for (let transientRetries = 0; res.isError && !res.fatal && !isPermanentModelError(res.errorMessage) && transientRetries < MAX_TRANSIENT_RETRIES; transientRetries++) {
       appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `step ${steps}: model call failed (${res.errorMessage ?? "no result"}), retrying (${transientRetries + 1}/${MAX_TRANSIENT_RETRIES})` });
       if (freshSessionPending && /session id .* already in use/i.test(res.errorMessage ?? "")) {
         sessionId = randomUUID();
@@ -636,7 +637,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   }
 
   if (outcome === "max_steps") log(`[${steps}] hit the step budget (${maxSteps}) without finishing`);
-  appendEvent(p, taskId, { actor: "system", type: "decision", summary: `outcome: ${outcome}`, meta: { outcome, summary, steps } });
+  const failure = outcome === "error" ? classifyModelError(summary) : null;
+  appendEvent(p, taskId, { actor: "system", type: "decision", summary: `outcome: ${outcome}`, meta: { outcome, summary, steps, ...(failure ? { errorKind: failure.kind, resets: failure.resets } : {}) } });
   store.close();
   return { taskId, outcome, summary, steps, actionCounts, compactions };
 }

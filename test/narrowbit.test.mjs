@@ -29,6 +29,7 @@ const { project } = await dist("context.js");
 const { parseDecision, parseDecisions, capSummary, safeAbsPath } = await dist("runtime.js");
 const { parseCodexStream } = await dist("providers/codex-cli.js");
 const { parseClaudeAuth } = await dist("readiness.js");
+const { classifyModelError, isPermanentModelError } = await dist("errors.js");
 const { listSkills, getSkill, saveSkill, removeSkill, renameSkill, slugify } = await dist("skills.js");
 const { resolveSelection, DEFAULT_TIERS } = await dist("providers/models.js");
 
@@ -559,6 +560,27 @@ describe("readiness parsing (readiness.ts — no subprocess, no login needed)", 
     assert.equal(parseClaudeAuth('{"loggedIn": false}'), false);
     assert.equal(parseClaudeAuth("Not logged in"), false);
     assert.equal(parseClaudeAuth(""), false);
+  });
+});
+
+describe("model error classification (errors.ts)", () => {
+  test("recognises usage limits (with reset time), sign-in problems and network errors", () => {
+    const l = classifyModelError("You've hit your session limit · resets 1am (Asia/Calcutta)");
+    assert.equal(l.kind, "limit");
+    assert.match(l.resets, /1am/);
+    assert.equal(classifyModelError("Groq 429: rate limit exceeded").kind, "limit");
+    assert.equal(classifyModelError("codex CLI is not logged in to your ChatGPT subscription").kind, "auth");
+    assert.equal(classifyModelError("OpenRouter 401: invalid api key").kind, "auth");
+    assert.equal(classifyModelError("couldn't reach Ollama at http://127.0.0.1:11434 (ECONNREFUSED)").kind, "network");
+    assert.equal(classifyModelError("unparseable model response").kind, "other");
+    assert.equal(classifyModelError(undefined).kind, "other");
+  });
+
+  test("limits and sign-in problems are permanent (never retried); network glitches are not", () => {
+    assert.equal(isPermanentModelError("You've hit your usage limit"), true);
+    assert.equal(isPermanentModelError("not logged in"), true);
+    assert.equal(isPermanentModelError("model call timed out"), false);
+    assert.equal(isPermanentModelError(""), false);
   });
 });
 

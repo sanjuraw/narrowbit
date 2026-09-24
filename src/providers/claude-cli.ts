@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { recordClaudeLimits } from "../limits.js";
+import { isPermanentModelError } from "../errors.js";
 import { extractText, parseStream } from "../streamjson.js";
 
 /**
@@ -104,14 +105,17 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
       const s = parseStream(raw);
       // Every call reports the subscription's 5-hour/weekly usage; keep the latest for `narrowbit limits` and the app.
       recordClaudeLimits(raw);
-      const fatal = /"error":"authentication_failed"|Not logged in|Invalid API key/.test(raw + stderr);
+      const loggedOut = /"error":"authentication_failed"|Not logged in|Invalid API key/.test(raw + stderr);
+      const detail = (stderr.trim() || s.errorText.trim()).slice(0, 500);
+      // A usage limit or sign-in problem can't be fixed by retrying the same call.
+      const fatal = loggedOut || (s.isError && isPermanentModelError(detail));
       resolve({
         text: extractText(raw),
         usage: s.usage,
         costUsd: s.costUsd,
         turns: s.turns,
-        isError: s.isError || fatal,
-        errorMessage: fatal ? "claude CLI is not logged in to your subscription (run `claude` then /login)" : s.isError ? stderr.trim().slice(0, 500) || undefined : undefined,
+        isError: s.isError || loggedOut,
+        errorMessage: loggedOut ? "claude CLI is not logged in to your subscription (run `claude` then /login)" : s.isError ? detail || undefined : undefined,
         fatal,
       });
     });

@@ -11,7 +11,8 @@ import { listConnectorTools } from "./mcpClient.js";
 import { initProject } from "./project.js";
 import { keySource, setKey } from "./keys.js";
 import { readLimits, refreshClaude, refreshCodex } from "./limits.js";
-import { checkReadiness } from "./readiness.js";
+import { checkReadiness, formatReadiness } from "./readiness.js";
+import { redact } from "./redact.js";
 import {
   availableModels,
   DEFAULT_TIERS,
@@ -243,6 +244,36 @@ export function startUi(opts: UiOptions) {
     );
   };
 
+  /** Version, setup and recent problems as plain text a user can paste into a bug report. Paths and secrets removed. */
+  const diagnostics = async (): Promise<string> => {
+    const v = readVersion();
+    const u = await checkUpdate(false);
+    const r = await checkReadiness(false);
+    const lines = [
+      "Narrowbit diagnostics",
+      `version: ${v.version || "unknown"} (${v.commit || "unknown commit"})`,
+      `system: ${process.platform} ${process.arch}, node ${process.version}`,
+      `update: ${u.supported ? (u.behind ? `${u.behind} newer commit(s) on GitHub` : "up to date") : (u.reason ?? "unavailable")}`,
+      "",
+      formatReadiness(r),
+      "",
+    ];
+    if (root) {
+      const cfg = loadConfig(paths(root));
+      const sel = resolveSelection(cfg.agent);
+      lines.push(`provider: ${sel.provider}  models: ${PHASES.map((ph) => sel.tiers[ph] || "?").join(" / ")}  effort: ${sel.effort}  lead mode: ${cfg.agent?.boss ?? true}`);
+      lines.push(`connectors: ${listConnectors().map((c) => c.name).join(", ") || "none"}   skills: ${listSkills(paths(root)).length}`);
+      const problems = taskHistory(paths(root), 10).filter((t) => t.outcome === "error" || t.outcome === "blocked").slice(0, 5);
+      lines.push("", "recent problems:");
+      if (!problems.length) lines.push("  none");
+      for (const t of problems) {
+        const last = [...readEvents(paths(root), t.id)].reverse().find((e) => e.type === "decision" && typeof e.meta?.outcome === "string");
+        lines.push(`  ${t.at.slice(0, 16)}  ${t.outcome}: ${String(last?.meta?.summary ?? "").slice(0, 200)}`);
+      }
+    } else lines.push("no folder open");
+    return redact(lines.join("\n")).split(homedir()).join("~");
+  };
+
   const state = () => {
     if (!root) {
       // No repository yet: settings are per-repo so nothing can be saved, but the provider/model
@@ -395,6 +426,8 @@ export function startUi(opts: UiOptions) {
       }
 
       if (route === "GET /api/update") return json(res, 200, await checkUpdate(url.searchParams.has("refresh")));
+
+      if (route === "GET /api/diagnostics") return json(res, 200, { text: await diagnostics() });
 
       if (route === "GET /api/readiness") return json(res, 200, await checkReadiness(url.searchParams.has("refresh")));
 

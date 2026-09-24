@@ -44,6 +44,8 @@ export function parseStream(jsonl: string) {
     durationMs: result?.duration_ms ?? 0,
     costUsd: typeof result?.total_cost_usd === "number" ? result.total_cost_usd : null,
     isError: !!result?.is_error || !result,
+    /** The result event's own text when it is an error (e.g. "You've hit your session limit · resets 1am"). */
+    errorText: result?.is_error ? String(result.result ?? "") : "",
     usage: {
       input: pick(usage.input, perMsg.input),
       cacheCreate: pick(usage.cacheCreate, perMsg.cacheCreate),
