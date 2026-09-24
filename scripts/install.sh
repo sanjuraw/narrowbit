@@ -82,7 +82,7 @@ say "Getting Narrowbit into $DIR"
 if [ -d "$DIR/.git" ]; then
   git -C "$DIR" pull --ff-only || { echo "  Couldn't update the existing copy (local changes?). Fix or move $DIR and re-run." >&2; exit 1; }
 else
-  if ! git clone "$REPO_URL" "$DIR"; then
+  if ! GIT_TERMINAL_PROMPT=0 git clone "$REPO_URL" "$DIR"; then
     cat >&2 <<EOF
 
   Couldn't clone $REPO_URL.
