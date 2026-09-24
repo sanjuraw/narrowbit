@@ -1,0 +1,7 @@
+# Deliberately fake credentials used by the redaction tests (test/narrowbit.test.mjs).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "fake fixtures in the redaction test"
+regexes = ['''AKIAABCDEFGHIJKLMNOP''', '''abcd1234efgh5678''']
