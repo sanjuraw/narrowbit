@@ -406,7 +406,14 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // true at the start of every session (the task's first, or right after a compaction): the next
   // call must send SYSTEM_INSTRUCTIONS and must NOT resume, since there is nothing to resume yet.
   let freshSessionPending = true;
+  // What each model call was sent, itemised (kind/label/size), so the app can answer "why is this in context?"
+  // and show what every step cost. Sizes are the same chars/3.6 estimate used everywhere; the exact billed
+  // tokens are on the call itself.
+  type Part = { kind: string; label: string; tokens: number };
+  const part = (kind: string, label: string, text: string): Part => ({ kind, label, tokens: estimateTokens(text) });
+  let nextParts: Part[] = [];
   let nextPrompt = `Task: ${taskText}\n\n${plan ? renderPlanForWorker(plan) + "\n\n" : ""}Respond with your first action as JSON.`;
+  nextParts = [part("task", "your request", taskText), ...(plan ? [part("plan", "the lead's plan", renderPlanForWorker(plan))] : []), part("instructions", "Narrowbit's instructions (sent once per session)", systemPrompt)];
   // callModel's costUsd is Claude Code's CUMULATIVE cost for the whole resumed session, not a
   // per-call charge (confirmed by direct measurement: it strictly increases call over call, unlike
   // every other usage field, which the Anthropic API reports per-request). Track the running total
@@ -427,8 +434,10 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       freshSessionPending = false;
       cumulativeCost = Number(last?.meta?.sessionCost ?? 0);
       nextPrompt = `Follow-up request from the user: ${taskText}\n\nThe earlier work is already in the files. Respond with your next action as JSON.`;
+      nextParts = [part("task", "your follow-up", taskText)];
     } else {
       const digest = project(fold(taskId, prior), { budget: cfg.budget.initial });
+      nextParts = [part("task", "your follow-up", taskText), part("digest", "summary of the earlier work", digest), part("instructions", "Narrowbit's instructions", systemPrompt)];
       nextPrompt = `You are continuing an earlier task (original goal: ${goal}). Progress so far:\n\n${digest}\n\nNew request from the user: ${taskText}\n\nUse read/grep/search for anything you need in full. Respond with your next action as JSON.`;
     }
   }
@@ -500,7 +509,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         outputTokens: res.usage.output,
         costUsd: callCost,
       },
-      meta: { sessionId, sessionCost: totalCost, provider, instr: INSTRUCTIONS_ID },
+      meta: { sessionId, sessionCost: totalCost, provider, instr: INSTRUCTIONS_ID, context: { parts: nextParts, tokens: nextParts.reduce((a, x) => a + x.tokens, 0) } },
     });
     if (res.isError) {
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `model call failed: ${res.errorMessage ?? "unknown error"}` });
@@ -520,6 +529,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         summary = "unparseable model response";
         break;
       }
+      nextParts = [{ kind: "nudge", label: "asked to reply in valid JSON", tokens: 30 }];
       nextPrompt = "Your last response was not valid JSON. Respond with a single action object, or a JSON array of action objects, nothing else — no prose, no markdown fences.";
       continue;
     }
@@ -530,8 +540,10 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     // assumption — an edit refused, a failed verify/command — so the tail of the batch goes
     // unexecuted rather than compounding a mistake the model hasn't seen yet.
     const batchResults: string[] = [];
+    const batchLabels: string[] = [];
     let stopReason: string | null = null;
     let doneRejected: string | null = null;
+    let rejectedPart: Part | null = null;
     let taskEnded = false;
     let lastCheckFailed = false;
 
@@ -559,6 +571,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
           appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `done rejected: ${challenge}` });
           log(`[${steps}] (${turnModel}) ${tag}done rejected — ${challenge.split(/[.—]/)[0].trim()}`);
           doneRejected = `${challenge}\n\nWhat is the next action? Respond with JSON only.`;
+          rejectedPart = part("gate", "completion check (done was refused)", doneRejected);
           break;
         }
         if (boss && editsApplied > 0 && reviews < MAX_REVIEWS) {
@@ -569,6 +582,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
             log(`      → changes requested: ${review.feedback.slice(0, 100)}`);
             // A revision reopens the verify challenge: the fix must be checked again.
             doneChallenges.delete("no-verify");
+            rejectedPart = part("review", "the lead's review feedback", review.feedback);
             doneRejected = `The lead engineer reviewed your diff and asked for changes:\n${review.feedback}\n\nMake them, verify, then report done again. What is the next action? Respond with JSON only.`;
             break;
           }
@@ -613,6 +627,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       }
       log(`      → ${resultText.split("\n")[0].slice(0, 100)}`);
       batchResults.push(`${tag}${resultText}`);
+      batchLabels.push(`${decision.action}${decision.path ? ` ${decision.path}` : decision.server ? ` ${decision.server}.${decision.tool}` : decision.command ? ` ${decision.command.slice(0, 60)}` : decision.query ? ` "${decision.query.slice(0, 40)}"` : decision.pattern ? ` "${decision.pattern.slice(0, 40)}"` : ""}`);
       // executeAction returns "edited <path>" only when the file was actually written; a refused
       // edit (old text not found / not unique) doesn't count as progress for the done gate.
       const editRefused = decision.action === "edit" && !resultText.startsWith("edited ");
@@ -647,6 +662,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
 
     if (doneRejected) {
       nextPrompt = doneRejected;
+      nextParts = [rejectedPart ?? part("gate", "completion check", doneRejected)];
       continue;
     }
 
@@ -664,6 +680,10 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       ? `\n\n(stopped the batch early — ${stopReason}; ${decisions.length - batchResults.length} planned action(s) after it were not run)`
       : "";
 
+    const resultParts: Part[] = batchResults.map((r, i) => part("result", batchLabels[i] ?? "result", r));
+    if (stopNote) resultParts.push(part("note", "the batch stopped early", stopNote));
+    if (nudge) resultParts.push(part("nudge", "stall guard: stop re-running the check", nudge));
+    if (steps + 1 === maxSteps - 3 && maxSteps >= 6) resultParts.push({ kind: "nudge", label: "budget warning", tokens: 30 });
     // Compact on the context the model just processed, not a fixed turn count: a task with big
     // reads compacts sooner than one with small ones, and a cheap task may never compact at all.
     const contextTokens = res.usage.input + res.usage.cacheCreate + res.usage.cacheRead;
@@ -681,8 +701,10 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         meta: { previousSessionId, contextTokens },
       });
       log(`      ~ compacted (${contextTokens} context tokens) — new session`);
+      nextParts = [part("digest", "summary after compacting the session", digest), ...resultParts, part("instructions", "Narrowbit's instructions (resent to the new session)", systemPrompt)];
       nextPrompt = `You are continuing this task after a context compaction. Nothing was lost, only compacted — use read/grep/search again for anything you need in full, rather than assuming what you remember is still current. Progress so far:\n\n${digest}\n\nMost recent result(s):\n${combined}${stopNote}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
     } else {
+      nextParts = resultParts;
       nextPrompt = `${combined}${stopNote}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
     }
   }

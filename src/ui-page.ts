@@ -185,6 +185,15 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .plan .pf { font-size: 12px; color: var(--muted); margin-top: 8px; }
 
 .step { margin: 2px 0; }
+.ctx-btn { border: 0; background: transparent; color: var(--faint); font-size: 11px; padding: 0 5px; border-radius: 6px; margin-left: 4px; }
+.ctx-btn:hover { background: var(--panel-2); color: var(--text); }
+.ctx { margin: 4px 0 8px 16px; padding: 8px 10px; border-left: 2px solid var(--line-2); font-size: 12px; color: var(--muted); }
+.ctx h5 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--text); }
+.ctx .row { display: flex; gap: 8px; align-items: baseline; padding: 1px 0; }
+.ctx .row .k { flex: none; min-width: 78px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); }
+.ctx .row .l { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx .row .n { flex: none; font-variant-numeric: tabular-nums; }
+.ctx .foot { margin-top: 5px; color: var(--faint); }
 .step .sh { display: flex; align-items: baseline; gap: 8px; padding: 3px 6px; margin: 0 -6px; border-radius: 7px; cursor: pointer; min-width: 0; }
 .step .sh:hover { background: var(--panel-2); }
 .step .sd { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; transform: translateY(-1px); }
@@ -1157,6 +1166,22 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     head.onclick = function () { if (s.body) { s.open = !s.open; show(s.body, s.open); if (s.prev) show(s.prev, !s.open); } };
     return s;
   }
+  // "Why is this in context?": everything the model was sent for the turn that chose this step, itemised.
+  var CTX_KIND = { result: "result", task: "request", plan: "plan", digest: "summary", instructions: "instructions", nudge: "nudge", gate: "check", review: "review", note: "note" };
+  var CTX_WHY = { result: "came back from the previous action", task: "what you asked", plan: "the lead's plan", digest: "a summary standing in for older turns", instructions: "Narrowbit's fixed rules (sent once per session, then cached)", nudge: "added by Narrowbit to keep it on track", gate: "the completion check refused 'done'", review: "the lead's feedback", note: "explains why a batch stopped" };
+  function addContext(st, c, note) {
+    var btn = el("button", { cls: "ctx-btn", title: "What the model was sent for this step", text: "context ~" + fmt(c.est) });
+    var panel = el("div", { cls: "ctx hidden" });
+    panel.appendChild(el("h5", { text: note ? "Why: " + note : "What the model was sent for this step" }));
+    (c.parts || []).slice().sort(function (a, b) { return b.tokens - a.tokens; }).forEach(function (x) {
+      panel.appendChild(el("div", { cls: "row", title: CTX_WHY[x.kind] || "" }, el("span", { cls: "k", text: CTX_KIND[x.kind] || x.kind }), el("span", { cls: "l", text: x.label + " — " + (CTX_WHY[x.kind] || "") }), el("span", { cls: "n", text: "~" + fmt(x.tokens) })));
+    });
+    var tk = c.tk || {};
+    panel.appendChild(el("div", { cls: "foot", text: "Billed for this call: " + fmt(tk.inputTokens + tk.cacheCreationTokens) + " new + " + fmt(tk.cacheReadTokens) + " cached input, " + fmt(tk.outputTokens) + " output · " + (tk.model || "") + ". Itemised sizes are estimates; older turns ride along from the session's cache." }));
+    btn.onclick = function (e) { e.stopPropagation(); panel.classList.toggle("hidden"); };
+    st.meta.appendChild(btn);
+    st.box.insertBefore(panel, st.head.nextSibling);
+  }
   function attach(s, cls, preview, body, open) {
     s.box.classList.remove("run");
     if (cls) s.box.classList.add(cls);
@@ -1242,6 +1267,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     view.seen[e.id] = true;
     var m = e.meta || {};
     if (e.type === "model_call" && e.tokens) {
+      view.ctx = m.context ? { parts: m.context.parts || [], est: m.context.tokens || 0, tk: e.tokens } : null;
       var t = e.tokens.inputTokens + e.tokens.cacheCreationTokens + e.tokens.cacheReadTokens + e.tokens.outputTokens;
       view.tokens += t; view.cost += e.tokens.costUsd; view.segTokens += t; view.segCost += e.tokens.costUsd;
       updateUsage();
@@ -1263,6 +1289,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (m.note) add(el("div", { cls: "narr" }, rich(m.note)));
       view.step = stepBlock(m);
       add(view.step.box);
+      if (view.ctx) { addContext(view.step, view.ctx, m.note); view.ctx = null; }
       if (!replay) setWorking((VERB[m.action] || m.action) + (m.model ? " · " + m.model : "") + "…");
       return;
     }

@@ -202,6 +202,7 @@ describe("app page with a folder open", () => {
 
     // A finished task with real steps: its work should fold into one line, the answer stays visible.
     appendEvent(p, "rt-work-test", { actor: "user", type: "decision", summary: "task received", meta: { goal: "what is in a.txt" } });
+    appendEvent(p, "rt-work-test", { actor: "model", type: "model_call", summary: "step 0", tokens: { model: "haiku", role: "execution", inputTokens: 10, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 5, costUsd: 0 }, meta: { context: { parts: [{ kind: "task", label: "your request", tokens: 12 }, { kind: "instructions", label: "Narrowbit's instructions (sent once per session)", tokens: 900 }], tokens: 912 } } });
     appendEvent(p, "rt-work-test", { actor: "model", type: "tool_call", summary: "read a.txt", meta: { action: "read", path: "a.txt", model: "haiku" } });
     appendEvent(p, "rt-work-test", { actor: "system", type: "tool_result", summary: "read a.txt:1-1 hi" });
     appendEvent(p, "rt-work-test", { actor: "model", type: "decision", summary: "done: It contains the word hi.", meta: {} });
@@ -300,6 +301,15 @@ describe("app page with a folder open", () => {
     assert.ok(!group.querySelector(".final"), "the answer is not folded away");
     assert.match(page.w.document.querySelector(".final").textContent, /contains the word hi/);
     group.querySelector("summary").click();
+    // "Why is this in context?": the step carries a context button that itemises what its model call was sent.
+    const btn = group.querySelector(".ctx-btn");
+    assert.match(btn.textContent, /context ~912/);
+    btn.click();
+    const panel = group.querySelector(".ctx");
+    assert.ok(!panel.classList.contains("hidden"));
+    assert.match(panel.textContent, /instructions.*~900/s);
+    assert.match(panel.textContent, /your request.*~12/s);
+    assert.match(panel.textContent, /Billed for this call/);
   });
 
   test("a chat can be renamed and deleted from the sidebar (inline, no browser dialogs)", async () => {

@@ -878,6 +878,24 @@ describe("ask action", () => {
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 
+  test("every model call records an itemised breakdown of what it was sent (for the app's 'why is this in context?')", async () => {
+    const { root, p } = tinyRepo();
+    writeFileSync(join(root, "b.txt"), "some text to read\n");
+    const fake = fakeClaude([
+      JSON.stringify({ action: "read", path: "b.txt" }),
+      JSON.stringify({ action: "done", summary: "read it" }),
+    ]);
+    try {
+      const r = await runTask(p, "read b.txt", { claudeBin: fake.bin, boss: false, maxSteps: 6 });
+      const calls = readEvents(p, r.taskId).filter((e) => e.type === "model_call");
+      const first = calls[0].meta.context, second = calls[1].meta.context;
+      assert.deepEqual(first.parts.map((x) => x.kind), ["task", "instructions"], "first call: the request and Narrowbit's rules");
+      assert.ok(first.parts.find((x) => x.kind === "instructions").tokens > 200);
+      assert.ok(second.parts.some((x) => x.kind === "result" && x.label === "read b.txt"), "second call: the read result, labelled");
+      assert.ok(!second.parts.some((x) => x.kind === "instructions"), "rules are not resent on a resumed turn");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
   test("with nobody to ask, the model is told to assume and continue instead of blocking", async () => {
     const { root, p } = tinyRepo();
     const fake = fakeClaude([
