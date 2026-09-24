@@ -154,6 +154,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .narr { margin: 12px 0 4px; font-family: var(--serif); font-size: 15.5px; line-height: 1.55; }
 .final { margin: 16px 0 6px; font-family: var(--serif); font-size: 15.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .final code, .narr code, .bubble code, .plan code, .review code { font-family: var(--mono); font-size: .85em; background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
+.work { margin: 8px 0 4px; }
+.work > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); padding: 3px 8px 3px 4px; border-radius: 8px; user-select: none; }
+.work > summary::-webkit-details-marker { display: none; }
+.work > summary::before { content: "›"; display: inline-block; transition: transform .12s; font-size: 15px; line-height: 1; }
+.work[open] > summary::before { transform: rotate(90deg); }
+.work > summary:hover { background: var(--panel-2); color: var(--text); }
+.work-body { margin: 4px 0 6px 6px; padding-left: 10px; border-left: 1px solid var(--line); }
 .outcome { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); margin: 4px 0 18px; align-items: center; }
 .outcome .lbl { font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
 
@@ -1079,6 +1086,27 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function firstLine(t) { return String(t || "").split("\n").filter(function (l) { return l.trim(); })[0] || ""; }
   function afterFirst(t) { var i = String(t || "").indexOf("\n"); return i < 0 ? "" : String(t).slice(i + 1); }
 
+  // Once a turn finishes, its reading/searching/editing steps fold into one line ("Worked for 25s · 4 steps")
+  // above the answer, like Claude Code; click to look. While it runs everything stays visible, and a turn
+  // that didn't finish cleanly stays open so the failure is in view.
+  function collapseWork(finishedOk, endMs) {
+    var items = $("items").children, start = 0, i;
+    for (i = items.length - 1; i >= 0; i--) if (items[i].classList.contains("msg-user")) { start = i + 1; break; }
+    var work = [];
+    for (i = start; i < items.length; i++) {
+      var c = items[i], k = c.classList;
+      if (k.contains("final-wrap") || k.contains("final") || k.contains("outcome") || k.contains("errcard") || k.contains("bad") || c.id === "workingRow") continue;
+      work.push(c);
+    }
+    if (!work.length) return;
+    var body = el("div", { cls: "work-body" });
+    var label = "Worked" + (view.segStart ? " for " + dur(endMs - view.segStart) : "") + " · " + view.segSteps + " step" + (view.segSteps === 1 ? "" : "s");
+    var group = el("details", { cls: "work" }, el("summary", { text: label }), body);
+    if (!finishedOk) group.open = true;
+    $("items").insertBefore(group, work[0]);
+    work.forEach(function (n) { body.appendChild(n); });
+    view.plan = null; view.step = null;
+  }
   function renderPlan(meta) {
     if (!view.plan) { view.plan = { node: el("div", { cls: "plan" }) }; add(view.plan.node); }
     var steps = meta.steps || [], done = steps.filter(function (x) { return x.status === "done"; }).length;
@@ -1178,6 +1206,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (m.outcome === "error" && m.summary && !known) line.appendChild(el("span", { cls: "o-blocked", text: m.summary }));
       add(line);
       if (m.outcome === "error" && known) add(errorCard(m));
+      collapseWork(m.outcome === "done", new Date(e.at).getTime());
       return;
     }
     if (e.type === "handoff") { add(el("div", { cls: "divider", text: "context compacted — continuing in a fresh session" })); return; }

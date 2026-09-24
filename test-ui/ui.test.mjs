@@ -200,6 +200,12 @@ describe("app page with a folder open", () => {
     appendEvent(p, "rt-auth-test", { actor: "user", type: "decision", summary: "task received", meta: { goal: "sign-in problem" } });
     appendEvent(p, "rt-auth-test", { actor: "system", type: "decision", summary: "outcome: error", meta: { outcome: "error", summary: "codex CLI is not logged in", steps: 0, errorKind: "auth" } });
 
+    // A finished task with real steps: its work should fold into one line, the answer stays visible.
+    appendEvent(p, "rt-work-test", { actor: "user", type: "decision", summary: "task received", meta: { goal: "what is in a.txt" } });
+    appendEvent(p, "rt-work-test", { actor: "model", type: "tool_call", summary: "read a.txt", meta: { action: "read", path: "a.txt", model: "haiku" } });
+    appendEvent(p, "rt-work-test", { actor: "system", type: "tool_result", summary: "read a.txt:1-1 hi" });
+    appendEvent(p, "rt-work-test", { actor: "model", type: "decision", summary: "done: It contains the word hi.", meta: {} });
+    appendEvent(p, "rt-work-test", { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: "It contains the word hi.", steps: 1 } });
     const { openMemory } = await import(join(ROOT, "dist", "memory.js"));
     openMemory(p).add({ type: "decision", text: "Use pnpm, not npm, in this repo", reason: "lockfile is pnpm-lock.yaml" });
 
@@ -282,6 +288,18 @@ describe("app page with a folder open", () => {
     assert.ok(bar.querySelector(".when").textContent.length > 0, "shows when it was sent");
     bar.querySelector('[title="Edit and send again"]').click();
     assert.equal(page.$("input").value, "say hi", "the message returns to the composer to edit");
+  });
+
+  test("a finished task folds its steps into one line above the answer, and opens on click", async () => {
+    const sess = await page.until(() => [...page.w.document.querySelectorAll("#sessions .sess")].find((x) => /what is in a\.txt/.test(x.textContent)), "the finished session");
+    sess.click();
+    const group = await page.until(() => page.w.document.querySelector("details.work"), "the folded work");
+    assert.match(group.querySelector("summary").textContent, /Worked.*1 step/);
+    assert.equal(group.open, false, "closed by default");
+    assert.ok(group.querySelector(".step"), "the step is inside it");
+    assert.ok(!group.querySelector(".final"), "the answer is not folded away");
+    assert.match(page.w.document.querySelector(".final").textContent, /contains the word hi/);
+    group.querySelector("summary").click();
   });
 
   test("every project lists the built-in skills, without a delete button; user skills get one", async () => {
