@@ -131,8 +131,18 @@ describe("app page with no folder open (a brand-new user)", () => {
 
   test("models are selectable before a folder is chosen (the providers list is never empty)", () => {
     assert.ok(page.$("providerSel").options.length >= 15, "provider list");
-    const models = [...page.w.document.querySelectorAll("#slots input[type=text]")].map((i) => i.value);
+    const models = [...page.w.document.querySelectorAll("#slots [id^=slot-]")].map((i) => i.value);
     assert.deepEqual(models, ["haiku", "sonnet", "opus"]);
+  });
+
+  test("Claude's models are picked from a dropdown, and switching to Codex changes the models too (no folder open)", async () => {
+    await page.until(() => page.w.document.querySelector("#slots select"), "model dropdowns");
+    const opts = [...page.w.document.querySelectorAll("#slot-explore option")].map((o) => o.value);
+    assert.ok(opts.includes("sonnet") && opts.includes("__other"), "options include known models and Other…");
+    const sel = page.$("providerSel");
+    sel.value = "codex";
+    sel.dispatchEvent(new page.w.Event("change"));
+    await page.until(() => /gpt/.test(page.w.document.querySelector("#slot-execute")?.value ?? ""), "Codex models in the slots");
   });
 
   test("the Cloudflare account id saves with no folder open, and shows up in the endpoint", async () => {

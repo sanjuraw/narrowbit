@@ -264,8 +264,8 @@ export function startUi(opts: UiOptions) {
     ];
     if (root) {
       const cfg = loadConfig(paths(root));
-      const sel = resolveSelection(cfg.agent);
-      lines.push(`provider: ${sel.provider}  models: ${PHASES.map((ph) => sel.tiers[ph] || "?").join(" / ")}  effort: ${sel.effort}  lead mode: ${cfg.agent?.boss ?? true}`);
+      const sel = resolveSelection(effAgent(cfg));
+      lines.push(`provider: ${sel.provider}  models: ${PHASES.map((ph) => sel.tiers[ph] || "?").join(" / ")}  effort: ${sel.effort}  lead mode: ${effAgent(cfg)?.boss ?? true}`);
       lines.push(`connectors: ${listConnectors().map((c) => c.name).join(", ") || "none"}   skills: ${listSkills(paths(root)).length}`);
       const problems = taskHistory(paths(root), 10).filter((t) => t.outcome === "error" || t.outcome === "blocked").slice(0, 5);
       lines.push("", "recent problems:");
@@ -278,12 +278,22 @@ export function startUi(opts: UiOptions) {
     return redact(lines.join("\n")).split(homedir()).join("~");
   };
 
+  // Model choices made before any folder is open (or in a repo that has none yet) live here, so the picker
+  // works on a fresh profile and new repos start from the last choice.
+  const GLOBAL_AGENT = join(homedir(), ".narrowbit", "agent-defaults.json");
+  const globalAgent = (): AgentConfig | undefined => {
+    try { return JSON.parse(readFileSync(GLOBAL_AGENT, "utf8")); } catch { return undefined; }
+  };
+  const effAgent = (cfg: { agent?: AgentConfig }): AgentConfig | undefined => cfg.agent ?? globalAgent();
+
   const state = () => {
     if (!root) {
       // No repository yet: settings are per-repo so nothing can be saved, but the provider/model
       // lists must still render or the picker looks empty on a fresh profile.
-      const selection = resolveSelection(undefined);
-      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(undefined), phases: PHASES, efforts: EFFORT_LEVELS, lead: true, connectors: listConnectors().map(publicConnector), skills: [], history: [] };
+      const ga = globalAgent();
+      let selection;
+      try { selection = resolveSelection(ga); } catch { selection = resolveSelection(undefined); }
+      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? true, connectors: listConnectors().map(publicConnector), skills: [], history: [] };
     }
     const p = paths(root);
     const initialized = existsSync(p.db);
@@ -292,12 +302,12 @@ export function startUi(opts: UiOptions) {
     let selection;
     let selectionError: string | null = null;
     try {
-      selection = resolveSelection(cfg.agent);
+      selection = resolveSelection(effAgent(cfg));
     } catch (e: any) {
       selectionError = e.message;
       selection = resolveSelection(undefined);
     }
-    const providers = buildProviders(cfg.agent);
+    const providers = buildProviders(effAgent(cfg));
     return {
       root,
       version: readVersion(),
@@ -313,7 +323,7 @@ export function startUi(opts: UiOptions) {
       efforts: EFFORT_LEVELS,
       running: !!run?.running && run.root === root,
       runningTask: run?.running && run.root === root ? run.taskId : null,
-      lead: cfg.agent?.boss ?? true,
+      lead: effAgent(cfg)?.boss ?? true,
       history: initialized ? taskHistory(p) : [],
       skills: listSkills(p),
       connectors: listConnectors().map(publicConnector),
@@ -327,11 +337,11 @@ export function startUi(opts: UiOptions) {
     if (!existsSync(p.db)) return { status: 400, body: { error: "set up Narrowbit in this repository first" } };
     const g = gitState(root);
     const cfg = loadConfig(p);
-    const sel = resolveSelection(cfg.agent);
-    const unavailable = unavailableReason(sel, cfg.agent);
+    const sel = resolveSelection(effAgent(cfg));
+    const unavailable = unavailableReason(sel, effAgent(cfg));
     if (unavailable) return { status: 400, body: { error: unavailable } };
     if (continueTask && !readEvents(p, continueTask).length) return { status: 404, body: { error: `no task ${continueTask}` } };
-    const lead = cfg.agent?.boss ?? true;
+    const lead = effAgent(cfg)?.boss ?? true;
     const thisRun: Run = {
       root,
       taskId: continueTask,
@@ -443,10 +453,9 @@ export function startUi(opts: UiOptions) {
       }
 
       if (route === "GET /api/models") {
-        if (!root) return json(res, 400, { error: "no repository open" });
         const prov = url.searchParams.get("provider") ?? "";
         if (!isProvider(prov)) return json(res, 400, { error: `unknown provider "${prov}"` });
-        const agent = loadConfig(paths(root)).agent;
+        const agent = root ? effAgent(loadConfig(paths(root))) : globalAgent();
         const cacheKey = `${prov} ${resolveEndpoint(prov, agent)?.baseUrl ?? ""} ${keySource(prov, PROVIDER_INFO[prov].keyEnv) ?? ""}`;
         const hit = modelCache.get(cacheKey);
         if (hit && Date.now() - hit.at < 5 * 60_000 && hit.list.models.length && !url.searchParams.has("refresh")) return json(res, 200, hit.list);
@@ -489,23 +498,29 @@ export function startUi(opts: UiOptions) {
           return json(res, 200, state());
         }
         case "/api/models": {
-          if (!root) return json(res, 400, { error: "no repository open" });
-          const p = paths(root);
+          const p = root ? paths(root) : null;
           const provider = String(body.provider ?? "");
           if (!isProvider(provider)) return json(res, 400, { error: `unknown provider "${provider}"` });
           const effort = String(body.effort ?? "");
           if (!(EFFORT_LEVELS as readonly string[]).includes(effort)) return json(res, 400, { error: `unknown effort "${effort}"` });
-          const cfg = loadConfig(p);
-          const models = { ...(cfg.agent?.models ?? {}) };
+          const cfg = p ? loadConfig(p) : { agent: globalAgent() };
+          const base = effAgent(cfg);
+          const models = { ...(base?.models ?? {}) };
           const slots: Record<string, string> = {};
           for (const phase of PHASES) {
             const m = String(body.tiers?.[phase] ?? "").trim();
             if (m) slots[phase] = m;
           }
           models[provider as ProviderName] = slots;
-          cfg.agent = { ...cfg.agent, provider, effort, models, ...(typeof body.lead === "boolean" ? { boss: body.lead } : {}) };
-          ensureDirs(p);
-          saveConfig(p, cfg);
+          const next = { ...base, provider, effort, models, ...(typeof body.lead === "boolean" ? { boss: body.lead } : {}) } as AgentConfig;
+          if (p) {
+            (cfg as any).agent = next;
+            ensureDirs(p);
+            saveConfig(p, cfg as any);
+          }
+          // Also remembered globally so the next repo (or the next launch with no folder) starts here.
+          mkdirSync(join(homedir(), ".narrowbit"), { recursive: true, mode: 0o700 });
+          writeFileSync(GLOBAL_AGENT, JSON.stringify({ provider, effort, models, boss: next.boss }, null, 2) + "\n", { mode: 0o600 });
           return json(res, 200, state());
         }
         case "/api/skills": {

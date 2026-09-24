@@ -780,15 +780,34 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var slots = clear($("slots"));
     var list = modelLists[draft.provider];
     S.phases.forEach(function (ph) {
-      var inp = el("input", { type: "text", id: "slot-" + ph, list: "modelList", value: P.tiers[ph] || "", placeholder: list && !list.models.length ? "type a model id" : "choose a model", autocomplete: "off", spellcheck: "false", onchange: function () { saveModels(); } });
-      slots.appendChild(el("div", { cls: "slot" },
+      // A real dropdown when we know the models (a datalist only shows entries matching what's already typed,
+      // so with a value filled in it looked like there was nothing to choose); "Other…" for anything else.
+      var cur = P.tiers[ph] || "";
+      var ids = list ? (store("freeOnly") === "1" && list.free.length ? list.free : list.models).slice() : [];
+      var inp;
+      if (ids.length) {
+        if (cur && ids.indexOf(cur) < 0) ids.unshift(cur);
+        inp = el("select", { id: "slot-" + ph, onchange: function () {
+          if (this.value === "__other") { swapToText(ph, ""); return; }
+          saveModels();
+        } });
+        if (!cur) inp.appendChild(el("option", { value: "", text: "choose a model" }));
+        ids.forEach(function (id) {
+          var label = [id, list.labels[id] && list.labels[id] !== id ? "— " + list.labels[id] : "", list.free.indexOf(id) >= 0 ? "(free)" : ""].filter(Boolean).join(" ");
+          var o = el("option", { value: id, text: label }); if (id === cur) o.selected = true; inp.appendChild(o);
+        });
+        inp.appendChild(el("option", { value: "__other", text: "Other… (type a model id)" }));
+      } else {
+        inp = el("input", { type: "text", id: "slot-" + ph, value: cur, placeholder: list ? "type a model id" : "loading models…", autocomplete: "off", spellcheck: "false", onchange: function () { saveModels(); } });
+      }
+      slots.appendChild(el("div", { cls: "slot", id: "slotrow-" + ph },
         el("span", { cls: "num", style: "background:" + PHASE[ph][2], text: PHASE[ph][0] }),
         el("label", { for: "slot-" + ph, text: PHASE[ph][1] }), inp));
     });
     if (list && list.free.length) {
       var fo = el("input", { type: "checkbox", id: "freeOnly" });
       fo.checked = store("freeOnly") === "1";
-      fo.onchange = function () { store("freeOnly", fo.checked ? "1" : "0"); fillModelList(); };
+      fo.onchange = function () { store("freeOnly", fo.checked ? "1" : "0"); fillModelList(); renderSettings(); };
       slots.appendChild(el("label", { cls: "freeonly" }, fo, "Show free models only (" + list.free.length + ")"));
     }
     fillModelList();
@@ -805,6 +824,11 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var t = S.selection.tiers, lbl = S.providers[S.selection.provider].label;
     var line = lbl + " · " + (t.explore || "?") + " / " + (t.execute || "?") + " / " + (t.escalate || "?");
     $("settingsSub").textContent = line; $("modelChipText").textContent = line;
+  }
+  function swapToText(ph, val) {
+    var row = $("slotrow-" + ph), old = $("slot-" + ph);
+    var inp = el("input", { type: "text", id: "slot-" + ph, value: val, placeholder: "type a model id", autocomplete: "off", spellcheck: "false", onchange: function () { saveModels(); } });
+    row.replaceChild(inp, old); inp.focus();
   }
   function fillModelList() {
     var dl = clear($("modelList"));
