@@ -358,6 +358,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <span class="title" id="title"></span>
       <button class="pill hidden" id="planMini"></button>
       <span class="pill hidden" id="treePill"></span>
+      <button class="pill warn hidden" id="pushPill" title="Push your commits to the remote"></button>
     </div>
     <div class="scroll" id="scroll">
       <div class="thread" id="thread">
@@ -568,7 +569,26 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       t.className = "pill " + (n ? "warn" : "ok");
       show(t, true);
     } else show(t, false);
+    renderPush();
   }
+  // Push is always an explicit, two-step click (arm, then confirm) — never automatic.
+  var pushArm = null;
+  function renderPush() {
+    var b = $("pushPill"), r = S && S.remote;
+    if (!S || !S.root || !r || !r.hasRemote || !r.ahead) { show(b, false); return; }
+    var where = r.upstream || "origin";
+    b.textContent = pushArm ? "Click again to push to " + where : "↑ " + r.ahead + " to push";
+    b.title = "Push " + r.ahead + " commit" + (r.ahead === 1 ? "" : "s") + " to " + where;
+    show(b, true);
+  }
+  $("pushPill").onclick = function () {
+    if (!pushArm) { pushArm = setTimeout(function () { pushArm = null; renderPush(); }, 4000); renderPush(); return; }
+    clearTimeout(pushArm); pushArm = null;
+    var b = $("pushPill"); b.textContent = "Pushing…"; b.disabled = true;
+    api("/api/push", {}).then(function (r) { b.disabled = false; apply(r.state); banner("", null); flash($("savedMsg"), r.message); showToast(r.message); })
+      .catch(function (e) { b.disabled = false; renderPush(); banner("bad", e.message); });
+  };
+  function showToast(text) { var n = el("div", { cls: "notice", text: text }); add(n); }
   function renderSessions() {
     var box = clear($("sessions"));
     if (!S || !S.history || !S.history.length) { box.appendChild(el("div", { cls: "muted", style: "font-size:12.5px;padding:6px 10px", text: "No sessions yet." })); return; }

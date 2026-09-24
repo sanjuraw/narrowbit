@@ -6,7 +6,7 @@ import { basename, join, resolve } from "node:path";
 import { ensureDirs, loadConfig, paths, saveConfig, type AgentConfig, type Paths } from "./config.js";
 import { getConnector, listConnectors, publicConnector, removeConnector, saveConnector } from "./connectors.js";
 import { fold, readEvents, type Event } from "./events.js";
-import { changedSince, gitState } from "./git.js";
+import { changedSince, gitState, pushBranch, remoteInfo } from "./git.js";
 import { listConnectorTools } from "./mcpClient.js";
 import { initProject } from "./project.js";
 import { keySource, setKey } from "./keys.js";
@@ -317,6 +317,7 @@ export function startUi(opts: UiOptions) {
       name: basename(root),
       recent: loadRecent(),
       initialized,
+      remote: g.isRepo ? remoteInfo(root) : { hasRemote: false, upstream: null, ahead: 0 },
       git: { isRepo: g.isRepo, branch: g.branch, head: g.head?.slice(0, 7) ?? null, changed: [...new Set([...g.dirty, ...g.staged])], untracked: g.untracked.filter((f) => !f.startsWith(".narrowbit/")) },
       verify: cfg.verify,
       selection,
@@ -538,6 +539,14 @@ export function startUi(opts: UiOptions) {
             return json(res, 400, { error: e.message });
           }
           return json(res, 200, state());
+        }
+        case "/api/push": {
+          // An explicit click in the app is the only way this runs; nothing pushes automatically.
+          if (!root) return json(res, 400, { error: "no repository open" });
+          if (run?.running) return json(res, 409, { error: "wait for the task to finish" });
+          const r = pushBranch(root);
+          if (!r.ok) return json(res, 400, { error: r.message });
+          return json(res, 200, { message: r.message, state: state() });
         }
         case "/api/session/rename":
         case "/api/session/delete": {

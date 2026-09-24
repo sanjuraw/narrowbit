@@ -426,3 +426,74 @@ describe("layout rules that broke before (checked in the page's own CSS)", () =>
     assert.equal((await fetch(`${app.base}/api/state`)).status, 401);
   });
 });
+
+describe("pushing commits to the remote (a local bare repo stands in for GitHub)", () => {
+  let home, repo, remote, app, page;
+  const git = (cwd, ...a) => execFileSync("git", a, { cwd, stdio: "pipe", encoding: "utf8" });
+  before(async () => {
+    home = fresh("home");
+    repo = fresh("repo");
+    remote = fresh("remote");
+    git(remote, "init", "-q", "--bare", "-b", "main");
+    git(repo, "init", "-q", "-b", "main");
+    git(repo, "config", "user.email", "t@t.t");
+    git(repo, "config", "user.name", "t");
+    writeFileSync(join(repo, "a.txt"), "one\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", "first");
+    git(repo, "remote", "add", "origin", remote);
+    execFileSync(process.execPath, [BIN, "init", "--no-index"], { cwd: repo, stdio: "ignore", env: { ...process.env, HOME: home } });
+    const { paths } = await import(join(ROOT, "dist", "config.js"));
+    mkdirSync(paths(repo).nb, { recursive: true });
+    writeFileSync(paths(repo).db, "");
+    app = await startApp({ cwd: repo, home });
+  });
+  after(() => {
+    page?.close();
+    app?.stop();
+    for (const d of [home, repo, remote]) rmSync(d, { recursive: true, force: true });
+  });
+  const api = (path, body) => fetch(`${app.base}${path}`, { method: body ? "POST" : "GET", headers: { "x-narrowbit-token": app.token, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+
+  test("the first push sets up tracking; later commits show as 'to push' and push cleanly, without force", async () => {
+    let st = await (await api("/api/state")).json();
+    assert.equal(st.remote.hasRemote, true);
+    assert.equal(st.remote.ahead, 1, "the first commit is not on any remote yet");
+    let r = await api("/api/push", {});
+    assert.equal(r.status, 200);
+    st = (await r.json()).state;
+    assert.equal(st.remote.ahead, 0);
+    assert.equal(st.remote.upstream, "origin/main");
+    assert.equal(git(remote, "log", "--format=%s", "-1").trim(), "first");
+
+    writeFileSync(join(repo, "a.txt"), "two\n");
+    git(repo, "commit", "-qam", "second");
+    page = await openPage(app.url);
+    const pill = await page.until(() => { const b = page.$("pushPill"); return page.visible(b) && b; }, "the push pill");
+    assert.match(pill.textContent, /1 to push/);
+    pill.click();
+    assert.match(pill.textContent, /Click again to push to origin\/main/, "the first click only arms it");
+    assert.equal(git(remote, "log", "--format=%s", "-1").trim(), "first", "nothing was pushed by the first click");
+    pill.click();
+    await page.until(() => !page.visible(page.$("pushPill")), "the pill to go away after pushing");
+    assert.equal(git(remote, "log", "--format=%s", "-1").trim(), "second");
+  });
+
+  test("a remote that has moved on refuses the push with a plain explanation (no force)", async () => {
+    const other = fresh("other");
+    try {
+      git(other, "clone", "-q", remote, ".");
+      git(other, "config", "user.email", "o@o.o");
+      git(other, "config", "user.name", "o");
+      writeFileSync(join(other, "b.txt"), "x\n");
+      git(other, "add", "-A");
+      git(other, "commit", "-qm", "someone else");
+      git(other, "push", "-q");
+    } finally { rmSync(other, { recursive: true, force: true }); }
+    writeFileSync(join(repo, "a.txt"), "three\n");
+    git(repo, "commit", "-qam", "third");
+    const r = await api("/api/push", {});
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /never force-pushes/);
+  });
+});

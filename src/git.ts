@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { sh } from "./util.js";
 
 export interface GitState {
@@ -95,4 +96,46 @@ export function changedHunks(root: string, base: string, files?: string[]): Map<
 
 export function diffStat(root: string, base: string): string {
   return sh("git", ["diff", "--stat", base], root).stdout.trim();
+}
+
+export interface RemoteInfo {
+  hasRemote: boolean;
+  upstream: string | null;
+  /** Commits on this branch that aren't on the remote yet (or on any remote, when there's no upstream). */
+  ahead: number;
+}
+
+export function remoteInfo(root: string): RemoteInfo {
+  const hasRemote = sh("git", ["remote"], root).stdout.trim().length > 0;
+  if (!hasRemote) return { hasRemote: false, upstream: null, ahead: 0 };
+  const up = sh("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], root);
+  if (up.code === 0) {
+    const n = sh("git", ["rev-list", "--count", "@{u}..HEAD"], root);
+    return { hasRemote, upstream: up.stdout.trim(), ahead: Number(n.stdout.trim()) || 0 };
+  }
+  const n = sh("git", ["rev-list", "--count", "HEAD", "--not", "--remotes"], root);
+  return { hasRemote, upstream: null, ahead: Number(n.stdout.trim()) || 0 };
+}
+
+/**
+ * Push the current branch. Never forces, and never waits for a password: with no stored credentials git
+ * fails at once and we say how to fix it, instead of hanging on a prompt nobody can see.
+ */
+export function pushBranch(root: string): { ok: boolean; message: string } {
+  const branch = sh("git", ["rev-parse", "--abbrev-ref", "HEAD"], root).stdout.trim();
+  if (!branch || branch === "HEAD") return { ok: false, message: "You're not on a branch (detached HEAD), so there's nothing to push to." };
+  const info = remoteInfo(root);
+  if (!info.hasRemote) return { ok: false, message: "This repository has no remote. Add one with: git remote add origin <url>" };
+  const args = info.upstream ? ["push"] : ["push", "-u", "origin", branch];
+  const r = spawnSync("git", args, {
+    cwd: root, encoding: "utf8", timeout: 90_000,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "", GCM_INTERACTIVE: "never" },
+  });
+  const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`.trim();
+  if (r.status === 0) return { ok: true, message: info.upstream ? `Pushed to ${info.upstream}.` : `Pushed and now tracking origin/${branch}.` };
+  if (/non-fast-forward|fetch first|rejected/i.test(out)) return { ok: false, message: "The remote has commits you don't have, so the push was refused. Narrowbit never force-pushes: pull or rebase in a terminal first." };
+  if (/could not read Username|Authentication failed|Permission denied|403|terminal prompts disabled|invalid credentials/i.test(out))
+    return { ok: false, message: "GitHub didn't accept this Mac's credentials. Sign in once in a terminal (for example `gh auth login`, or a stored token/SSH key), then try again." };
+  if (r.error && (r.error as any).code === "ETIMEDOUT") return { ok: false, message: "The push timed out (no answer from the remote in 90 seconds)." };
+  return { ok: false, message: out.split("\n").slice(-4).join("\n") || "The push failed." };
 }
