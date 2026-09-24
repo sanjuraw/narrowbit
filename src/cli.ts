@@ -99,7 +99,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit limits [--refresh]        Claude and Codex subscription usage: 5-hour and weekly windows
   narrowbit keys [list]               which API keys are set    narrowbit keys set|remove <provider>
       providers: claude, codex (subscriptions); openrouter (free & paid), groq, gemini (free tiers),
-      openai, deepseek (paid); ollama, lmstudio (local, free); custom (any OpenAI-compatible server)
+      openai, deepseek (paid); ollama, lmstudio (local, free); freellmapi (your own free-tier gateway); custom (any OpenAI-compatible server)
 
   narrowbit memory add <type> "<text>" [--reason ..] [--attempt ..] [--result ..] [--files a,b]
       types: ${MEMORY_TYPES.join(", ")}

@@ -16,7 +16,7 @@ export const PROVIDERS = [
   "claude", "codex",
   "openrouter", "nvidia", "cloudflare", "groq", "gemini", "cerebras", "mistral", "github", "huggingface", "sambanova",
   "openai", "deepseek", "together", "fireworks", "xai",
-  "ollama", "lmstudio", "custom",
+  "ollama", "lmstudio", "freellmapi", "custom",
 ] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
 export const PHASES = ["explore", "execute", "escalate"] as const;
@@ -111,6 +111,16 @@ export const PROVIDER_INFO: Record<ProviderName, ProviderInfo> = {
     hint: "Start Ollama and pull a coding model first. Its default context window is small; set OLLAMA_CONTEXT_LENGTH=32768 before `ollama serve`, or long reads get cut off silently.",
   },
   lmstudio: { label: "LM Studio", kind: "local", pricing: "free, on this Mac", baseUrl: "http://127.0.0.1:1234/v1", hint: "Load a model in LM Studio and start its local server (Developer tab)." },
+  freellmapi: {
+    label: "FreeLLMAPI (your own gateway)",
+    kind: "api",
+    pricing: "free tiers pooled behind one key",
+    free: true,
+    baseUrl: "http://localhost:3001/v1",
+    keyEnv: "FREELLMAPI_API_KEY",
+    keyUrl: "https://github.com/tashfeenahmed/freellmapi",
+    hint: "A gateway you run yourself (github.com/tashfeenahmed/freellmapi, port 3001). Paste the freellmapi-… key from its dashboard. Model \"auto\" lets it pick per request; a fixed model name is more predictable for an agent.",
+  },
   custom: { label: "Custom endpoint", kind: "api", pricing: "any OpenAI-compatible server", hint: "Set its base URL (and a key, if it needs one)." },
 };
 
@@ -120,8 +130,9 @@ export const PROVIDER_INFO: Record<ProviderName, ProviderInfo> = {
 export const DEFAULT_TIERS: Record<ProviderName, ModelTiers> = {
   claude: { explore: "haiku", execute: "sonnet", escalate: "opus" },
   codex: { explore: "gpt-5.6-luna", execute: "gpt-5.6-terra", escalate: "gpt-5.6-sol" },
-  ...(Object.fromEntries(PROVIDERS.filter((p) => p !== "claude" && p !== "codex").map((p) => [p, { explore: "", execute: "", escalate: "" }])) as Record<
-    Exclude<ProviderName, "claude" | "codex">,
+  freellmapi: { explore: "auto", execute: "auto", escalate: "auto" },
+  ...(Object.fromEntries(PROVIDERS.filter((p) => p !== "claude" && p !== "codex" && p !== "freellmapi").map((p) => [p, { explore: "", execute: "", escalate: "" }])) as Record<
+    Exclude<ProviderName, "claude" | "codex" | "freellmapi">,
     ModelTiers
   >),
 };
