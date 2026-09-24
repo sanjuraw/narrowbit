@@ -243,6 +243,20 @@ export async function availableModels(provider: ProviderName, agent?: AgentConfi
   const ep = resolveEndpoint(provider, agent)!;
   const label = PROVIDER_INFO[provider].label;
   if (!ep.baseUrl) return { models: [], free: [], labels: {}, note: `no base URL set for ${label}` };
+  if (provider === "cloudflare") {
+    // Workers AI has no OpenAI-style /models (it answers 405); its own catalog is the model search API.
+    const m = /\/accounts\/([^/]+)\/ai\//.exec(ep.baseUrl);
+    if (!m) return { models: [], free: [], labels: {}, note: "Cloudflare needs your account id first" };
+    try {
+      const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${m[1]}/ai/models/search?task=Text%20Generation&per_page=100`, { headers: ep.apiKey ? { authorization: `Bearer ${ep.apiKey}` } : {}, signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return { models: [], free: [], labels: {}, note: `Cloudflare model list answered ${res.status}${res.status === 401 || res.status === 403 ? " — check the API token and account id" : ""}` };
+      const d: any = await res.json();
+      const models = ((d.result ?? []) as any[]).map((x) => x?.name).filter((x): x is string => typeof x === "string").sort((a, b) => a.localeCompare(b));
+      return { models, free: [], labels: {}, note: "from Cloudflare Workers AI" };
+    } catch (e: any) {
+      return { models: [], free: [], labels: {}, note: `couldn't reach Cloudflare: ${e.message}` };
+    }
+  }
   try {
     const res = await fetch(`${ep.baseUrl}/models`, { headers: ep.apiKey ? { authorization: `Bearer ${ep.apiKey}` } : {}, signal: AbortSignal.timeout(8000) });
     if (!res.ok) return { models: [], free: [], labels: {}, note: `${label} /models answered ${res.status}${res.status === 401 ? " — check the API key" : ""}` };

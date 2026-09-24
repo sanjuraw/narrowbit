@@ -763,6 +763,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       // The URL embeds the account id; ask for just the id so nobody edits a URL template by hand.
       var idm = /\/accounts\/([0-9a-f]{32})\//.exec(P.baseUrl || "");
       var a = el("input", { type: "text", cls: "mono", value: idm ? idm[1] : "", placeholder: "Account id (32 characters, from dash.cloudflare.com → Workers AI)", "aria-label": "Cloudflare account id", autocomplete: "off", spellcheck: "false" });
+      if (idm) urlRow.appendChild(el("span", { cls: "status", text: "✓ Account id saved" }));
       urlRow.appendChild(a);
       urlRow.appendChild(el("button", { text: "Save id", onclick: function () {
         var id = a.value.trim();
