@@ -127,15 +127,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .crumb-wrap { max-width: 780px; margin: 0 auto 8px; }
 .crumb { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--panel-2); border: 1px solid var(--line); text-align: left; }
 .crumb:hover { background: var(--line); }
+.crumb.empty { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .crumb .ci { font-size: 11px; }
 .crumb #crumbName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
-.repo-bar { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
-.repo-bar .rb-label { font-weight: 600; white-space: nowrap; flex: none; }
-.repo-bar .rb-recent { display: flex; align-items: center; gap: 4px; overflow-x: auto; flex: none; }
-.repo-bar .rb-recent button { font-size: 12px; padding: 4px 8px; border-radius: 6px; background: var(--panel-2); white-space: nowrap; }
-.repo-bar .rb-recent button:hover { background: var(--line); }
-.repo-bar input { flex: 1; min-width: 80px; font-size: 12.5px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); }
-.repo-bar button.primary { flex: none; padding: 5px 10px; font-size: 12.5px; }
 .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 2px 9px; border-radius: 99px; background: var(--panel-2); color: var(--muted); white-space: nowrap; border: 0; }
 .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); }
 #menuBtn { display: none; }
@@ -336,13 +330,6 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <div class="upd hidden" id="updBar"></div>
     <div class="topbar" id="topbar">
       <button class="ghost" id="menuBtn" aria-label="Menu">☰</button>
-      <div class="repo-bar hidden" id="repoBar">
-        <span class="rb-label">Choose a folder to get started</span>
-        <div class="rb-recent" id="repoBarRecent"></div>
-        <input type="text" id="repoBarPath" placeholder="/path/to/your/project" class="mono">
-        <button id="repoBarPick" class="hidden">Choose…</button>
-        <button class="primary" id="repoBarOpen">Open</button>
-      </div>
       <span class="title" id="title"></span>
       <button class="pill hidden" id="planMini"></button>
       <span class="pill hidden" id="treePill"></span>
@@ -365,7 +352,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       </div>
     </div>
     <div class="composer-wrap">
-      <div class="crumb-wrap hidden" id="crumbWrap"><button class="crumb" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button></div>
+      <div class="crumb-wrap" id="crumbWrap"><button class="crumb" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button></div>
       <div class="composer">
         <div id="banner" class="banner hidden"></div>
         <textarea id="input" rows="1" placeholder="Describe a task…"></textarea>
@@ -527,7 +514,6 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     renderRepo();
     renderVersion();
     show($("repoOverlay"), false);
-    showRepoBar(!S.root);
     if (!S.root) { show($("welcome"), true); show($("setupCard"), false); if (S.providers) { draft = { root: null, provider: S.selection.provider, effort: S.selection.effort }; renderSettings(); renderConnectors(); renderGetStarted(); } renderComposer(); return; }
     if (!draft || draft.root !== S.root) draft = { root: S.root, provider: S.selection.provider, effort: S.selection.effort };
     run.active = S.running; if (S.running) run.taskId = S.runningTask;
@@ -539,26 +525,16 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     }
     if (!es) connect();
   }
-  // Non-blocking: unlike switching repositories later (openRepoPicker's overlay), the app is fully
-  // visible behind this — it's a bar in the topbar, not a gate you have to clear before anything works.
-  function showRepoBar(on) {
-    show($("repoBar"), on);
-    show($("title"), !on);
-    if (!on) return;
-    var list = clear($("repoBarRecent"));
-    ((S && S.recent) || []).slice(0, 4).forEach(function (r) {
-      list.appendChild(el("button", { title: r, onclick: function () { openRepo(r); } }, r.split("/").filter(Boolean).pop()));
-    });
-    show($("repoBarPick"), !!native);
-  }
   function renderRepo() {
     $("repoName").textContent = S && S.root ? S.name : "No repository";
     $("repoBranch").textContent = S && S.git && S.git.branch ? S.git.branch + (S.git.head ? " · " + S.git.head : "") : "";
     $("welcomeTitle").textContent = S && S.root ? "What should we work on in " + S.name + "?" : "What should we work on?";
     // Persistent breadcrumb above the chat, not just the sidebar — visible in every view (idle or
     // mid-session), so which repo you're in never depends on remembering to check the sidebar.
-    show($("crumbWrap"), !!(S && S.root));
-    if (S && S.root) $("crumbName").textContent = S.name + (S.git && S.git.branch ? " · " + S.git.branch : "");
+    var hasRepo = !!(S && S.root);
+    show($("crumbWrap"), true);
+    $("crumb").classList.toggle("empty", !hasRepo);
+    $("crumbName").textContent = hasRepo ? S.name + (S.git && S.git.branch ? " · " + S.git.branch : "") : "Choose a folder to start";
     var t = $("treePill");
     if (S && S.git && S.git.isRepo) {
       var n = S.git.changed.length + S.git.untracked.filter(function (f) { return f !== ".narrowbitignore"; }).length;
@@ -1236,7 +1212,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       list.appendChild(el("button", { onclick: function () { openRepo(r); } }, el("strong", { text: r.split("/").filter(Boolean).pop() }), el("span", { cls: "path mono", text: r })));
     });
     if (!recent.length) list.appendChild(el("div", { cls: "muted", style: "font-size:13px", text: "No recent repositories." }));
-    show($("pickFolder"), !!native); show($("closeRepo"), cancellable); show($("repoErr"), false); show($("repoOverlay"), true);
+    show($("pickFolder"), !!native); show($("closeRepo"), true); show($("repoErr"), false); show($("repoOverlay"), true);
     if (!native) $("repoPath").focus();
   }
   function openRepo(path) {
@@ -1249,15 +1225,14 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       banner("bad", e.message);
     });
   }
-  $("repoBtn").onclick = function () { openRepoPicker(!!(S && S.root)); };
-  $("crumb").onclick = function () { openRepoPicker(!!(S && S.root)); };
+  $("repoBtn").onclick = function () { openRepoPicker(true); };
+  $("crumb").onclick = function () { openRepoPicker(true); };
+  $("repoOverlay").onclick = function (e) { if (e.target === this) show(this, false); };
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") { show($("repoOverlay"), false); show($("skillOverlay"), false); } });
   $("closeRepo").onclick = function () { show($("repoOverlay"), false); };
   $("openRepo").onclick = function () { var v = $("repoPath").value.trim(); if (v) openRepo(v); };
   $("repoPath").addEventListener("keydown", function (e) { if (e.key === "Enter") $("openRepo").click(); });
   $("pickFolder").onclick = function () { native.postMessage({ type: "pickFolder" }); };
-  $("repoBarOpen").onclick = function () { var v = $("repoBarPath").value.trim(); if (v) openRepo(v); };
-  $("repoBarPath").addEventListener("keydown", function (e) { if (e.key === "Enter") $("repoBarOpen").click(); });
-  $("repoBarPick").onclick = function () { native.postMessage({ type: "pickFolder" }); };
   window.narrowbitFolderPicked = function (path) { if (path) openRepo(path); };
   $("initBtn").onclick = function () {
     var b = $("initBtn"); b.disabled = true; b.textContent = "Indexing…";
