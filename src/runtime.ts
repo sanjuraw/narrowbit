@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { loadConfig, type Paths } from "./config.js";
@@ -136,6 +136,8 @@ this repo's code and tests, not for your own recommendations or a restatement of
 A user may be watching. Any action may include "note": one short sentence for them — what you found or why
 you're taking this step — only when it adds something; skip it on routine steps. If you were given a numbered
 plan, include "steps_done":[<numbers>] on the action where you finish those steps.`;
+/** Identifies these exact instructions, so a resumed session can tell it was started under older ones. */
+const INSTRUCTIONS_ID = createHash("sha1").update(SYSTEM_INSTRUCTIONS).digest("hex").slice(0, 12);
 
 /** Lead mode: model 3 plans before the loop starts and reviews the diff before "done" is accepted. */
 const LEAD_PLAN_INSTRUCTIONS = `You are the lead engineer on a coding task. You don't edit code yourself: a cheaper model carries out the work one action at a time (reading files, editing, running checks), and you review its diff at the end. Write the plan it will follow.
@@ -407,7 +409,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     // otherwise start fresh from the same deterministic digest compaction uses.
     const last = [...prior].reverse().find((e) => e.type === "model_call" && typeof e.meta?.sessionId === "string" && e.tokens?.role === role);
     const lastSession = last?.meta?.sessionId as string | undefined;
-    const resumable = lastSession && last?.meta?.provider === provider && (provider === "claude" || hasSession(lastSession));
+    // A session keeps the instructions it started with, so after an update it would go on behaving the old
+    // way; resume only if those instructions are still the current ones.
+    const resumable = lastSession && last?.meta?.provider === provider && last?.meta?.instr === INSTRUCTIONS_ID && (provider === "claude" || hasSession(lastSession));
     if (resumable) {
       sessionId = lastSession;
       freshSessionPending = false;
@@ -485,7 +489,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         outputTokens: res.usage.output,
         costUsd: callCost,
       },
-      meta: { sessionId, sessionCost: totalCost, provider },
+      meta: { sessionId, sessionCost: totalCost, provider, instr: INSTRUCTIONS_ID },
     });
     if (res.isError) {
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `model call failed: ${res.errorMessage ?? "unknown error"}` });
