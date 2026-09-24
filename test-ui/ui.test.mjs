@@ -584,4 +584,33 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     assert.equal(fin.outcome, "done");
     ctl.abort();
   });
+  test("an isolated run edits a separate copy; the changes card offers Apply, and Apply brings them into the folder", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const { rmSync: rm } = await import("node:fs");
+    rm(join(fakeDir, "count"), { force: true });
+    writeFileSync(join(fakeDir, "replies.json"), JSON.stringify([
+      JSON.stringify({ action: "edit", path: "a.txt", old: "hi", new: "hello there" }),
+      JSON.stringify({ action: "done", summary: "greeted" }),
+    ]));
+    const started = await fetch(`${app.base}/api/run`, { method: "POST", headers: H, body: JSON.stringify({ task: "make the greeting friendlier", askBeforeCommands: false, isolate: true, force: true }) });
+    assert.equal(started.status, 200, await started.clone().text());
+    let taskId = null;
+    for (let i = 0; i < 200 && !taskId; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      const st = await (await fetch(`${app.base}/api/state`, { headers: H })).json();
+      const h = st.history.find((x) => x.outcome === "done" && /friendlier/.test(x.goal));
+      if (h && !st.running) taskId = h.id;
+    }
+    assert.ok(taskId, "the isolated task finished");
+    assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "hi\n", "the folder is untouched while the copy holds the edit");
+    const d = await (await fetch(`${app.base}/api/diff?task=${taskId}`, { headers: H })).json();
+    assert.equal(d.isolated, true);
+    assert.deepEqual(d.files, ["a.txt"]);
+    assert.match(d.diff, /\+hello there/);
+    const r = await fetch(`${app.base}/api/isolated/apply`, { method: "POST", headers: H, body: JSON.stringify({ task: taskId }) });
+    assert.equal(r.status, 200, await r.clone().text());
+    assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "hello there\n", "Apply brought the change into the folder");
+    const after = await (await fetch(`${app.base}/api/diff?task=${taskId}`, { headers: H })).json();
+    assert.notEqual(after.isolated, true, "the copy is gone after Apply");
+  });
 });

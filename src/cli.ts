@@ -8,6 +8,7 @@ import { ensureDirs, findRoot, loadConfig, paths, saveConfig, type Paths } from 
 import { evalHistory } from "./eval.js";
 import { train } from "./train.js";
 import { changedSince, gitState } from "./git.js";
+import { applyIsolated, discardIsolated, readIsolated } from "./isolate.js";
 import { fold, readEvents } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { serveMcp } from "./mcp.js";
@@ -82,6 +83,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
       [--provider <name>] [--model X | --explore X --execute X --escalate X]
       [--effort low|medium|high|xhigh|max] [--max-steps N] [--force] [--dry-run]
       [--allow-commands]   run shell commands without asking (default: ask before each one)
+      [--isolate]          work in a separate git worktree; your folder changes only when you run: narrowbit apply <task>
       [--no-boss] [--continue <task-id>]   lead mode (default): model 3 plans first and reviews the
       diff before "done"; --continue sends a follow-up to an earlier task
       verifies and remembers, driving the task end to end in THIS working tree (not a worktree —
@@ -493,6 +495,7 @@ export async function main(argv: string[]): Promise<number> {
       const result = await runTask(p, text, {
         approve,
         ask,
+        isolate: !!args.flags.isolate,
         maxSteps,
         boss: args.flags["no-boss"] ? false : (cfg.agent?.boss ?? true),
         continueTask: strFlag(args, "continue"),
@@ -512,6 +515,7 @@ export async function main(argv: string[]): Promise<number> {
       const totalTok = roles.reduce((a, r) => a + r.inputTokens + r.cacheCreationTokens + r.cacheReadTokens + r.outputTokens, 0);
       const totalCost = roles.reduce((a, r) => a + r.costUsd, 0);
       out(`usage: ~${fmtNum(totalTok)} tokens, ~$${totalCost.toFixed(3)} notional (subscription usage — nothing is billed per token)`);
+      if (result && args.flags.isolate && readIsolated(p, result.taskId)) out(`\nmade in a separate copy — nothing in your folder changed yet.\n  bring the changes over:  narrowbit apply ${result.taskId}\n  throw them away:         narrowbit discard ${result.taskId}`);
       out(`task: ${result.taskId}  (full log: .narrowbit/runtime/${result.taskId}/events.jsonl)`);
       if (result.outcome !== "done") out(`tip: review the diff before trusting this — the task did not report a clean completion.`);
       return result.outcome === "done" ? 0 : result.outcome === "blocked" ? 1 : 2;
@@ -770,6 +774,19 @@ export async function main(argv: string[]): Promise<number> {
       const shown = key === "provider" ? (value as ProviderName) : provider;
       const updated = resolveSelection(cfg.agent, { provider: shown });
       out(`saved. ${shown}: ${PHASES.map((ph) => `${ph}=${updated.tiers[ph] || "?"}`).join(" ")}   default provider: ${agent.provider ?? "claude"}   effort: ${updated.effort}`);
+      return 0;
+    }
+    case "apply":
+    case "discard": {
+      const id = pos[0];
+      if (!id || !/^rt-[\w-]+$/.test(id)) { process.stderr.write(`usage: narrowbit ${cmd} <task id from an --isolate run>\n`); return 2; }
+      const root = findRoot();
+      const p = paths(root);
+      if (cmd === "discard") { discardIsolated(p, id); out(`discarded the separate copy for ${id}; your folder was never touched`); return 0; }
+      const r = applyIsolated(p, id);
+      out(r.message);
+      if (!r.ok) return 1;
+      discardIsolated(p, id);
       return 0;
     }
     case "memory": {

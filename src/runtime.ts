@@ -8,6 +8,7 @@ import { project } from "./context.js";
 import { writeEvidence } from "./evidence.js";
 import { appendEvent, fold, readEvents, subscribe, type Event, type PlanStep } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
+import { ensureIsolated } from "./isolate.js";
 import { callConnectorTool, listConnectorTools } from "./mcpClient.js";
 import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./memory.js";
 import { classifyModelError, isPermanentModelError } from "./errors.js";
@@ -285,6 +286,8 @@ export interface RuntimeOptions {
   /** Continue an earlier task with `taskText` as a follow-up request, in the same event log —
    * resuming its model session when it still exists, else from a deterministic digest. */
   continueTask?: string;
+  /** Work in a throwaway git worktree instead of the folder itself (isolate.ts); nothing changes the folder until applied. */
+  isolate?: boolean;
   /** Every event appended for this task, as it happens (the app renders these). */
   onEvent?: (e: Event) => void;
 }
@@ -336,6 +339,9 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
 }
 
 async function runLoop(p: Paths, taskId: string, taskText: string, opts: RuntimeOptions): Promise<RuntimeResult> {
+  // Isolated: code operations (read/edit/run/verify) use the worktree as their root; state (index, memory,
+  // event log, config) keeps living in the real folder's .narrowbit, since those paths were fixed above.
+  if (opts.isolate) p = { ...p, root: ensureIsolated(p, taskId).dir };
   const provider = opts.provider ?? "claude";
   const cfg = loadConfig(p);
   const tiers = opts.models ? { ...DEFAULT_TIERS[provider], ...opts.models } : opts.model ? { explore: opts.model, execute: opts.model, escalate: opts.model } : DEFAULT_TIERS[provider];

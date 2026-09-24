@@ -1008,3 +1008,55 @@ describe("remote MCP servers", () => {
     assert.ok(!JSON.stringify(publicConnector(getConnector("token-based"))).includes("static-token"));
   });
 });
+
+const { readIsolated, isolatedPatch, applyIsolated, discardIsolated } = await dist("isolate.js");
+
+describe("isolated runs (throwaway git worktree)", () => {
+  test("the agent edits a separate copy; the folder is untouched until Apply, and Discard removes the copy", async () => {
+    const { root, p } = tinyRepo();
+    writeFileSync(join(root, "a.txt"), "hello\nuncommitted line\n"); // the copy must start from the folder as it is now
+    writeFileSync(join(root, "notes.txt"), "an untracked file\n");
+    const fake = fakeClaude([
+      JSON.stringify({ action: "read", path: "notes.txt" }),
+      JSON.stringify([{ action: "edit", path: "a.txt", old: "hello", new: "goodbye" }, { action: "run", command: "echo ran-in-copy > proof.txt" }]),
+      JSON.stringify({ action: "done", summary: "edited" }),
+    ]);
+    try {
+      const r = await runTask(p, "change hello to goodbye", { claudeBin: fake.bin, boss: false, maxSteps: 8, isolate: true });
+      assert.equal(r.outcome, "done");
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "hello\nuncommitted line\n", "the real folder is untouched");
+      assert.ok(!existsSync(join(root, "proof.txt")), "commands ran in the copy, not the folder");
+      const m = readIsolated(p, r.taskId);
+      assert.ok(m && existsSync(join(m.dir, "proof.txt")));
+      assert.equal(readFileSync(join(m.dir, "a.txt"), "utf8"), "goodbye\nuncommitted line\n", "edited on top of the uncommitted work");
+      const patch = isolatedPatch(m);
+      assert.match(patch, /-hello/); assert.match(patch, /\+goodbye/);
+      assert.ok(!/uncommitted line/.test(patch.split("\n").filter((l) => /^[+-][^+-]/.test(l)).join("\n")), "the patch holds only the agent's work");
+      const applied = applyIsolated(p, r.taskId);
+      assert.equal(applied.ok, true, applied.message);
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "goodbye\nuncommitted line\n");
+      assert.ok(existsSync(join(root, "proof.txt")));
+      discardIsolated(p, r.taskId);
+      assert.equal(readIsolated(p, r.taskId), null);
+      assert.ok(!existsSync(m.dir), "the copy is gone");
+      assert.ok(!execFileSync("git", ["worktree", "list"], { cwd: root, encoding: "utf8" }).includes("worktrees"), "and git forgot it");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("Apply refuses cleanly when the folder changed in the same place meanwhile", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([
+      JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "from the agent" }),
+      JSON.stringify({ action: "done", summary: "edited" }),
+    ]);
+    try {
+      const r = await runTask(p, "edit it", { claudeBin: fake.bin, boss: false, maxSteps: 8, isolate: true });
+      writeFileSync(join(root, "a.txt"), "the user edited this line too\n");
+      const applied = applyIsolated(p, r.taskId);
+      assert.equal(applied.ok, false);
+      assert.match(applied.message, /doesn't apply cleanly/);
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "the user edited this line too\n", "nothing was overwritten");
+      discardIsolated(p, r.taskId);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});

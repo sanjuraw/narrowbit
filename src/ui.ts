@@ -6,6 +6,7 @@ import { basename, join, resolve } from "node:path";
 import { ensureDirs, loadConfig, paths, saveConfig, type AgentConfig, type Paths } from "./config.js";
 import { getConnector, listConnectors, publicConnector, removeConnector, saveConnector } from "./connectors.js";
 import { completeSignIn, signOut, startSignIn } from "./oauth.js";
+import { applyIsolated, discardIsolated, readIsolated } from "./isolate.js";
 import { fold, readEvents, type Event } from "./events.js";
 import { changedSince, githubIdentity, gitState, pushBranch, remoteInfo } from "./git.js";
 import { listConnectorTools } from "./mcpClient.js";
@@ -340,7 +341,7 @@ export function startUi(opts: UiOptions) {
     };
   };
 
-  const startRun = (task: string, maxSteps: number, askBeforeCommands: boolean, continueTask: string | null): { status: number; body: unknown } => {
+  const startRun = (task: string, maxSteps: number, askBeforeCommands: boolean, continueTask: string | null, isolate = false): { status: number; body: unknown } => {
     if (!root) return { status: 400, body: { error: "open a repository first" } };
     if (run?.running) return { status: 409, body: { error: "a task is already running" } };
     const p = paths(root);
@@ -372,6 +373,7 @@ export function startUi(opts: UiOptions) {
       maxSteps,
       boss: lead,
       continueTask: continueTask ?? undefined,
+      isolate: isolate || !!(continueTask && readIsolated(p, continueTask)),
       onEvent: (event) => {
         thisRun.taskId = event.taskId;
         emit({ type: "event", event });
@@ -405,7 +407,7 @@ export function startUi(opts: UiOptions) {
           summary: result.summary,
           steps: result.steps,
           taskId: result.taskId,
-          changed: workingDiff(thisRun.root, thisRun.untrackedBefore).files,
+          changed: (() => { const iso = readIsolated(p, result.taskId); return iso ? workingDiff(iso.dir).files : workingDiff(thisRun.root, thisRun.untrackedBefore).files; })(),
           tokens: roles.reduce((a, r) => a + r.inputTokens + r.cacheCreationTokens + r.cacheReadTokens + r.outputTokens, 0),
           costUsd: roles.reduce((a, r) => a + r.costUsd, 0),
         });
@@ -514,7 +516,10 @@ export function startUi(opts: UiOptions) {
 
       if (route === "GET /api/diff") {
         if (!root) return json(res, 400, { error: "no repository open" });
-        return json(res, 200, workingDiff(root, preexisting(url.searchParams.get("task"))));
+        const taskId = url.searchParams.get("task");
+        const iso = taskId && /^rt-[\w-]+$/.test(taskId) ? readIsolated(paths(root), taskId) : null;
+        if (iso) return json(res, 200, { ...workingDiff(iso.dir), isolated: true });
+        return json(res, 200, workingDiff(root, preexisting(taskId)));
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/api/task/")) {
@@ -720,13 +725,13 @@ export function startUi(opts: UiOptions) {
           const task = String(body.task ?? "").trim();
           if (!task) return json(res, 400, { error: "describe the task first" });
           const continueTask = typeof body.continueTask === "string" && /^rt-[\w-]+$/.test(body.continueTask) ? body.continueTask : null;
-          if (root && !body.force && !continueTask) {
+          if (root && !body.force && !continueTask && body.isolate !== true) {
             const g = gitState(root);
             const changed = [...new Set([...g.dirty, ...g.staged])];
             if (changed.length) return json(res, 409, { error: "dirty", files: changed });
           }
           const maxSteps = Math.min(100, Math.max(1, Number(body.maxSteps) || 20));
-          const r = startRun(task, maxSteps, body.askBeforeCommands !== false, continueTask);
+          const r = startRun(task, maxSteps, body.askBeforeCommands !== false, continueTask, body.isolate === true);
           return json(res, r.status, r.body);
         }
         case "/api/approve": {
@@ -745,6 +750,18 @@ export function startUi(opts: UiOptions) {
           for (const id of [...run.questions.keys()]) resolveQuestion(id, null);
           emit({ type: "log", line: "stopping after the current step…" });
           return json(res, 200, { ok: true });
+        }
+        case "/api/isolated/apply":
+        case "/api/isolated/discard": {
+          if (!root) return json(res, 400, { error: "no repository open" });
+          if (run?.running) return json(res, 409, { error: "wait for the task to finish" });
+          const id = String(body.task ?? "");
+          if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
+          if (route === "POST /api/isolated/discard") { discardIsolated(paths(root), id); return json(res, 200, { ok: true, message: "Discarded the separate copy. Your folder was never touched." }); }
+          const r = applyIsolated(paths(root), id);
+          if (!r.ok) return json(res, 409, { error: r.message });
+          discardIsolated(paths(root), id);
+          return json(res, 200, { ok: true, message: r.message, files: r.files });
         }
         case "/api/commit": {
           if (!root) return json(res, 400, { error: "no repository open" });

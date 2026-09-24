@@ -396,6 +396,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         <div class="cbar">
           <button class="mchip" id="modelChip" title="Models &amp; settings"><span id="modelChipText"></span>▾</button>
           <label class="tog" title="Model 3 plans the task first and reviews the diff before it's done"><input type="checkbox" id="leadTog"> Lead</label>
+          <label class="tog" title="Work in a separate copy of the folder; nothing changes your files until you press Apply"><input type="checkbox" id="isoTog"> Isolate</label>
           <label class="tog" title="Shell commands wait for your approval"><input type="checkbox" id="askTog"> Ask before commands</label>
           <span class="spacer"></span>
           <span class="usage" id="usage"></span>
@@ -996,6 +997,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   setAsk(askOn());
   $("askChk").onchange = function () { setAsk($("askChk").checked); };
   $("askTog").onchange = function () { setAsk($("askTog").checked); };
+  $("isoTog").checked = store("isolate") === "1";
+  $("isoTog").onchange = function () { store("isolate", $("isoTog").checked ? "1" : "0"); };
 
   // ---------- composer ----------
   var input = $("input");
@@ -1023,7 +1026,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     // The server logs the task's first event before this request returns, so the view must already
     // be waiting for it.
     if (!cont) { resetView(null); view.pendingNew = true; show($("welcome"), false); }
-    api("/api/run", { task: text, force: !!force, continueTask: cont, maxSteps: Number($("maxSteps").value) || 20, askBeforeCommands: askOn() })
+    api("/api/run", { task: text, force: !!force, continueTask: cont, maxSteps: Number($("maxSteps").value) || 20, askBeforeCommands: askOn(), isolate: $("isoTog").checked })
       .then(function () {
         input.value = ""; autosize();
         clearChanges();
@@ -1473,7 +1476,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       var totalA = 0, totalR = 0;
       d.files.forEach(function (f) { var s = d.stats[f] || {}; totalA += s.added || 0; totalR += s.removed || 0; });
       var card = el("div", { cls: "changes" });
-      card.appendChild(el("div", { cls: "chh" }, el("strong", { text: d.files.length + " file" + (d.files.length > 1 ? "s" : "") + " changed — review before committing" }), el("span", { cls: "mono", style: "color:var(--ok)", text: "+" + totalA }), el("span", { cls: "mono", style: "color:var(--bad)", text: "−" + totalR })));
+      card.appendChild(el("div", { cls: "chh" }, el("strong", { text: d.files.length + " file" + (d.files.length > 1 ? "s" : "") + " changed" + (d.isolated ? " in a separate copy — your folder is untouched" : " — review before committing") }), el("span", { cls: "mono", style: "color:var(--ok)", text: "+" + totalA }), el("span", { cls: "mono", style: "color:var(--bad)", text: "−" + totalR })));
       var byFile = splitDiff(d.diff);
       d.files.forEach(function (f, i) {
         var st = d.stats[f] || { added: 0, removed: 0 };
@@ -1486,6 +1489,19 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
           el("span", { cls: "n", text: f }), el("span", { style: "color:var(--ok)", text: "+" + st.added }), el("span", { style: "color:var(--bad)", text: "−" + st.removed }));
         card.appendChild(el("div", { cls: "cfile" }, h, b));
       });
+      if (d.isolated) {
+        var applyBtn = el("button", { cls: "primary", text: "Apply to my folder", onclick: function () {
+          applyBtn.disabled = true;
+          api("/api/isolated/apply", { task: id }).then(function (r) { banner("", null); finishCard(card, r.message + " Review and commit it as usual."); load(); })
+            .catch(function (e) { applyBtn.disabled = false; banner("bad", e.message); });
+        } });
+        var dropBtn = el("button", { cls: "danger", text: "Discard", onclick: function () {
+          api("/api/isolated/discard", { task: id }).then(function (r) { banner("", null); finishCard(card, r.message); }).catch(function (e) { banner("bad", e.message); });
+        } });
+        card.appendChild(el("div", { cls: "commit" }, applyBtn, dropBtn));
+        follow(function () { slot.appendChild(card); });
+        return;
+      }
       var firstAsk = document.querySelector("#items .bubble");
       var msg = el("input", { type: "text", placeholder: "Commit message", value: ($("title").textContent || (firstAsk ? firstAsk.textContent : "")).split("\n")[0].slice(0, 72) });
       var armed = null;
