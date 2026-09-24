@@ -5,7 +5,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -341,6 +341,11 @@ describe("layout rules that broke before (checked in the page's own CSS)", () =>
     const widthOf = (sel) => new RegExp(`(?:^|\\n)\\${sel}\\s*\\{[^}]*max-width:\\s*(\\d+px)`).exec(css)?.[1];
     assert.ok(widthOf(".composer"), "composer has a max-width");
     assert.equal(widthOf(".crumb-wrap"), widthOf(".composer"));
+  });
+
+  test("a model dropdown sits in the wide column of its row (it was squeezed into the number badge's 24px column)", () => {
+    const html = readFileSync(join(ROOT, "dist", "ui-page.js"), "utf8");
+    assert.match(html, /\.slot input, \.slot select \{ grid-column: 2/);
   });
 
   test("every local response carries the security headers and a strict content-security-policy", async () => {

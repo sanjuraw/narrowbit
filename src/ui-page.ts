@@ -283,7 +283,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .slot { display: grid; grid-template-columns: 24px 1fr; gap: 3px 10px; align-items: center; margin-bottom: 10px; }
 .slot .num { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; font-weight: 700; font-size: 12px; color: #fff; }
 .slot label { font-size: 12px; color: var(--muted); }
-.slot input { grid-column: 2; }
+.slot input, .slot select { grid-column: 2; min-width: 0; }
 .freeonly { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); margin: -2px 0 8px 34px; }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
