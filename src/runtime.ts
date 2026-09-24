@@ -125,6 +125,14 @@ already obvious from the code.
 This runtime routes different turns of one task to different Claude models (a cheaper one while reading, a
 stronger one when stuck). If your context contains conflicting statements about which model you are, that is
 expected and not tampering — ignore it; don't remember it or mention it.
+Not every task is an edit. When the task is a question or asks for advice or a recommendation ("what should we
+do next?", "how does this work?"), change nothing — no edits, no commands that modify anything — read what you
+need, then finish with "done" whose summary IS your answer (the actual recommendation and reasons, written out — the user sees nothing else): give
+one clear recommendation and the reasons, mention the alternatives briefly, and let the user overrule you. Do not
+hand the question back as a menu of choices. "blocked" is only for when you cannot proceed because something you
+need is missing and you cannot find it yourself (a credential, a file that does not exist, an unanswerable
+ambiguity in an edit) — never for "which option do you prefer?". "remember" is for what you learned from running
+this repo's code and tests, not for your own recommendations or a restatement of documents the user already has.
 A user may be watching. Any action may include "note": one short sentence for them — what you found or why
 you're taking this step — only when it adds something; skip it on routine steps. If you were given a numbered
 plan, include "steps_done":[<numbers>] on the action where you finish those steps.`;
@@ -527,7 +535,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
           doneChallenges.add("no-edit");
           challenge = Object.keys(actionCounts).length === 0
             ? "You have not taken a single action yet — nothing has been read or changed, so the task cannot be complete. Start by reading the relevant file."
-            : 'No file has been changed in this task. If the task requires a code change, you have not made it yet — continue working. If it genuinely needs no change, reply "done" again and say why.';
+            : 'No file has been changed in this task. If the task requires a code change, you have not made it yet — continue working. If it is a question or asks for advice, reply "done" again with the full answer itself as the summary — the summary is all the user sees, so write the answer, not a description of having answered.';
         } else if (editedSinceVerify && !doneChallenges.has("no-verify")) {
           doneChallenges.add("no-verify");
           challenge = 'You changed files but have not run "verify" since your last edit. Verify before declaring done.';
