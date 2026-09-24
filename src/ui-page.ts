@@ -1183,7 +1183,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   }, 1000);
   function updateUsage() { $("usage").textContent = view && view.tokens ? fmt(view.tokens) + " tokens · " + money(view.cost) : ""; }
 
-  var VERB = { read: "Read", grep: "Grep", search: "Search", edit: "Edit", run: "Run", verify: "Verify", recall: "Recall", remember: "Remember", ask: "Ask", connector: "Connector" };
+  var VERB = { read: "Read", grep: "Grep", search: "Search", edit: "Edit", run: "Run", verify: "Verify", recall: "Recall", remember: "Remember", ask: "Ask", connector: "Connector", describe: "Describe" };
   function tierColor(model) {
     var t = S && S.selection.tiers;
     if (!t || !model) return "";

@@ -144,3 +144,11 @@ Markdown notes with frontmatter, one per entry, in `.narrowbit/memory/<type>s/` 
 `src/` holds the modules; `CLAUDE.md` has the full, current module table. Highlights: `runtime.ts` (the agent loop), `providers/` (model adapters), `ui.ts` + `ui-page.ts` (the app), `skills.ts`, `connectors.ts` + `mcpClient.ts`, and the index/ranker/query modules from the original context engine. `mac/` is the SwiftPM native window. `test/` has a fixture generator and the suite: `npm test`.
 
 Requires Node ≥ 22.13 (for `node:sqlite`). Runtime dependency: `typescript` only.
+
+## More things it can do
+
+- **Ask you a question** mid-task instead of guessing, and answer plain questions without touching your files.
+- **Isolated runs** (`--isolate`, or the Isolate toggle): the agent works in a separate git worktree; you press **Apply** (or run `narrowbit apply <task>`) to bring the changes into your folder, or **Discard**.
+- **Remote connectors**: add a hosted MCP server by URL (Linear, Slack, Notion…) and sign in with your browser, or give it an API token. Every connector call asks first.
+- **Skills from GitHub**: import a `SKILL.md`, a folder or a repo (you read it before saving), or save a finished chat as a skill.
+- **Step view**: each step has a `context ~N` button showing exactly what the model was sent for it.

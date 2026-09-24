@@ -94,13 +94,16 @@ const SYSTEM_INSTRUCTIONS = `You are driving a coding task through a tool-free r
 {"action":"verify"}
 {"action":"recall","query":"<topic, e.g. the area of code or kind of problem>"}
 {"action":"remember","type":"fact"|"decision"|"constraint"|"convention"|"failure"|"bug"|"command"|"environment","text":"<durable knowledge, one or two sentences>","reason"?:"<why>","attempt"?:"<for failures: what was tried>","result"?:"<for failures: what happened>","files"?:["<path>"]}
+{"action":"describe","server":"<connector name>","tool":"<tool name>"}
 {"action":"connector","server":"<connector name>","tool":"<tool name>","args":{...}}
 {"action":"done","summary":"<what changed and why it satisfies the task>"}
 {"action":"ask","question":"<one focused question>","options"?:["<a likely answer>", ...up to 4]}
 {"action":"blocked","reason":"<what you need that you don't have>"}
 
 "connector" calls a tool on a connected external MCP server (GitHub, Slack, whatever is configured
-— see the "Connected external tools" list below, if any; only call a server/tool named there).
+— see the "Connected external tools" list below, if any; only call a server/tool named there). That list holds
+names only, to keep every turn small: before calling a tool for the first time, use "describe" to get its
+description and argument schema, then call it with exactly those arguments.
 
 Batch actions in one array when you already know what comes next regardless of the outcome — e.g.
 read a file then edit it, or edit then verify. Don't batch past a step whose result would change
@@ -889,6 +892,29 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       const text = `remembered [${e.id}] (${type}): ${e.text.slice(0, 100)}`;
       appendEvent(p, taskId, { actor: "system", type: "decision", summary: text, meta: { memoryId: e.id, memoryType: type } });
       return text;
+    }
+    case "describe": {
+      const serverName = String(d.server ?? "");
+      const toolName = String(d.tool ?? "");
+      const connector = getConnector(serverName);
+      if (!connector) {
+        const text = `describe: no connector named "${serverName}" is configured`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text });
+        return text;
+      }
+      try {
+        const tools = await listConnectorTools(connector, 15_000);
+        const t = tools.find((x) => x.name === toolName);
+        const text = t
+          ? `${serverName}.${t.name}: ${t.description ?? "(no description)"}\narguments (JSON schema): ${capSummary(JSON.stringify(t.inputSchema ?? {}))}`
+          : `describe: ${serverName} has no tool "${toolName}". Its tools: ${tools.map((x) => x.name).join(", ")}`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { server: serverName, tool: toolName } });
+        return text;
+      } catch (e: any) {
+        const text = `describe ${serverName}.${toolName}: failed — ${String(e?.message ?? e).slice(0, 300)}`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text });
+        return text;
+      }
     }
     case "connector": {
       const serverName = String(d.server ?? "");
