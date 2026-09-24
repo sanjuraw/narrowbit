@@ -100,6 +100,14 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .skill-form input, .skill-form textarea { font-size: 13px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); font-family: inherit; resize: vertical; }
 .sess { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 7px 10px; border-radius: 8px; margin-bottom: 1px; }
 .sess:hover { background: var(--panel-2); }
+.sess-row { position: relative; }
+.sess-row .sess-acts { position: absolute; top: 5px; right: 6px; display: none; gap: 1px; background: var(--panel-2); border-radius: 7px; }
+.sess-row:hover .sess-acts, .sess-row:focus-within .sess-acts { display: flex; }
+.sess-acts button { border: 0; background: transparent; color: var(--faint); padding: 3px 6px; border-radius: 6px; font-size: 12px; }
+.sess-acts button:hover { color: var(--text); }
+.sess-acts button.danger:hover { color: var(--bad); }
+.sess-edit { width: 100%; }
+.sess-confirm { display: flex; gap: 6px; align-items: center; padding: 7px 10px; font-size: 12.5px; color: var(--muted); }
 .sess.on { background: var(--panel); box-shadow: var(--shadow); }
 .sess .st { display: flex; gap: 7px; align-items: center; font-size: 13px; }
 .sess .st span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -569,8 +577,34 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       var b = el("button", { cls: "sess" + (view && view.taskId === r.id ? " on" : ""), title: r.goal, onclick: function () { openSession(r.id); closeSide(); } },
         el("div", { cls: "st" }, el("span", { cls: "dot o-" + (live ? "running" : r.outcome) }), el("span", { text: r.goal })),
         el("div", { cls: "sm", text: (live ? "running" : ago(r.last)) + (r.turns > 1 ? " · " + r.turns + " messages" : "") + " · " + fmt(r.tokens) + " tok" }));
-      box.appendChild(b);
+      var row = el("div", { cls: "sess-row" }, b);
+      if (!live) {
+        row.appendChild(el("div", { cls: "sess-acts" },
+          el("button", { title: "Rename", "aria-label": "Rename", onclick: function (e) { e.stopPropagation(); renameSession(r, row, b); } }, "✎"),
+          el("button", { cls: "danger", title: "Delete", "aria-label": "Delete", onclick: function (e) { e.stopPropagation(); confirmDelete(r, row, b); } }, "🗑")));
+      }
+      box.appendChild(row);
     });
+  }
+  // The window's own prompt()/confirm() dialogs aren't reliable in the native shell, so both are inline.
+  function renameSession(r, row, b) {
+    var inp = el("input", { type: "text", cls: "sess-edit", value: r.goal, "aria-label": "Session name" });
+    var finish = function (save) {
+      if (!save) { renderSessions(); return; }
+      api("/api/session/rename", { id: r.id, title: inp.value }).then(function (st) { apply(st); if (view && view.taskId === r.id && inp.value.trim()) $("title").textContent = inp.value.trim(); }).catch(function (e) { banner("bad", e.message); renderSessions(); });
+    };
+    inp.onkeydown = function (e) { if (e.key === "Enter") finish(true); else if (e.key === "Escape") finish(false); e.stopPropagation(); };
+    inp.onblur = function () { finish(true); };
+    row.replaceChild(inp, b); var acts = row.querySelector(".sess-acts"); if (acts) acts.remove();
+    inp.focus(); inp.select();
+  }
+  function confirmDelete(r, row, b) {
+    var box = el("div", { cls: "sess-confirm" }, el("span", { text: "Delete this chat?" }),
+      el("button", { cls: "danger", text: "Delete", onclick: function () {
+        api("/api/session/delete", { id: r.id }).then(function (st) { var wasOpen = view && view.taskId === r.id; apply(st); if (wasOpen) newTask(); }).catch(function (e) { banner("bad", e.message); renderSessions(); });
+      } }),
+      el("button", { text: "Cancel", onclick: function () { renderSessions(); } }));
+    row.replaceChild(box, b); var acts = row.querySelector(".sess-acts"); if (acts) acts.remove();
   }
 
   // ---------- skills ----------
@@ -1020,9 +1054,18 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     return b;
   }
   function copyText(text, btn) {
-    function done() { var t = btn.title; btn.title = "Copied"; setTimeout(function () { btn.title = t; }, 1200); }
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done).catch(function () {});
-    else { var ta = el("textarea", { style: "position:fixed;opacity:0" }); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); done(); } catch (e) {} ta.remove(); }
+    function done(ok) { var t = btn.title; btn.title = ok ? "Copied" : "Couldn't copy"; setTimeout(function () { btn.title = t === "Copied" || t === "Couldn't copy" ? "Copy" : t; }, 1400); }
+    // Selection + execCommand works inside the native window; navigator.clipboard is often refused there.
+    var ok = false;
+    try {
+      var ta = el("textarea", { style: "position:fixed;left:-9999px;top:0" });
+      ta.value = text; document.body.appendChild(ta); ta.focus(); ta.select();
+      ok = document.execCommand("copy"); ta.remove();
+    } catch (e) { ok = false; }
+    if (ok) { done(true); return; }
+    if (native) { native.postMessage({ type: "copy", text: text }); done(true); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { done(true); }).catch(function () { done(false); });
+    else done(false);
   }
   function userActions(text, at) {
     var copyBtn = iconBtn("copy", "Copy", function () { copyText(text, copyBtn); });
@@ -1089,6 +1132,27 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   // Once a turn finishes, its reading/searching/editing steps fold into one line ("Worked for 25s · 4 steps")
   // above the answer, like Claude Code; click to look. While it runs everything stays visible, and a turn
   // that didn't finish cleanly stays open so the failure is in view.
+  function countAction(m) {
+    var a = view.acts || (view.acts = { read: 0, search: 0, edit: {}, run: 0, verify: 0, memory: 0 });
+    var k = m.action;
+    if (k === "read") a.read++;
+    else if (k === "grep" || k === "search") a.search++;
+    else if (k === "edit") a.edit[m.path || ("#" + Object.keys(a.edit).length)] = 1;
+    else if (k === "run") a.run++;
+    else if (k === "verify") a.verify++;
+    else if (k === "recall" || k === "remember") a.memory++;
+  }
+  function actionSummary() {
+    var a = view.acts || {}, out = [], n = function (c, one, many) { return c + " " + (c === 1 ? one : many); };
+    var edits = a.edit ? Object.keys(a.edit).length : 0;
+    if (a.read) out.push("read " + n(a.read, "file", "files"));
+    if (a.search) out.push("searched " + n(a.search, "time", "times"));
+    if (edits) out.push("edited " + n(edits, "file", "files"));
+    if (a.run) out.push("ran " + n(a.run, "command", "commands"));
+    if (a.verify) out.push("verified " + (a.verify === 1 ? "once" : a.verify + "×"));
+    if (a.memory) out.push("used memory");
+    return out.join(", ");
+  }
   function collapseWork(finishedOk, endMs) {
     var items = $("items").children, start = 0, i;
     for (i = items.length - 1; i >= 0; i--) if (items[i].classList.contains("msg-user")) { start = i + 1; break; }
@@ -1100,7 +1164,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     }
     if (!work.length) return;
     var body = el("div", { cls: "work-body" });
-    var label = "Worked" + (view.segStart ? " for " + dur(endMs - view.segStart) : "") + " · " + view.segSteps + " step" + (view.segSteps === 1 ? "" : "s");
+    var sum = actionSummary();
+    var label = "Worked" + (view.segStart ? " for " + dur(endMs - view.segStart) : "") + " · " + (sum || view.segSteps + " step" + (view.segSteps === 1 ? "" : "s"));
     var group = el("details", { cls: "work" }, el("summary", { text: label }), body);
     if (!finishedOk) group.open = true;
     $("items").insertBefore(group, work[0]);
@@ -1137,7 +1202,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       var text = m.goal || m.followUp || "";
       if (m.goal) $("title").textContent = m.goal;
       show($("welcome"), false);
-      view.segTokens = 0; view.segCost = 0; view.segSteps = 0; view.segStart = new Date(e.at).getTime();
+      view.acts = { read: 0, search: 0, edit: {}, run: 0, verify: 0, memory: 0 }; view.segTokens = 0; view.segCost = 0; view.segSteps = 0; view.segStart = new Date(e.at).getTime();
       add(el("div", { cls: "msg-user" }, el("div", { cls: "bubble" }, rich(text)), userActions(text, e.at)), true);
       if (!replay) setWorking(S && S.lead && m.goal ? "Lead is planning…" : "Thinking…");
       return;
@@ -1145,6 +1210,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (e.type === "plan") { renderPlan(m); if (!replay) setWorking("Working…"); return; }
     if (e.type === "tool_call") {
       view.segSteps++;
+      countAction(m);
       if (m.note) add(el("div", { cls: "narr" }, rich(m.note)));
       view.step = stepBlock(m);
       add(view.step.box);

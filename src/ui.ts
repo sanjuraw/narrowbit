@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -129,9 +129,11 @@ function taskHistory(p: Paths, limit = 40) {
     // runtime.ts ends every run (and every follow-up) with an outcome event; older logs don't have one.
     const end = [...events].reverse().find((e) => e.type === "decision" && typeof e.meta?.outcome === "string");
     const done = [...events].reverse().find((e) => e.type === "decision" && e.summary.startsWith("done: "));
+    let title = "";
+    try { title = readFileSync(join(p.runtime, id, "title.txt"), "utf8").trim(); } catch { /* not renamed */ }
     rows.push({
       id,
-      goal: state.goal ?? "(no goal recorded)",
+      goal: title || (state.goal ?? "(no goal recorded)"),
       at: events[0].at,
       last: events[events.length - 1].at,
       outcome: (end?.meta?.outcome as string) ?? (done ? "done" : "unfinished"),
@@ -534,6 +536,23 @@ export function startUi(opts: UiOptions) {
             saveSkill(p, name, String(body.description ?? ""), String(body.body ?? ""));
           } catch (e: any) {
             return json(res, 400, { error: e.message });
+          }
+          return json(res, 200, state());
+        }
+        case "/api/session/rename":
+        case "/api/session/delete": {
+          if (!root) return json(res, 400, { error: "no repository open" });
+          const id = String(body.id ?? "");
+          if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad session id" });
+          if (run?.running && run.taskId === id) return json(res, 409, { error: "stop the running task first" });
+          const dir = join(paths(root).runtime, id);
+          if (!existsSync(dir)) return json(res, 404, { error: "no such session" });
+          if (route === "POST /api/session/delete") {
+            rmSync(dir, { recursive: true, force: true });
+          } else {
+            const title = String(body.title ?? "").trim().slice(0, 200);
+            if (title) writeFileSync(join(dir, "title.txt"), title + "\n", { mode: 0o600 });
+            else if (existsSync(join(dir, "title.txt"))) unlinkSync(join(dir, "title.txt"));
           }
           return json(res, 200, state());
         }

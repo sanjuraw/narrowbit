@@ -139,6 +139,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                       let data = try? JSONEncoder().encode(path), let arg = String(data: data, encoding: .utf8) else { return }
                 self?.web.evaluateJavaScript("window.narrowbitFolderPicked(\(arg))")
             }
+        case "copy":
+            if let text = body["text"] as? String {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            }
         case "attention", "finished":
             // A command is waiting for approval, or a run ended: bounce the Dock if we're in the background.
             if !NSApp.isActive { NSApp.requestUserAttention(type == "attention" ? .criticalRequest : .informationalRequest) }

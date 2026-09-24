@@ -294,12 +294,36 @@ describe("app page with a folder open", () => {
     const sess = await page.until(() => [...page.w.document.querySelectorAll("#sessions .sess")].find((x) => /what is in a\.txt/.test(x.textContent)), "the finished session");
     sess.click();
     const group = await page.until(() => page.w.document.querySelector("details.work"), "the folded work");
-    assert.match(group.querySelector("summary").textContent, /Worked.*1 step/);
+    assert.match(group.querySelector("summary").textContent, /Worked.*read 1 file/);
     assert.equal(group.open, false, "closed by default");
     assert.ok(group.querySelector(".step"), "the step is inside it");
     assert.ok(!group.querySelector(".final"), "the answer is not folded away");
     assert.match(page.w.document.querySelector(".final").textContent, /contains the word hi/);
     group.querySelector("summary").click();
+  });
+
+  test("a chat can be renamed and deleted from the sidebar (inline, no browser dialogs)", async () => {
+    const post = (path, b) => fetch(`${app.base}${path}`, { method: "POST", headers: { "x-narrowbit-token": app.token, "content-type": "application/json" }, body: JSON.stringify(b) });
+    const { appendEvent } = await import(join(ROOT, "dist", "events.js"));
+    const { paths } = await import(join(ROOT, "dist", "config.js"));
+    appendEvent(paths(repo), "rt-scratch-test", { actor: "user", type: "decision", summary: "task received", meta: { goal: "temporary chat" } });
+    // Server side: rename shows up in history, path tricks are refused, delete removes it.
+    assert.equal((await post("/api/session/rename", { id: "../x", title: "no" })).status, 400);
+    let st = await (await post("/api/session/rename", { id: "rt-scratch-test", title: "My renamed chat" })).json();
+    assert.ok(st.history.some((h) => h.id === "rt-scratch-test" && h.goal === "My renamed chat"));
+    // Page side: hover actions exist, and Delete asks inline before doing anything.
+    const pg = await openPage(app.url);
+    try {
+      const row = await pg.until(() => [...pg.w.document.querySelectorAll("#sessions .sess-row")].find((r) => /My renamed chat/.test(r.textContent)), "the renamed chat");
+      assert.deepEqual([...row.querySelectorAll(".sess-acts button")].map((b) => b.title), ["Rename", "Delete"]);
+      row.querySelector('[title="Delete"]').click();
+      assert.match(pg.$("sessions").textContent, /Delete this chat\?/);
+      const cancel = [...pg.$("sessions").querySelectorAll("button")].find((b) => b.textContent === "Cancel");
+      cancel.click();
+      assert.ok([...pg.w.document.querySelectorAll("#sessions .sess-row")].some((r) => /My renamed chat/.test(r.textContent)), "Cancel keeps it");
+    } finally { pg.close(); }
+    st = await (await post("/api/session/delete", { id: "rt-scratch-test" })).json();
+    assert.ok(!st.history.some((h) => h.id === "rt-scratch-test"), "deleted");
   });
 
   test("every project lists the built-in skills, without a delete button; user skills get one", async () => {
