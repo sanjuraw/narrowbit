@@ -95,6 +95,7 @@ const SYSTEM_INSTRUCTIONS = `You are driving a coding task through a tool-free r
 {"action":"remember","type":"fact"|"decision"|"constraint"|"convention"|"failure"|"bug"|"command"|"environment","text":"<durable knowledge, one or two sentences>","reason"?:"<why>","attempt"?:"<for failures: what was tried>","result"?:"<for failures: what happened>","files"?:["<path>"]}
 {"action":"connector","server":"<connector name>","tool":"<tool name>","args":{...}}
 {"action":"done","summary":"<what changed and why it satisfies the task>"}
+{"action":"ask","question":"<one focused question>","options"?:["<a likely answer>", ...up to 4]}
 {"action":"blocked","reason":"<what you need that you don't have>"}
 
 "connector" calls a tool on a connected external MCP server (GitHub, Slack, whatever is configured
@@ -129,7 +130,10 @@ Not every task is an edit. When the task is a question or asks for advice or a r
 do next?", "how does this work?"), change nothing — no edits, no commands that modify anything — read what you
 need, then finish with "done" whose summary IS your answer (the actual recommendation and reasons, written out — the user sees nothing else): give
 one clear recommendation and the reasons, mention the alternatives briefly, and let the user overrule you. Do not
-hand the question back as a menu of choices. "blocked" is only for when you cannot proceed because something you
+hand the question back as a menu of choices. When you genuinely need a decision only the user can make while
+doing a task (which of several reasonable approaches, a value you cannot find or infer), use "ask" — one focused
+question, with up to 4 suggested answers when there are clear candidates — then continue with their answer. Ask
+rarely (twice per task at most) and never for something you can decide or look up yourself. "blocked" is only for when you cannot proceed because something you
 need is missing and you cannot find it yourself (a credential, a file that does not exist, an unanswerable
 ambiguity in an edit) — never for "which option do you prefer?". "remember" is for what you learned from running
 this repo's code and tests, not for your own recommendations or a restatement of documents the user already has.
@@ -170,6 +174,9 @@ interface Decision {
   attempt?: string;
   result?: string;
   files?: string[];
+  /** ask action: one focused question for the user, with optional suggested answers. */
+  question?: string;
+  options?: string[];
   /** connector action: which configured MCP server (connectors.ts) and which of its tools. */
   server?: string;
   tool?: string;
@@ -268,6 +275,9 @@ export interface RuntimeOptions {
   /** Asked before every `run` action. Resolving false refuses the command and tells the model so;
    * unset means commands run without asking (benchmarks, trusted CLI use). */
   approve?: (command: string) => Promise<boolean>;
+  /** Puts the model's question to the user and resolves with their answer (null = nobody can answer).
+   * Unset in benchmarks and non-interactive runs: the model is told to make its best assumption instead. */
+  ask?: (question: string, options: string[]) => Promise<string | null>;
   /** Aborting stops the loop before its next model call (a call already in flight finishes first). */
   signal?: AbortSignal;
   /** Lead mode: the escalate model plans up front and reviews the diff before "done". Default true. */
@@ -423,6 +433,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     }
   }
   let reviews = 0;
+  const asks = { n: 0 };
 
   for (; steps < maxSteps; steps++) {
     if (opts.signal?.aborted) {
@@ -591,11 +602,11 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         actor: "model",
         type: "tool_call",
         summary: `${decision.action}${decision.path ? ` ${decision.path}` : decision.command ? ` ${decision.command}` : decision.query ? ` "${decision.query}"` : decision.pattern ? ` "${decision.pattern}"` : ""}`,
-        meta: { action: decision.action, path: decision.path, command: decision.command, query: decision.query, pattern: decision.pattern, glob: decision.glob, start: decision.start, end: decision.end, note: decision.note, model: turnModel },
+        meta: { action: decision.action, question: decision.question, options: decision.options, path: decision.path, command: decision.command, query: decision.query, pattern: decision.pattern, glob: decision.glob, start: decision.start, end: decision.end, note: decision.note, model: turnModel },
       });
       let resultText: string;
       try {
-        resultText = await executeAction(p, taskId, decision, opts.approve);
+        resultText = await executeAction(p, taskId, decision, opts.approve, opts.ask, asks);
       } catch (e: any) {
         resultText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
@@ -628,6 +639,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       if (editRefused) stopReason = "the edit above was refused";
       else if (decision.action === "verify" && checkFailed) stopReason = "verification failed";
       else if (decision.action === "run" && checkFailed) stopReason = "the command above exited non-zero";
+      else if (decision.action === "ask") stopReason = "you asked the user a question, so their answer can shape what comes next";
       if (stopReason) break;
     }
 
@@ -683,8 +695,28 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
 }
 
 /** Executes one action and returns the (capped) result text to feed back as the next turn's prompt. */
-async function executeAction(p: Paths, taskId: string, d: Decision, approve?: RuntimeOptions["approve"]): Promise<string> {
+async function executeAction(p: Paths, taskId: string, d: Decision, approve?: RuntimeOptions["approve"], ask?: RuntimeOptions["ask"], asks?: { n: number }): Promise<string> {
   switch (d.action) {
+    case "ask": {
+      const question = String(d.question ?? "").trim();
+      if (!question) return "ask: needs a \"question\"";
+      if (asks && asks.n >= 2) {
+        const text = "ask: you have already asked twice in this task — decide with your best judgement, say what you assumed, and continue";
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text });
+        return text;
+      }
+      if (asks) asks.n++;
+      const options = Array.isArray(d.options) ? d.options.map((o) => String(o)).filter(Boolean).slice(0, 4) : [];
+      const answer = ask ? await ask(question, options) : null;
+      if (answer === null) {
+        const text = "ask: nobody is available to answer right now — make the most reasonable assumption, state it clearly in your final answer, and continue";
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text });
+        return text;
+      }
+      const text = `The user answered: ${answer}`;
+      appendEvent(p, taskId, { actor: "user", type: "tool_result", summary: text, meta: { question, answer } });
+      return text;
+    }
     case "read": {
       const path = String(d.path ?? "");
       const abs = safeAbsPath(p, path);

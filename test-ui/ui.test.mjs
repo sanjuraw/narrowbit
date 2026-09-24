@@ -25,9 +25,9 @@ const freePort = () =>
   });
 
 /** Starts `narrowbit ui` in `cwd` with an empty HOME (no sign-ins, no recent folders), like a fresh user. */
-async function startApp({ cwd, home }) {
+async function startApp({ cwd, home, env = {} }) {
   const port = await freePort();
-  const child = spawn(process.execPath, [BIN, "ui", "--no-open", "--port", String(port)], { cwd, env: { ...process.env, HOME: home }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [BIN, "ui", "--no-open", "--port", String(port)], { cwd, env: { ...process.env, HOME: home, ...env }, stdio: ["ignore", "pipe", "pipe"] });
   const url = await new Promise((resolve, reject) => {
     let buf = "";
     const timer = setTimeout(() => reject(new Error("ui server did not start: " + buf)), 15000);
@@ -502,5 +502,65 @@ describe("pushing commits to the remote (a local bare repo stands in for GitHub)
     const r = await api("/api/push", {});
     assert.equal(r.status, 400);
     assert.match((await r.json()).error, /never force-pushes/);
+  });
+});
+
+describe("the agent asking the user a question in the app (stand-in model, no network)", () => {
+  let home, repo, fakeDir, app;
+  const git = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
+  before(async () => {
+    home = fresh("home"); repo = fresh("repo"); fakeDir = fresh("fake");
+    git("init", "-q", "-b", "main"); git("config", "user.email", "t@t.t"); git("config", "user.name", "t");
+    writeFileSync(join(repo, "a.txt"), "hi\n"); git("add", "-A"); git("commit", "-qm", "init");
+    execFileSync(process.execPath, [BIN, "init"], { cwd: repo, stdio: "ignore", env: { ...process.env, HOME: home } });
+    writeFileSync(join(fakeDir, "replies.json"), JSON.stringify([
+      JSON.stringify({ action: "ask", question: "Which colour?", options: ["red", "blue"] }),
+      JSON.stringify({ action: "done", summary: "went with your colour" }),
+    ]));
+    writeFileSync(join(fakeDir, "claude"), `#!/usr/bin/env node
+const fs = require("fs"); const d = ${JSON.stringify(fakeDir)};
+const c = d + "/count"; const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
+const r = JSON.parse(fs.readFileSync(d + "/replies.json", "utf8")); const text = r[Math.min(n, r.length - 1)];
+const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+console.log(JSON.stringify({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
+`, { mode: 0o755 });
+    app = await startApp({ cwd: repo, home, env: { NARROWBIT_CLAUDE: join(fakeDir, "claude") } });
+  });
+  after(() => { app?.stop(); for (const d of [home, repo, fakeDir]) rmSync(d, { recursive: true, force: true }); });
+
+  test("a question streams to the page, an answer resumes the task, and the task finishes", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const events = [];
+    const ctl = new AbortController();
+    const stream = await fetch(`${app.base}/api/stream?t=${app.token}`, { signal: ctl.signal });
+    const reader = stream.body.getReader();
+    let buf = "";
+    let pending = null; // one outstanding read at a time — racing fresh reads would drop chunks
+    const waitFor = async (pred, what) => {
+      const t0 = Date.now();
+      for (;;) {
+        const hit = events.find(pred); if (hit) return hit;
+        if (Date.now() - t0 > 20000) throw new Error("timed out waiting for " + what + " — saw " + JSON.stringify(events.map((e) => e.type === "finished" ? e : e.type === "event" ? e.event.summary : e.type)));
+        pending = pending || reader.read();
+        const got = await Promise.race([pending, new Promise((r) => setTimeout(() => r(null), 200))]);
+        if (!got) continue;
+        pending = null;
+        const { value, done } = got;
+        if (done) break;
+        if (value) { buf += new TextDecoder().decode(value); let i; while ((i = buf.indexOf("\n\n")) >= 0) { const chunk = buf.slice(0, i); buf = buf.slice(i + 2); const m = /^data: (.*)$/m.exec(chunk); if (m) events.push(JSON.parse(m[1])); } }
+      }
+    };
+    await fetch(`${app.base}/api/models`, { method: "POST", headers: H, body: JSON.stringify({ provider: "claude", effort: "medium", tiers: { explore: "haiku", execute: "sonnet", escalate: "opus" }, lead: false }) });
+    const started = await fetch(`${app.base}/api/run`, { method: "POST", headers: H, body: JSON.stringify({ task: "choose a colour for the button", askCommands: false }) });
+    assert.equal(started.status, 200, await started.clone().text());
+    const q = await waitFor((e) => e.type === "question", "the question");
+    assert.equal(q.question, "Which colour?");
+    assert.deepEqual(q.options, ["red", "blue"]);
+    assert.equal((await fetch(`${app.base}/api/answer`, { method: "POST", headers: H, body: JSON.stringify({ id: q.id, answer: "" }) })).status, 400, "an empty answer is refused");
+    assert.equal((await fetch(`${app.base}/api/answer`, { method: "POST", headers: H, body: JSON.stringify({ id: q.id, answer: "blue" }) })).status, 200);
+    const fin = await waitFor((e) => e.type === "finished", "the task to finish");
+    assert.equal(fin.outcome, "done");
+    ctl.abort();
   });
 });

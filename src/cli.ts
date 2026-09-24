@@ -481,8 +481,18 @@ export async function main(argv: string[]): Promise<number> {
         if (a === "a") allowAll = true;
         return a === "y" || a === "a";
       };
+      const ask = async (question: string, options: string[]): Promise<string | null> => {
+        if (!process.stdin.isTTY) return null;
+        const rl = createInterface({ input: process.stdin, output: process.stderr });
+        process.stderr.write(`\n      ? ${question}\n${options.map((o, i) => `        ${i + 1}) ${o}\n`).join("")}`);
+        const a = (await rl.question("      your answer: ")).trim();
+        rl.close();
+        const n = Number(a);
+        return options.length && Number.isInteger(n) && n >= 1 && n <= options.length ? options[n - 1] : a || null;
+      };
       const result = await runTask(p, text, {
         approve,
+        ask,
         maxSteps,
         boss: args.flags["no-boss"] ? false : (cfg.agent?.boss ?? true),
         continueTask: strFlag(args, "continue"),

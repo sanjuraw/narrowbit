@@ -50,6 +50,8 @@ type StreamEvent =
   | { type: "event"; event: Event }
   | { type: "approval"; id: string; command: string }
   | { type: "approval_resolved"; id: string; allowed: boolean }
+  | { type: "question"; id: string; question: string; options: string[] }
+  | { type: "question_resolved"; id: string; answer: string | null }
   | { type: "finished"; outcome: string; summary: string; steps: number; taskId: string; changed: string[]; tokens: number; costUsd: number }
   | { type: "failed"; error: string };
 
@@ -58,6 +60,8 @@ interface Run {
   events: StreamEvent[];
   controller: AbortController;
   pending: Map<string, (allowed: boolean) => void>;
+  /** Questions the agent has put to the user, waiting for an answer. */
+  questions: Map<string, (answer: string | null) => void>;
   /** Commands the user allowed for the rest of this task. */
   allowed: Set<string>;
   running: boolean;
@@ -353,6 +357,7 @@ export function startUi(opts: UiOptions) {
       events: [],
       controller: new AbortController(),
       pending: new Map(),
+      questions: new Map(),
       allowed: new Set(),
       running: true,
       // A follow-up keeps the original task's baseline, so the first request's new files still count as its work.
@@ -360,6 +365,7 @@ export function startUi(opts: UiOptions) {
     };
     run = thisRun;
     let approvalSeq = 0;
+    let questionSeq = 0;
     emit({ type: "start", task, continueTask, lead, selection: `${sel.tiers.explore} → ${sel.tiers.execute} → ${sel.tiers.escalate} · effort ${sel.effort}` });
     runTask(p, task, {
       maxSteps,
@@ -373,6 +379,12 @@ export function startUi(opts: UiOptions) {
       models: sel.tiers,
       effort: sel.effort,
       signal: thisRun.controller.signal,
+      ask: (question, options) => {
+        if (thisRun.controller.signal.aborted) return Promise.resolve(null);
+        const id = `q${++questionSeq}`;
+        emit({ type: "question", id, question, options });
+        return new Promise<string | null>((res) => thisRun.questions.set(id, res));
+      },
       approve: askBeforeCommands
         ? (command) => {
             if (thisRun.allowed.has(command)) return Promise.resolve(true);
@@ -412,6 +424,15 @@ export function startUi(opts: UiOptions) {
     if (decision === "task" && cmd) run.allowed.add(cmd);
     emit({ type: "approval_resolved", id, allowed: decision !== "deny" });
     r(decision !== "deny");
+    return true;
+  };
+
+  const resolveQuestion = (id: string, answer: string | null) => {
+    const r = run?.questions.get(id);
+    if (!run || !r) return false;
+    run.questions.delete(id);
+    emit({ type: "question_resolved", id, answer });
+    r(answer);
     return true;
   };
 
@@ -677,10 +698,16 @@ export function startUi(opts: UiOptions) {
           const decision = body.decision === "task" ? "task" : body.decision === "once" ? "once" : "deny";
           return json(res, resolveApproval(String(body.id ?? ""), decision) ? 200 : 404, { ok: true });
         }
+        case "/api/answer": {
+          const answer = typeof body.answer === "string" ? body.answer.trim().slice(0, 4000) : "";
+          if (!answer) return json(res, 400, { error: "type an answer" });
+          return json(res, resolveQuestion(String(body.id ?? ""), answer) ? 200 : 404, { ok: true });
+        }
         case "/api/stop": {
           if (!run?.running) return json(res, 200, { ok: true });
           run.controller.abort();
           for (const id of [...run.pending.keys()]) resolveApproval(id, "deny");
+          for (const id of [...run.questions.keys()]) resolveQuestion(id, null);
           emit({ type: "log", line: "stopping after the current step…" });
           return json(res, 200, { ok: true });
         }

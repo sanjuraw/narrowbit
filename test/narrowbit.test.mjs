@@ -828,3 +828,66 @@ test("limits: reads both windows from Claude Code's rate_limit_event", async () 
   assert.equal(old.weekly, null);
   assert.equal(parseClaudeLimits('{"type":"result"}'), null);
 });
+
+// --- a stand-in `claude` so the real loop can run in tests without a model ---
+const { runTask } = await dist("runtime.js");
+const { initProject } = await dist("project.js");
+
+/** Writes an executable that answers each call with the next scripted reply (as stream-json). */
+function fakeClaude(replies) {
+  const dir = mkdtempSync(join(tmpdir(), "nb-fake-"));
+  writeFileSync(join(dir, "replies.json"), JSON.stringify(replies));
+  const bin = join(dir, "claude");
+  writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("fs");
+const f = ${JSON.stringify(join(dir, "replies.json"))}, c = ${JSON.stringify(join(dir, "count"))};
+const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
+const r = JSON.parse(fs.readFileSync(f, "utf8")); const text = r[Math.min(n, r.length - 1)];
+const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+console.log(JSON.stringify({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
+`, { mode: 0o755 });
+  return { bin, dir, calls: () => Number(readFileSync(join(dir, "count"), "utf8")) };
+}
+function tinyRepo() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "nb-rt-")));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+  writeFileSync(join(root, "a.txt"), "hello\n");
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], { cwd: root });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"], { cwd: root });
+  const p = paths(root);
+  ensureDirs(p);
+  initProject(p, { index: false });
+  return { root, p };
+}
+
+describe("ask action", () => {
+  test("the model's question reaches the user, and their answer comes back into the loop", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([
+      JSON.stringify({ action: "ask", question: "Which name?", options: ["alpha", "beta"] }),
+      JSON.stringify({ action: "done", summary: "used the name you chose" }),
+    ]);
+    const asked = [];
+    try {
+      const r = await runTask(p, "pick a name for the thing", { claudeBin: fake.bin, boss: false, maxSteps: 6, ask: async (q, o) => { asked.push([q, o]); return "beta"; } });
+      assert.equal(r.outcome, "done");
+      assert.deepEqual(asked, [["Which name?", ["alpha", "beta"]]]);
+      const ev = readEvents(p, r.taskId);
+      assert.ok(ev.some((e) => e.type === "tool_result" && /The user answered: beta/.test(e.summary)), "answer logged");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("with nobody to ask, the model is told to assume and continue instead of blocking", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([
+      JSON.stringify({ action: "ask", question: "Which name?" }),
+      JSON.stringify({ action: "done", summary: "assumed alpha" }),
+    ]);
+    try {
+      const r = await runTask(p, "pick a name for the thing", { claudeBin: fake.bin, boss: false, maxSteps: 6 });
+      assert.equal(r.outcome, "done");
+      assert.ok(readEvents(p, r.taskId).some((e) => /nobody is available to answer/.test(e.summary)));
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});

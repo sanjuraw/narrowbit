@@ -218,6 +218,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .approval pre { margin: 8px 0 10px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; white-space: pre-wrap; word-break: break-all; font: 12.5px var(--mono); }
 .approval .btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .approval.resolved { box-shadow: none; opacity: .75; padding: 8px 12px; }
+.approval .qt { margin: 6px 0 10px; }
+.approval input[type=text] { flex: 1; min-width: 180px; }
 .approval.resolved pre { margin: 4px 0 0; }
 
 .working { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; margin: 12px 0; }
@@ -1122,7 +1124,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   }, 1000);
   function updateUsage() { $("usage").textContent = view && view.tokens ? fmt(view.tokens) + " tokens · " + money(view.cost) : ""; }
 
-  var VERB = { read: "Read", grep: "Grep", search: "Search", edit: "Edit", run: "Run", verify: "Verify", recall: "Recall", remember: "Remember" };
+  var VERB = { read: "Read", grep: "Grep", search: "Search", edit: "Edit", run: "Run", verify: "Verify", recall: "Recall", remember: "Remember", ask: "Ask", connector: "Connector" };
   function tierColor(model) {
     var t = S && S.selection.tiers;
     if (!t || !model) return "";
@@ -1342,6 +1344,34 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (document.activeElement === input) input.blur();
     if (native) native.postMessage({ type: "attention", text: ev.command });
   }
+  function onQuestion(ev) {
+    if (!view || view.approvals[ev.id]) return;
+    var box = el("div", { cls: "approval question" }, el("div", { cls: "ah", text: "Narrowbit has a question" }), el("div", { cls: "qt" }, rich(ev.question)));
+    var q = { box: box, done: false };
+    var btns = el("div", { cls: "btns" });
+    var send = function (text) {
+      if (q.done || !text.trim()) return; q.done = true;
+      Array.prototype.forEach.call(box.querySelectorAll("button, input"), function (b) { b.disabled = true; });
+      api("/api/answer", { id: ev.id, answer: text.trim() }).catch(function (e) { q.done = false; banner("bad", e.message); });
+    };
+    (ev.options || []).forEach(function (o) { btns.appendChild(el("button", { onclick: function () { send(o); } }, o)); });
+    var free = el("input", { type: "text", placeholder: (ev.options && ev.options.length ? "Or type your own answer…" : "Type your answer…"), "aria-label": "Answer" });
+    free.onkeydown = function (e) { if (e.key === "Enter") send(free.value); e.stopPropagation(); };
+    box.appendChild(btns);
+    box.appendChild(el("div", { cls: "btns" }, free, el("button", { cls: "primary", text: "Send", onclick: function () { send(free.value); } })));
+    q.free = free; q.btns = btns;
+    view.approvals[ev.id] = q;
+    add(box, true);
+    if (document.activeElement === input) input.blur();
+    free.focus();
+    if (native) native.postMessage({ type: "attention", text: ev.question });
+  }
+  function onQuestionResolved(ev) {
+    var q = view && view.approvals[ev.id]; if (!q) return;
+    q.done = true; q.box.classList.add("resolved");
+    q.box.firstChild.textContent = ev.answer === null ? "Question skipped" : "You answered: " + ev.answer;
+    Array.prototype.forEach.call(q.box.querySelectorAll(".btns"), function (b) { b.remove(); });
+  }
   function onApprovalResolved(ev) {
     var a = view && view.approvals[ev.id]; if (!a) return;
     a.done = true; a.box.classList.add("resolved");
@@ -1368,6 +1398,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       var mine = !!(view && run.taskId && view.taskId === run.taskId);
       if (ev.type === "approval" && mine) onApproval(ev);
       else if (ev.type === "approval_resolved" && mine) onApprovalResolved(ev);
+      else if (ev.type === "question" && mine) onQuestion(ev);
+      else if (ev.type === "question_resolved" && mine) onQuestionResolved(ev);
       else if (ev.type === "finished") {
         run.active = false;
         var key = ev.taskId + ":" + ev.steps + ":" + ev.outcome;
