@@ -848,7 +848,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     }).catch(function () {});
   }
   function saveModels(tiers, extra) {
-    if (!tiers) { tiers = {}; S.phases.forEach(function (ph) { tiers[ph] = $("slot-" + ph).value.trim(); }); }
+    if (!tiers) {
+      tiers = {}; S.phases.forEach(function (ph) { tiers[ph] = $("slot-" + ph).value.trim(); });
+      // Picking one model shouldn't leave the other two blank ("? / ?"): unset slots follow the first chosen one.
+      var first = ""; S.phases.forEach(function (ph) { if (!first && tiers[ph]) first = tiers[ph]; });
+      S.phases.forEach(function (ph) { if (!tiers[ph]) tiers[ph] = first; });
+    }
     draft.effort = $("effort").value || draft.effort;
     var body = { provider: draft.provider, effort: draft.effort, tiers: tiers };
     if (extra) for (var k in extra) body[k] = extra[k];

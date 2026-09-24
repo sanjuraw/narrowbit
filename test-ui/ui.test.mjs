@@ -233,6 +233,32 @@ describe("app page with a folder open", () => {
     assert.ok(![...page.w.document.querySelectorAll("#urlRow input")].some((i) => /\{CLOUDFLARE/.test(i.value)), "no raw URL template");
   });
 
+  test("a model chosen from the dropdown stays selected after it saves (ids like org/name, free-only on or off)", async () => {
+    const { createServer } = await import("node:http");
+    const mock = createServer((req, res) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ data: [{ id: "deepseek-ai/deepseek-v4.1-flash" }, { id: "meta/llama-3.3-70b:free" }, { id: "zeta/model" }] })); });
+    await new Promise((r) => mock.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${mock.address().port}/v1`;
+    const post = (path, b) => fetch(`${app.base}${path}`, { method: "POST", headers: { "x-narrowbit-token": app.token, "content-type": "application/json" }, body: JSON.stringify(b) }).then((r) => r.json());
+    await post("/api/endpoint", { provider: "custom", baseUrl: base });
+    const pg = await openPage(app.url);
+    try {
+      await pg.until(() => pg.$("providerSel").options.length >= 15, "the provider list");
+      const sel = pg.$("providerSel");
+      sel.value = "custom";
+      sel.dispatchEvent(new pg.w.Event("change"));
+      const s1 = await pg.until(() => pg.w.document.querySelector("#slot-explore")?.tagName === "SELECT" && pg.w.document.querySelector("#slot-explore"), "the dropdown for the custom provider");
+      s1.value = "deepseek-ai/deepseek-v4.1-flash";
+      s1.dispatchEvent(new pg.w.Event("change"));
+      // The drawer re-renders after the save: a new element, which must still show the choice.
+      const s2 = await pg.until(() => { const e = pg.w.document.querySelector("#slot-explore"); return e && e !== s1 && e; }, "the drawer to re-render after saving");
+      assert.equal(s2.value, "deepseek-ai/deepseek-v4.1-flash", "the saved model is shown selected");
+      const st = await fetch(`${app.base}/api/state`, { headers: { "x-narrowbit-token": app.token } }).then((r) => r.json());
+      assert.equal(st.providers.custom.tiers.explore, "deepseek-ai/deepseek-v4.1-flash", "and the server has it");
+      assert.deepEqual(Object.values(st.providers.custom.tiers), Array(3).fill("deepseek-ai/deepseek-v4.1-flash"), "unset slots follow the first choice instead of staying blank");
+      await new Promise((r) => setTimeout(r, 300));
+    } finally { pg.close(); mock.close(); }
+  });
+
   test("every project lists the built-in skills, without a delete button; user skills get one", async () => {
     const rows = () => [...page.w.document.querySelectorAll("#skillsList .skill-row")];
     await page.until(() => rows().length >= 6, "built-in skills");
