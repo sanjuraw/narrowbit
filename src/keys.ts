@@ -30,6 +30,10 @@ export function keySource(provider: string, env?: string): "env" | "file" | null
 
 export function setKey(provider: string, key: string | null): void {
   const keys = load();
+  // A key is one short token; a pasted paragraph (or anything with spaces/non-ASCII) is a paste mistake
+  // that would otherwise fail later with an opaque header error.
+  if (key && (/\s/.test(key.trim()) || /[^\x21-\x7e]/.test(key.trim()) || key.trim().length > 500))
+    throw new Error("That doesn't look like an API key (it has spaces or is far too long). Paste only the key itself.");
   if (key) keys[provider] = key.trim();
   else delete keys[provider];
   mkdirSync(join(homedir(), ".narrowbit"), { recursive: true, mode: 0o700 });
