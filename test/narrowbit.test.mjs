@@ -1060,3 +1060,58 @@ describe("isolated runs (throwaway git worktree)", () => {
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 });
+
+const { findSkills, parseGithubUrl, parseSkillFile } = await dist("skillimport.js");
+
+describe("importing skills from GitHub", () => {
+  let srv, base;
+  const files = {
+    "/repos/o/r/contents/": [{ name: "README.md", type: "file", path: "README.md" }, { name: "skills", type: "dir", path: "skills" }],
+    "/repos/o/r/contents/skills": [{ name: "deploy", type: "dir", path: "skills/deploy" }, { name: "review", type: "dir", path: "skills/review" }],
+    "/repos/o/r/contents/skills/deploy": [{ name: "SKILL.md", type: "file", path: "skills/deploy/SKILL.md" }],
+    "/repos/o/r/contents/skills/review": [{ name: "SKILL.md", type: "file", path: "skills/review/SKILL.md" }],
+    "/repos/o/r/contents/README.md": null,
+  };
+  const raws = {
+    "/o/r/HEAD/skills/deploy/SKILL.md": '---\nname: deploy-checklist\ndescription: "Before you ship"\n---\n\nRun the tests, then tag.\n',
+    "/o/r/HEAD/skills/review/SKILL.md": "Review the diff carefully.\n",
+    "/o/r/main/notes/one.md": "---\nname: One\n---\nDo one thing.\n",
+  };
+  before(async () => {
+    srv = createHttp((req, res) => {
+      const path = new URL(req.url, "http://x").pathname.replace(/\/$/, "") || "/";
+      const api = Object.keys(files).find((k) => k.replace(/\/$/, "") === path.replace(/^\/api/, ""));
+      if (path.startsWith("/api/") && api && files[api]) { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify(files[api])); }
+      if (path.startsWith("/raw/") && raws[path.slice(4)]) { res.writeHead(200); return res.end(raws[path.slice(4)]); }
+      res.writeHead(404); res.end("no");
+    });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    base = `http://127.0.0.1:${srv.address().port}`;
+    process.env.NARROWBIT_GITHUB_API = base + "/api";
+    process.env.NARROWBIT_GITHUB_RAW = base + "/raw";
+  });
+  after(() => { srv.close(); delete process.env.NARROWBIT_GITHUB_API; delete process.env.NARROWBIT_GITHUB_RAW; });
+
+  test("understands blob, tree, raw and bare-repo links; refuses other hosts", () => {
+    assert.deepEqual(parseGithubUrl("https://github.com/o/r/blob/main/skills/x/SKILL.md"), { owner: "o", repo: "r", ref: "main", path: "skills/x/SKILL.md" });
+    assert.deepEqual(parseGithubUrl("https://github.com/o/r/tree/dev/skills"), { owner: "o", repo: "r", ref: "dev", path: "skills" });
+    assert.deepEqual(parseGithubUrl("https://raw.githubusercontent.com/o/r/main/a.md"), { owner: "o", repo: "r", ref: "main", path: "a.md" });
+    assert.deepEqual(parseGithubUrl("https://github.com/o/r.git"), { owner: "o", repo: "r", ref: null, path: "" });
+    assert.throws(() => parseGithubUrl("https://evil.example.com/o/r"), /Only github.com/);
+  });
+
+  test("a repository is searched for SKILL.md files one level down; frontmatter names and descriptions are kept", async () => {
+    const found = await findSkills("https://github.com/o/r");
+    assert.deepEqual(found.map((c) => c.name).sort(), ["Deploy checklist", "Review"]);
+    const d = found.find((c) => c.name === "Deploy checklist");
+    assert.equal(d.description, "Before you ship");
+    assert.match(d.body, /Run the tests, then tag/);
+  });
+
+  test("a single file link works, and an empty result is a clear error", async () => {
+    const one = await findSkills("https://github.com/o/r/blob/main/notes/one.md");
+    assert.equal(one[0].name, "One");
+    assert.equal(parseSkillFile("", "x.md"), null);
+    await assert.rejects(() => findSkills("https://github.com/o/r/blob/main/missing.md"), /answered 404/);
+  });
+});

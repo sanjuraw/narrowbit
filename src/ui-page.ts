@@ -470,6 +470,11 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   <div class="modal">
     <h1>New skill</h1>
     <p class="muted" style="margin:0">A reusable set of instructions you can apply to any task, without retyping it.</p>
+    <div class="skill-form" style="margin-bottom:6px">
+      <div style="display:flex;gap:6px"><input type="text" id="skillUrl" placeholder="Or import from GitHub: a link to a SKILL.md, a folder or a repo"><button id="findSkill">Find</button></div>
+      <select id="skillPick" class="hidden" aria-label="Skills found"></select>
+      <div class="note hidden" id="skillImportNote"></div>
+    </div>
     <div class="skill-form">
       <input type="text" id="skillName" placeholder="Name (e.g. Bug Fix)">
       <input type="text" id="skillDesc" placeholder="Description (optional)">
@@ -677,12 +682,39 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   }
   function openSkillModal() {
     if (!S || !S.root) return;
-    $("skillName").value = ""; $("skillDesc").value = ""; $("skillBody").value = "";
-    show($("skillErr"), false);
+    $("skillName").value = ""; $("skillDesc").value = ""; $("skillBody").value = ""; $("skillUrl").value = "";
+    show($("skillErr"), false); show($("skillImportNote"), false); show($("skillPick"), false);
     show($("skillOverlay"), true);
     $("skillName").focus();
   }
   $("addSkillBtn").onclick = openSkillModal;
+  var found = [];
+  function fillFromFound(i) { var c = found[i]; if (!c) return; $("skillName").value = c.name; $("skillDesc").value = c.description || ""; $("skillBody").value = c.body; }
+  $("findSkill").onclick = function () {
+    var note = $("skillImportNote"), pick = $("skillPick");
+    if (!$("skillUrl").value.trim()) { $("skillUrl").focus(); return; }
+    note.textContent = "Looking…"; show(note, true); note.style.color = "var(--muted)";
+    api("/api/skills/find", { url: $("skillUrl").value.trim() }).then(function (r) {
+      found = r.skills; clear(pick);
+      found.forEach(function (c, i) { pick.appendChild(el("option", { value: String(i), text: c.name + "  —  " + c.path })); });
+      show(pick, found.length > 1); fillFromFound(0);
+      note.textContent = "Found " + found.length + ". These are someone else's instructions and will be given to the agent — read them below before you save.";
+    }).catch(function (e) { note.textContent = e.message; note.style.color = "var(--bad)"; });
+  };
+  $("skillPick").onchange = function () { fillFromFound(Number($("skillPick").value)); };
+  // "Save as skill" on a finished chat: prefill the form with the request and the steps that worked, to edit.
+  function skillFromChat() {
+    if (!view) return;
+    var first = (view.asks && view.asks[0]) || $("title").textContent || "";
+    var steps = (view.did || []).slice(0, 14);
+    var body = first.trim() + "\n\n" + (steps.length ? "An approach that worked last time (adapt it; skip steps that don't apply):\n" + steps.map(function (x) { return "- " + x; }).join("\n") + "\n" : "");
+    openSkillModal();
+    $("skillName").value = first.split("\n")[0].slice(0, 40).trim();
+    $("skillDesc").value = "Saved from a chat";
+    $("skillBody").value = body.trim();
+    show($("skillImportNote"), false); show($("skillPick"), false); $("skillUrl").value = "";
+    $("skillBody").focus();
+  }
   $("closeSkill").onclick = function () { show($("skillOverlay"), false); };
   $("saveSkill").onclick = function () {
     var name = $("skillName").value.trim(), desc = $("skillDesc").value.trim(), bodyText = $("skillBody").value.trim();
@@ -1107,6 +1139,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   var ICON = {
     copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>',
     again: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>',
+    skill: '<svg viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></svg>',
     fork: '<svg viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 7v10M6 12c0-3 3-3 6-3h4"/></svg>'
   };
   function iconBtn(icon, title, fn) {
@@ -1278,6 +1311,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     }
     if (e.type === "decision" && e.actor === "user") {
       var text = m.goal || m.followUp || "";
+      (view.asks = view.asks || []).push(text);
       if (m.goal) $("title").textContent = m.goal;
       show($("welcome"), false);
       view.acts = { read: 0, search: 0, edit: {}, run: 0, verify: 0, memory: 0 }; view.segTokens = 0; view.segCost = 0; view.segSteps = 0; view.segStart = new Date(e.at).getTime();
@@ -1289,6 +1323,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (e.type === "tool_call") {
       view.segSteps++;
       countAction(m);
+      (view.did = view.did || []).push(m.action === "read" ? "read " + (m.path || "") : m.action === "edit" ? "edited " + (m.path || "") : m.action === "run" ? "ran: " + (m.command || "") : m.action === "verify" ? "ran verify" : m.action + (m.query ? ' "' + m.query + '"' : m.pattern ? ' "' + m.pattern + '"' : ""));
       if (m.note) add(el("div", { cls: "narr" }, rich(m.note)));
       view.step = stepBlock(m);
       add(view.step.box);
@@ -1334,7 +1369,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (e.type === "decision" && e.actor === "model" && e.summary.indexOf("done: ") === 0) {
       if (m.note) add(el("div", { cls: "narr" }, rich(m.note)));
       var answer = e.summary.slice(6), ansCopy = iconBtn("copy", "Copy", function () { copyText(answer, ansCopy); });
-      add(el("div", { cls: "final-wrap" }, el("div", { cls: "final" }, rich(answer)), el("div", { cls: "msg-actions" }, ansCopy)));
+      var saveSk = iconBtn("skill", "Save this as a skill", skillFromChat);
+      add(el("div", { cls: "final-wrap" }, el("div", { cls: "final" }, rich(answer)), el("div", { cls: "msg-actions" }, ansCopy, saveSk)));
       return;
     }
     if (e.type === "blocker" && e.actor === "model") { add(el("div", { cls: "final", style: "color:var(--warn)" }, rich("Blocked: " + e.summary))); return; }

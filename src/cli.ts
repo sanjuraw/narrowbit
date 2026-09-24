@@ -9,6 +9,7 @@ import { evalHistory } from "./eval.js";
 import { train } from "./train.js";
 import { changedSince, gitState } from "./git.js";
 import { applyIsolated, discardIsolated, readIsolated } from "./isolate.js";
+import { findSkills } from "./skillimport.js";
 import { fold, readEvents } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { serveMcp } from "./mcp.js";
@@ -903,6 +904,26 @@ export async function main(argv: string[]): Promise<number> {
         } catch (e: any) {
           process.stderr.write(`narrowbit: ${e.message}\n`);
           return 2;
+        }
+      }
+      if (sub === "import") {
+        const url = pos[1];
+        if (!url) { process.stderr.write("usage: narrowbit skills import <github link to a SKILL.md, a folder or a repo> [--yes]\n"); return 2; }
+        try {
+          const found = await findSkills(url);
+          for (const c of found) {
+            out(`\n=== ${c.name}${c.description ? ` — ${c.description}` : ""}   (${c.path})\n${c.body.slice(0, 1500)}${c.body.length > 1500 ? "\n…" : ""}`);
+          }
+          if (!args.flags.yes) {
+            out(`\nThese are someone else's instructions and will be given to the agent. Read them above, then re-run with --yes to add ${found.length === 1 ? "it" : `all ${found.length}`}.`);
+            return 0;
+          }
+          for (const c of found) saveSkill(p, c.name, c.description, c.body);
+          out(`added ${found.length} skill${found.length === 1 ? "" : "s"}`);
+          return 0;
+        } catch (e: any) {
+          process.stderr.write(`narrowbit: ${e.message}\n`);
+          return 1;
         }
       }
       if (sub === "rename") {

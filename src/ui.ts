@@ -7,6 +7,7 @@ import { ensureDirs, loadConfig, paths, saveConfig, type AgentConfig, type Paths
 import { getConnector, listConnectors, publicConnector, removeConnector, saveConnector } from "./connectors.js";
 import { completeSignIn, signOut, startSignIn } from "./oauth.js";
 import { applyIsolated, discardIsolated, readIsolated } from "./isolate.js";
+import { findSkills } from "./skillimport.js";
 import { fold, readEvents, type Event } from "./events.js";
 import { changedSince, githubIdentity, gitState, pushBranch, remoteInfo } from "./git.js";
 import { listConnectorTools } from "./mcpClient.js";
@@ -619,6 +620,14 @@ export function startUi(opts: UiOptions) {
           const e = openMemory(paths(root)).setStatus(String(body.id ?? ""), "resolved");
           if (!e) return json(res, 404, { error: "no such note (or it's read-only)" });
           return json(res, 200, state());
+        }
+        case "/api/skills/find": {
+          // Download and parse only; nothing is saved until the user has read it and presses Save.
+          try {
+            return json(res, 200, { skills: await findSkills(String(body.url ?? "")) });
+          } catch (e: any) {
+            return json(res, 400, { error: e.message });
+          }
         }
         case "/api/skills/delete": {
           if (!root) return json(res, 400, { error: "no repository open" });

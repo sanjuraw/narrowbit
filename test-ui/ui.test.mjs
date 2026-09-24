@@ -336,6 +336,27 @@ describe("app page with a folder open", () => {
     assert.ok(!st.history.some((h) => h.id === "rt-scratch-test"), "deleted");
   });
 
+  test("'Save as skill' on a finished chat opens the skill form prefilled with the request and the steps that worked", async () => {
+    const sess = await page.until(() => [...page.w.document.querySelectorAll("#sessions .sess")].find((x) => /what is in a\.txt/.test(x.textContent)), "the finished session");
+    sess.click();
+    const btn = await page.until(() => page.w.document.querySelector('.final-wrap [title="Save this as a skill"]'), "the save-as-skill button");
+    btn.click();
+    assert.ok(page.visible(page.$("skillOverlay")), "the skill form opened");
+    assert.match(page.$("skillName").value, /what is in a\.txt/);
+    assert.match(page.$("skillBody").value, /read a\.txt/, "the steps that worked are listed for editing");
+    page.$("closeSkill").click();
+  });
+
+  test("the skill form can import from a GitHub link (and says to read the instructions first)", async () => {
+    page.$("addSkillBtn").click();
+    assert.ok(page.$("skillUrl") && page.$("findSkill"), "import field present");
+    page.$("skillUrl").value = "https://example.com/not-github";
+    page.$("findSkill").click();
+    const note = await page.until(() => /Only github\.com/.test(page.$("skillImportNote").textContent) && page.$("skillImportNote"), "a clear refusal for other hosts");
+    assert.ok(note);
+    page.$("closeSkill").click();
+  });
+
   test("every project lists the built-in skills, without a delete button; user skills get one", async () => {
     const rows = () => [...page.w.document.querySelectorAll("#skillsList .skill-row")];
     await page.until(() => rows().length >= 6, "built-in skills");
