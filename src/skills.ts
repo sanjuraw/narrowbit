@@ -22,7 +22,7 @@ export interface Skill {
 
 /** The checks worth doing before anything ships, as one skill every project gets. `narrowbit audit` is
  * the deterministic floor (no model); this asks the agent for the judgement-based rest. */
-export const BUILTIN_SKILLS: Skill[] = [
+const SECURITY_SKILLS: Skill[] = [
   {
     name: "Security review",
     description: "Check this project for leaked secrets, unsafe data handling, missing access checks and production gaps",
@@ -40,6 +40,10 @@ export const BUILTIN_SKILLS: Skill[] = [
 Finish with a report: each numbered check as passed, failed or not applicable; for each failure the file and line, how an attacker would exploit it, and the fix (applied or proposed). Do not call something safe that you did not read. If this project handles real money or sensitive data at scale, say plainly that this review does not replace a human security review.`,
   },
 ];
+
+import { BUILTIN_SKILLS as GENERAL_SKILLS } from "./builtin-skills.js";
+
+export const BUILTIN_SKILLS: Skill[] = [...GENERAL_SKILLS, ...SECURITY_SKILLS];
 
 export function slugify(name: string): string {
   const s = name
@@ -92,7 +96,8 @@ function listUserSkills(p: Paths): Skill[] {
 }
 
 export function getSkill(p: Paths, name: string): Skill | null {
-  return listSkills(p).find((s) => s.name === name || s.file === `${slugify(name)}.md`) ?? null;
+  const all = listSkills(p);
+  return all.find((s) => s.name === name || s.file === `${slugify(name)}.md`) ?? all.find((s) => s.name.toLowerCase() === name.trim().toLowerCase()) ?? null;
 }
 
 /** Creates or overwrites a skill by name (case-sensitive match on the existing name, if any). */

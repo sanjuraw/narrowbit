@@ -363,30 +363,39 @@ describe("skills (reusable task templates)", () => {
   });
 
   test("save, list, get, rename and remove round-trip through Markdown files on disk", () => {
-    assert.deepEqual(listSkills(p).map((s) => s.name), ["Security review"], "every project starts with the built-in security skill");
-    saveSkill(p, "Bug Fix", "Standard bugfix workflow", "1. Reproduce with a failing test.\n2. Fix the implementation, not the test.\n3. Verify.");
-    saveSkill(p, "Refactor", "", "Extract, rename, verify — one step at a time.");
-    assert.deepEqual(listSkills(p).map((s) => s.name), ["Bug Fix", "Refactor", "Security review"]);
+    const mine = () => listSkills(p).filter((s) => !s.builtin).map((s) => s.name);
+    assert.deepEqual(mine(), []);
+    saveSkill(p, "Release notes", "How we write release notes", "1. Group by user impact.\n2. Link the PRs.\n3. Proofread.");
+    saveSkill(p, "Deploy steps", "", "Tag, build, publish — one step at a time.");
+    assert.deepEqual(mine(), ["Deploy steps", "Release notes"]);
 
-    const bugFix = getSkill(p, "Bug Fix");
-    assert.equal(bugFix.description, "Standard bugfix workflow");
-    assert.match(bugFix.body, /Reproduce with a failing test/);
-    assert.equal(bugFix.file, "bug-fix.md");
+    const rn = getSkill(p, "Release notes");
+    assert.equal(rn.description, "How we write release notes");
+    assert.match(rn.body, /Group by user impact/);
+    assert.equal(rn.file, "release-notes.md");
+    assert.equal(getSkill(p, "release NOTES").name, "Release notes", "lookup ignores case");
 
     // Saving again by the same name overwrites the same file rather than creating a second one.
-    saveSkill(p, "Bug Fix", "Updated", "New body.");
-    assert.equal(listSkills(p).length, 3);
-    assert.equal(getSkill(p, "Bug Fix").body, "New body.");
+    saveSkill(p, "Release notes", "Updated", "New body.");
+    assert.equal(mine().length, 2);
+    assert.equal(getSkill(p, "Release notes").body, "New body.");
 
-    renameSkill(p, "Bug Fix", "Bugfix Workflow");
-    assert.equal(getSkill(p, "Bug Fix"), null);
-    assert.equal(getSkill(p, "Bugfix Workflow").body, "New body.");
-    assert.equal(getSkill(p, "Bugfix Workflow").file, "bugfix-workflow.md");
-    assert.ok(!existsSync(join(p.skills, "bug-fix.md")));
+    renameSkill(p, "Release notes", "Release process");
+    assert.equal(getSkill(p, "Release notes"), null);
+    assert.equal(getSkill(p, "Release process").body, "New body.");
+    assert.equal(getSkill(p, "Release process").file, "release-process.md");
+    assert.ok(!existsSync(join(p.skills, "release-notes.md")));
 
-    assert.equal(removeSkill(p, "Refactor"), true);
-    assert.equal(removeSkill(p, "Refactor"), false);
-    assert.deepEqual(listSkills(p).map((s) => s.name), ["Bugfix Workflow", "Security review"]);
+    assert.equal(removeSkill(p, "Deploy steps"), true);
+    assert.equal(removeSkill(p, "Deploy steps"), false);
+    assert.deepEqual(mine(), ["Release process"]);
+  });
+
+  test("every project starts with the built-in skills, each with real instructions", () => {
+    const names = listSkills(p).filter((s) => s.builtin).map((s) => s.name);
+    for (const n of ["Bug fix", "Code review", "Write tests", "Refactor", "Explain this code", "Security review"]) assert.ok(names.includes(n), `missing ${n}: ${names.join()}`);
+    for (const s of listSkills(p).filter((x) => x.builtin)) assert.ok(s.body.length > 300 && s.description, `${s.name} looks empty`);
+    assert.match(getSkill(p, "Bug fix").body, /never in the tests/);
   });
 
   test("the built-in security skill can't be removed or renamed, but saving one with the same name overrides it", () => {

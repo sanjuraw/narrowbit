@@ -29,6 +29,8 @@ Then in any project folder: `narrowbit init`, and either `narrowbit ui` (browser
 
 ## Using it
 
+**Built-in skills** (in every project's Skills list; click one to drop it into the message box, or `narrowbit agent --skill "bug fix" "<what's wrong>"`): *Bug fix* (root cause, reproduce, smallest fix, verify), *Code review* (correctness, security, tests; changes nothing), *Write tests*, *Refactor* (pin behaviour first, small verified steps), *Explain this code* (read-only walkthrough) and *Security review*. Save a skill with the same name to override one; add your own with the **+** next to Skills.
+
 ```bash
 narrowbit agent "<task>" [--provider claude|codex|openrouter|...] [--skill "<name>"] [--no-boss] [--max-steps N]
 narrowbit models choose                # pick provider + the three model slots (saved per repo)
@@ -52,7 +54,7 @@ Run the numbers yourself: see "Benchmarking" below. Full history, including the 
 
 ## Security
 
-- **Every project gets a checkpoint.** `narrowbit audit` (no model, nothing leaves your machine) finds committed secrets, `.env` files git would commit, and secrets given browser-exposed prefixes; it also runs gitleaks over history if installed. The app runs the same scan when you click **Commit** and pauses if it finds credentials. The built-in **Security review** skill (in every project's Skills list) asks the agent for the judgement-based checks: access control, data handling, input handling, production hygiene.
+- **Every project gets a checkpoint.** `narrowbit audit` (no model, nothing leaves your machine) finds committed secrets, `.env` files git would commit, and secrets given browser-exposed prefixes; it also runs gitleaks over history if installed. The app runs the same scan when you click **Commit** and pauses if it finds credentials. The built-in **Security review** skill asks the agent for the judgement-based checks: access control, data handling, input handling, production hygiene.
 - **The agent asks before running commands** (in the app and in the terminal; `--allow-commands` opts out), and its file access is confined to the project folder, symlinks included.
 - **Connectors** run commands you configure, like any MCP client; their environment variables (often tokens) are stored in `~/.narrowbit/connectors.json` (mode 0600) and never sent to the app page. Only add servers you trust.
 - **Updates trust the repository:** the update button runs `npm install` and a build on whatever is on GitHub `main`. Keep the repo's owners on two-factor authentication.
