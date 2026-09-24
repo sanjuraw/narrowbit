@@ -6,7 +6,7 @@ import { basename, join, resolve } from "node:path";
 import { ensureDirs, loadConfig, paths, saveConfig, type AgentConfig, type Paths } from "./config.js";
 import { getConnector, listConnectors, publicConnector, removeConnector, saveConnector } from "./connectors.js";
 import { fold, readEvents, type Event } from "./events.js";
-import { changedSince, gitState, pushBranch, remoteInfo } from "./git.js";
+import { changedSince, githubIdentity, gitState, pushBranch, remoteInfo } from "./git.js";
 import { listConnectorTools } from "./mcpClient.js";
 import { initProject } from "./project.js";
 import { keySource, setKey } from "./keys.js";
@@ -446,6 +446,10 @@ export function startUi(opts: UiOptions) {
 
       if (route === "GET /api/update") return json(res, 200, await checkUpdate(url.searchParams.has("refresh")));
 
+      if (route === "GET /api/github") {
+        if (!root) return json(res, 400, { error: "no repository open" });
+        return json(res, 200, githubIdentity(root));
+      }
       if (route === "GET /api/diagnostics") return json(res, 200, { text: await diagnostics() });
 
       if (route === "GET /api/readiness") return json(res, 200, await checkReadiness(url.searchParams.has("refresh")));

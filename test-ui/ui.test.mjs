@@ -479,6 +479,13 @@ describe("pushing commits to the remote (a local bare repo stands in for GitHub)
     assert.equal(git(remote, "log", "--format=%s", "-1").trim(), "second");
   });
 
+  test("the GitHub section says which repo it pushes to and who commits are by", async () => {
+    const g = await (await api("/api/github")).json();
+    assert.equal(g.remoteUrl, remote);
+    assert.equal(g.author.email, "t@t.t");
+    assert.ok("ghInstalled" in g && "ghAccount" in g);
+  });
+
   test("a remote that has moved on refuses the push with a plain explanation (no force)", async () => {
     const other = fresh("other");
     try {

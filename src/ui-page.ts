@@ -419,6 +419,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <div class="note hidden" id="providerNote"></div>
     <div class="saved" id="savedMsg"></div>
 
+    <h3>GitHub<small>Where "Push" sends your commits, and who it counts as</small></h3>
+    <div id="githubBox" class="muted" style="font-size:12.5px;padding:4px 0 14px"></div>
     <h3>Connectors<small>MCP servers the agent can call out to — GitHub, Slack, anything with an MCP server</small></h3>
     <div id="connectorsList"></div>
     <div class="connector-form">
@@ -578,7 +580,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (!S || !S.root || !r || !r.hasRemote || !r.ahead) { show(b, false); return; }
     var where = r.upstream || "origin";
     b.textContent = pushArm ? "Click again to push to " + where : "↑ " + r.ahead + " to push";
-    b.title = "Push " + r.ahead + " commit" + (r.ahead === 1 ? "" : "s") + " to " + where;
+    b.title = "Push " + r.ahead + " commit" + (r.ahead === 1 ? "" : "s") + " to " + where + " — Models & settings shows which GitHub account and repo";
     show(b, true);
   }
   $("pushPill").onclick = function () {
@@ -764,6 +766,17 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   }
 
   // ---------- connectors (MCP servers the agent can call out to) ----------
+  function loadGithub() {
+    var box = $("githubBox"); if (!box) return;
+    if (!S || !S.root || !S.git || !S.git.isRepo) { box.textContent = "Open a git repository to see this."; return; }
+    api("/api/github").then(function (g) {
+      clear(box);
+      var line = function (k, v) { box.appendChild(el("div", null, el("strong", { text: k + ": " }), v)); };
+      line("Remote", g.remoteUrl ? (g.repo ? g.repo + "  (" + g.remoteUrl + ")" : g.remoteUrl) : "none — Push is unavailable until you add one (git remote add origin <url>)");
+      line("Signed in as", g.ghAccount ? "@" + g.ghAccount + " (GitHub CLI) — pushes use this Mac's saved credentials for it" : g.ghInstalled ? "not signed in to the GitHub CLI — pushes use whatever git has saved; sign in with: gh auth login" : "GitHub CLI not installed — pushes use whatever git has saved (keychain, SSH key or token)");
+      line("Commits are authored by", (g.author.name || "(no name set)") + " <" + (g.author.email || "no email set") + ">");
+    }).catch(function (e) { box.textContent = e.message; });
+  }
   function renderConnectors() {
     var box = clear($("connectorsList"));
     var list = (S && S.connectors) || [];
@@ -802,7 +815,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   };
   function openDrawer() { show($("drawer"), true); show($("scrim"), true); }
   function closeDrawer() { show($("drawer"), false); show($("scrim"), false); }
-  $("settingsBtn").onclick = openDrawer; $("modelChip").onclick = openDrawer;
+  $("settingsBtn").onclick = function () { openDrawer(); loadGithub(); }; $("modelChip").onclick = function () { openDrawer(); loadGithub(); };
   $("closeDrawer").onclick = closeDrawer; $("scrim").onclick = function () { closeDrawer(); closeSide(); };
 
   function renderSettings() {

@@ -139,3 +139,26 @@ export function pushBranch(root: string): { ok: boolean; message: string } {
   if (r.error && (r.error as any).code === "ETIMEDOUT") return { ok: false, message: "The push timed out (no answer from the remote in 90 seconds)." };
   return { ok: false, message: out.split("\n").slice(-4).join("\n") || "The push failed." };
 }
+
+export interface GithubIdentity {
+  remoteUrl: string | null;
+  /** owner/name when the remote is a GitHub URL. */
+  repo: string | null;
+  author: { name: string; email: string };
+  /** The account the GitHub CLI is signed in as, if it is installed and signed in. */
+  ghAccount: string | null;
+  ghInstalled: boolean;
+  helper: string;
+}
+
+/** Who pushes from here will be: commits carry the git author; the push itself uses whatever credentials git finds. */
+export function githubIdentity(root: string): GithubIdentity {
+  const cfg = (k: string) => sh("git", ["config", k], root).stdout.trim();
+  const url = sh("git", ["remote", "get-url", "origin"], root);
+  const remoteUrl = url.code === 0 ? url.stdout.trim().replace(/\/\/[^@/]+@/, "//") : null; // never show a token embedded in a URL
+  const m = remoteUrl ? /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(remoteUrl) : null;
+  const gh = spawnSync("gh", ["auth", "status", "--hostname", "github.com"], { cwd: root, encoding: "utf8", timeout: 6000 });
+  const ghInstalled = !(gh.error && (gh.error as any).code === "ENOENT");
+  const acct = /Logged in to github\.com (?:account|as) (\S+)/.exec(`${gh.stdout ?? ""}${gh.stderr ?? ""}`);
+  return { remoteUrl, repo: m ? m[1] : null, author: { name: cfg("user.name"), email: cfg("user.email") }, ghAccount: acct ? acct[1] : null, ghInstalled, helper: cfg("credential.helper") };
+}
