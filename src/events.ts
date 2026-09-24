@@ -1,3 +1,4 @@
+import { redact } from "./redact.js";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Paths } from "./config.js";
@@ -58,7 +59,9 @@ export function ensureTaskDir(p: Paths, taskId: string): string {
 
 export function appendEvent(p: Paths, taskId: string, e: Omit<Event, "id" | "taskId" | "at"> & Partial<Pick<Event, "id" | "at">>): Event {
   ensureTaskDir(p, taskId);
-  const full: Event = { actor: e.actor, type: e.type, summary: e.summary, evidenceRef: e.evidenceRef, tokens: e.tokens, meta: e.meta, id: e.id ?? shortId(), taskId, at: e.at ?? now() };
+  // Summaries carry model text and shell commands, either of which can contain a secret.
+  const meta = e.meta && typeof e.meta.command === "string" ? { ...e.meta, command: redact(e.meta.command) } : e.meta;
+  const full: Event = { actor: e.actor, type: e.type, summary: redact(e.summary), evidenceRef: e.evidenceRef, tokens: e.tokens, meta, id: e.id ?? shortId(), taskId, at: e.at ?? now() };
   appendFileSync(eventsFile(p, taskId), JSON.stringify(full) + "\n", { mode: 0o600 });
   for (const fn of listeners.get(taskId) ?? []) fn(full);
   return full;

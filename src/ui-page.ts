@@ -566,7 +566,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     list.forEach(function (sk) {
       box.appendChild(el("div", { cls: "skill-row" },
         el("button", { cls: "skill", title: sk.description || sk.name, onclick: function () { useSkill(sk); } }, sk.name),
-        el("button", { cls: "skill-del", title: "Remove skill", onclick: function (e) { e.stopPropagation(); deleteSkill(sk.name); } }, "×")));
+        sk.builtin ? el("span") : el("button", { cls: "skill-del", title: "Remove skill", onclick: function (e) { e.stopPropagation(); deleteSkill(sk.name); } }, "×")));
     });
   }
   function useSkill(sk) {
@@ -1213,7 +1213,20 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       } });
       var commit = el("button", { cls: "primary", text: "Commit", onclick: function () {
         if (!msg.value.trim()) { msg.focus(); return; }
-        api("/api/commit", { message: msg.value.trim(), task: id }).then(function (r) { banner("", null); finishCard(card, "Committed " + r.head + " — " + msg.value.trim()); load(); }).catch(function (e) { banner("bad", e.message); });
+        var doCommit = function (force) {
+          api("/api/commit", { message: msg.value.trim(), task: id, force: force }).then(function (r) { banner("", null); finishCard(card, "Committed " + r.head + " — " + msg.value.trim()); load(); }).catch(function (e) {
+            if (e.status === 409 && e.data && e.data.error === "secrets") {
+              var box = el("div");
+              box.appendChild(el("strong", { text: "Possible secrets in this change — commit paused." }));
+              box.appendChild(el("div", { text: "Once pushed, a leaked key can't be taken back; remove it (or add the file to .gitignore) and rotate it if it was real:" }));
+              var ul = el("ul"); e.data.findings.forEach(function (f) { ul.appendChild(el("li", { text: f.check + (f.file ? " — " + f.file : "") })); });
+              box.appendChild(ul);
+              box.appendChild(el("button", { text: "Commit anyway (I've checked)", onclick: function () { doCommit(true); } }));
+              banner("warn", box);
+            } else banner("bad", e.message);
+          });
+        };
+        doCommit(false);
       } });
       msg.addEventListener("keydown", function (e) { if (e.key === "Enter") commit.click(); });
       card.appendChild(el("div", { cls: "commit" }, msg, commit, discard));

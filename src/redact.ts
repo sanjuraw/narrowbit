@@ -7,6 +7,8 @@ const PATTERNS: [RegExp, string][] = [
   [/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED AWS KEY]"],
   [/\bsk-(?:ant-|proj-|live_|test_)?[A-Za-z0-9_-]{20,}\b/g, "[REDACTED KEY]"],
   [/\b(?:rzp_(?:live|test)_)[A-Za-z0-9]{10,}\b/g, "[REDACTED KEY]"],
+  [/\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/g, "[REDACTED STRIPE KEY]"],
+  [/\bwhsec_[A-Za-z0-9]{16,}\b/g, "[REDACTED STRIPE WEBHOOK SECRET]"],
   [/\bgh[pousr]_[A-Za-z0-9]{30,}\b/g, "[REDACTED GITHUB TOKEN]"],
   [/\bxox[abposr]-[A-Za-z0-9-]{10,}\b/g, "[REDACTED SLACK TOKEN]"],
   [/\bAIza[0-9A-Za-z_-]{35}\b/g, "[REDACTED GOOGLE KEY]"],
@@ -20,4 +22,24 @@ export function redact(text: string): string {
   let out = text;
   for (const [re, rep] of PATTERNS) out = out.replace(re, rep);
   return out;
+}
+
+/**
+ * Same patterns as redact(), but reporting what matched instead of hiding it — used by `narrowbit audit`
+ * and the commit check. `certain` marks formats that are unmistakably a credential (a GitHub token,
+ * an AWS key); the generic `apiKey = "..."` rule is only a hint, since test fixtures and placeholders
+ * look the same.
+ */
+export function findSecrets(text: string): { label: string; certain: boolean; line: number }[] {
+  const found: { label: string; certain: boolean; line: number }[] = [];
+  for (const [re, rep] of PATTERNS) {
+    const label = rep.startsWith("[REDACTED ") ? rep.slice(1, -1).toLowerCase().replace("redacted ", "") : "hardcoded secret-looking value";
+    const certain = rep.startsWith("[REDACTED ");
+    for (const m of text.matchAll(new RegExp(re.source, re.flags))) {
+      const line = text.slice(0, m.index ?? 0).split("\n").length;
+      if (text.split("\n")[line - 1]?.includes("narrowbit-audit-ignore")) continue;
+      found.push({ label, certain, line });
+    }
+  }
+  return found;
 }

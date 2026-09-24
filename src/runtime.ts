@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { loadConfig, type Paths } from "./config.js";
 import { runCommand } from "./compress.js";
 import { getConnector, listConnectors } from "./connectors.js";
@@ -209,7 +209,29 @@ export function capSummary(text: string, capTokens = 800): string {
 export function safeAbsPath(p: Paths, path: string): string | null {
   const abs = resolve(p.root, path);
   const rel = relative(p.root, abs);
-  return rel.startsWith("..") || resolve(p.root) === abs ? null : abs;
+  if (rel.startsWith("..") || resolve(p.root) === abs) return null;
+  // Judge by where the path really lands, not how it is spelled: a symlink inside the repo can point
+  // anywhere, and read/edit follow it. Check the deepest part that already exists (an edit may create
+  // a new file); a dangling symlink is refused outright, since writing through it creates its target.
+  let probe = abs;
+  for (;;) {
+    let lexists = true;
+    try {
+      lstatSync(probe);
+    } catch {
+      lexists = false;
+    }
+    if (lexists) break;
+    const parent = dirname(probe);
+    if (parent === probe) return null;
+    probe = parent;
+  }
+  try {
+    const back = relative(realpathSync(p.root), realpathSync(probe));
+    return back.startsWith("..") || isAbsolute(back) ? null : abs;
+  } catch {
+    return null;
+  }
 }
 
 export interface RuntimeOptions {

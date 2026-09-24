@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { ensureDirs, loadConfig, paths, saveConfig, type AgentConfig, type Paths } from "./config.js";
-import { getConnector, listConnectors, removeConnector, saveConnector } from "./connectors.js";
+import { getConnector, listConnectors, publicConnector, removeConnector, saveConnector } from "./connectors.js";
 import { fold, readEvents, type Event } from "./events.js";
 import { changedSince, gitState } from "./git.js";
 import { listConnectorTools } from "./mcpClient.js";
@@ -12,6 +12,7 @@ import { initProject } from "./project.js";
 import { keySource, setKey } from "./keys.js";
 import { readLimits, refreshClaude, refreshCodex } from "./limits.js";
 import { checkReadiness, formatReadiness } from "./readiness.js";
+import { auditRepo } from "./audit.js";
 import { redact } from "./redact.js";
 import {
   availableModels,
@@ -108,8 +109,11 @@ function readBody(req: IncomingMessage): Promise<any> {
   });
 }
 
+/** Defence in depth for a page that only ever runs on loopback: no sniffing, no framing, no referrer. */
+const SEC_HEADERS = { "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "no-referrer" };
+
 function json(res: ServerResponse, status: number, body: unknown) {
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...SEC_HEADERS });
   res.end(JSON.stringify(body));
 }
 
@@ -279,7 +283,7 @@ export function startUi(opts: UiOptions) {
       // No repository yet: settings are per-repo so nothing can be saved, but the provider/model
       // lists must still render or the picker looks empty on a fresh profile.
       const selection = resolveSelection(undefined);
-      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(undefined), phases: PHASES, efforts: EFFORT_LEVELS, lead: true, connectors: listConnectors(), skills: [], history: [] };
+      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(undefined), phases: PHASES, efforts: EFFORT_LEVELS, lead: true, connectors: listConnectors().map(publicConnector), skills: [], history: [] };
     }
     const p = paths(root);
     const initialized = existsSync(p.db);
@@ -312,7 +316,7 @@ export function startUi(opts: UiOptions) {
       lead: cfg.agent?.boss ?? true,
       history: initialized ? taskHistory(p) : [],
       skills: listSkills(p),
-      connectors: listConnectors(),
+      connectors: listConnectors().map(publicConnector),
     };
   };
 
@@ -402,7 +406,7 @@ export function startUi(opts: UiOptions) {
       const port = (server.address() as { port: number }).port;
       if (req.headers.host !== `127.0.0.1:${port}` && req.headers.host !== `localhost:${port}`) return json(res, 403, { error: "bad host" });
       if (req.method === "GET" && url.pathname === "/") {
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" });
+        res.writeHead(200, { ...SEC_HEADERS, "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" });
         return res.end(uiPage());
       }
       if (!url.pathname.startsWith("/api/")) return json(res, 404, { error: "not found" });
@@ -413,7 +417,7 @@ export function startUi(opts: UiOptions) {
       if (route === "GET /api/state") return json(res, 200, state());
 
       if (route === "GET /api/stream") {
-        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
+        res.writeHead(200, { ...SEC_HEADERS, "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
         // Replay the current run so a reloaded window catches up, including open approvals.
         if (run && run.root === root) for (const e of run.events) res.write(`data: ${JSON.stringify(e)}\n\n`);
         clients.add(res);
@@ -624,6 +628,12 @@ export function startUi(opts: UiOptions) {
           if (!message) return json(res, 400, { error: "write a commit message" });
           const { files } = workingDiff(root, preexisting(typeof body.task === "string" ? body.task : null));
           if (!files.length) return json(res, 400, { error: "nothing to commit" });
+          // Checkpoint: nothing leaves this machine by commit, but a pushed secret cannot be un-pushed,
+          // so stop here if the change adds credentials, unless the user says to go ahead.
+          if (body.force !== true) {
+            const risky = auditRepo(root, { files }).filter((f) => f.severity === "high");
+            if (risky.length) return json(res, 409, { error: "secrets", findings: risky.slice(0, 8) });
+          }
           const add = sh("git", ["add", "-A", "--", ...files], root);
           if (add.code !== 0) return json(res, 500, { error: add.stderr.trim() || "git add failed" });
           const c = sh("git", ["commit", "-m", message], root);

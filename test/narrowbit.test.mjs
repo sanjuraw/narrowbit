@@ -1,7 +1,8 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeFixture } from "./fixture.mjs";
@@ -30,6 +31,8 @@ const { parseDecision, parseDecisions, capSummary, safeAbsPath } = await dist("r
 const { parseCodexStream } = await dist("providers/codex-cli.js");
 const { parseClaudeAuth } = await dist("readiness.js");
 const { classifyModelError, isPermanentModelError } = await dist("errors.js");
+const { publicConnector } = await dist("connectors.js");
+const { auditRepo } = await dist("audit.js");
 const { listSkills, getSkill, saveSkill, removeSkill, renameSkill, slugify } = await dist("skills.js");
 const { resolveSelection, DEFAULT_TIERS } = await dist("providers/models.js");
 
@@ -90,11 +93,11 @@ describe("ignore + redaction", () => {
   });
 
   test("redacts common secrets", () => {
-    const s = redact(`const apiKey = "abcd1234efgh5678";\nAKIAABCDEFGHIJKLMNOP\npostgres://user:hunter22@db/x\nconst k = "sk-ant-abcdefghijklmnopqrstuvwxyz0123";\nconst label = "not a secret";`);
+    const s = redact(`const apiKey = "abcd1234efgh5678";\nAKIAABCDEFGHIJKLMNOP\npostgres://user:hunter22@db/x\nconst k = "sk-ant-abcdefghijklmnopqrstuvwxyz0123";\nconst label = "not a secret";`); // narrowbit-audit-ignore: deliberately fake fixtures
     assert.ok(!s.includes("abcd1234efgh5678"));
-    assert.ok(!s.includes("AKIAABCDEFGHIJKLMNOP"));
+    assert.ok(!s.includes("AKIAABCDEFGHIJKLMNOP")); // narrowbit-audit-ignore: fake fixture
     assert.ok(!s.includes("hunter22"));
-    assert.ok(!s.includes("sk-ant-abcdefghijklmnopqrstuvwxyz0123"));
+    assert.ok(!s.includes("sk-ant-abcdefghijklmnopqrstuvwxyz0123")); // narrowbit-audit-ignore: fake fixture
     assert.ok(s.includes("not a secret"));
   });
 });
@@ -360,10 +363,10 @@ describe("skills (reusable task templates)", () => {
   });
 
   test("save, list, get, rename and remove round-trip through Markdown files on disk", () => {
-    assert.deepEqual(listSkills(p), []);
+    assert.deepEqual(listSkills(p).map((s) => s.name), ["Security review"], "every project starts with the built-in security skill");
     saveSkill(p, "Bug Fix", "Standard bugfix workflow", "1. Reproduce with a failing test.\n2. Fix the implementation, not the test.\n3. Verify.");
     saveSkill(p, "Refactor", "", "Extract, rename, verify — one step at a time.");
-    assert.deepEqual(listSkills(p).map((s) => s.name), ["Bug Fix", "Refactor"]);
+    assert.deepEqual(listSkills(p).map((s) => s.name), ["Bug Fix", "Refactor", "Security review"]);
 
     const bugFix = getSkill(p, "Bug Fix");
     assert.equal(bugFix.description, "Standard bugfix workflow");
@@ -372,7 +375,7 @@ describe("skills (reusable task templates)", () => {
 
     // Saving again by the same name overwrites the same file rather than creating a second one.
     saveSkill(p, "Bug Fix", "Updated", "New body.");
-    assert.equal(listSkills(p).length, 2);
+    assert.equal(listSkills(p).length, 3);
     assert.equal(getSkill(p, "Bug Fix").body, "New body.");
 
     renameSkill(p, "Bug Fix", "Bugfix Workflow");
@@ -383,7 +386,20 @@ describe("skills (reusable task templates)", () => {
 
     assert.equal(removeSkill(p, "Refactor"), true);
     assert.equal(removeSkill(p, "Refactor"), false);
-    assert.deepEqual(listSkills(p).map((s) => s.name), ["Bugfix Workflow"]);
+    assert.deepEqual(listSkills(p).map((s) => s.name), ["Bugfix Workflow", "Security review"]);
+  });
+
+  test("the built-in security skill can't be removed or renamed, but saving one with the same name overrides it", () => {
+    const b = getSkill(p, "Security review");
+    assert.equal(b.builtin, true);
+    assert.match(b.body, /narrowbit audit/);
+    assert.equal(removeSkill(p, "Security review"), false);
+    assert.throws(() => renameSkill(p, "Security review", "Mine"), /built in/);
+    saveSkill(p, "Security review", "custom", "Only check for secrets.");
+    assert.equal(getSkill(p, "Security review").builtin, undefined);
+    assert.equal(getSkill(p, "Security review").body, "Only check for secrets.");
+    assert.equal(removeSkill(p, "Security review"), true, "removing the override restores the built-in");
+    assert.equal(getSkill(p, "Security review").builtin, true);
   });
 
   test("saveSkill rejects an empty name or empty body", () => {
@@ -443,6 +459,14 @@ describe("owned-runtime ledger (events, evidence, context projection)", () => {
     assert.ok(Math.abs(state1.ledgerByRole.retrieval.costUsd - 0.01) < 1e-9);
   });
 
+  test("secrets in event summaries and command text are redacted before they are written", () => {
+    const secret = "ghp_" + "A".repeat(36);
+    appendEvent(p, "rt-redact-test", { actor: "model", type: "tool_call", summary: `run curl -H "Authorization: Bearer ${secret}" x`, meta: { command: `curl -H "Authorization: ${secret}" x` } });
+    const raw = readFileSync(join(p.runtime, "rt-redact-test", "events.jsonl"), "utf8");
+    assert.ok(!raw.includes(secret));
+    assert.match(raw, /REDACTED/);
+  });
+
   test("projection is bounded and never drops goal/plan/blocker/last-verify", () => {
     const state = fold(taskId, readEvents(p, taskId));
     const full = project(state, { budget: 10_000 });
@@ -458,14 +482,14 @@ describe("owned-runtime ledger (events, evidence, context projection)", () => {
   });
 
   test("evidence is redacted, handle-addressed, and never re-enters context directly", () => {
-    const secretish = "token = ghp_abcdefghijklmnopqrstuvwxyz012345\nsome file content here";
+    const secretish = "token = ghp_abcdefghijklmnopqrstuvwxyz012345\nsome file content here"; // narrowbit-audit-ignore: fake fixture
     const handle = writeEvidence(p, taskId, "file", secretish, "src/config.ts, 2 lines", "src/config.ts");
     assert.ok(handle.id);
     assert.equal(handle.kind, "file");
     assert.equal(handle.path, "src/config.ts");
     assert.ok(handle.tokens > 0);
     const back = readEvidence(p, taskId, handle.id);
-    assert.doesNotMatch(back, /ghp_abcdefghijklmnopqrstuvwxyz012345/, "evidence on disk is redacted like every other emitted text");
+    assert.doesNotMatch(back, /ghp_abcdefghijklmnopqrstuvwxyz012345/, "evidence on disk is redacted like every other emitted text"); // narrowbit-audit-ignore: fake fixture
     assert.throws(() => readEvidence(p, taskId, "does-not-exist"));
   });
 });
@@ -502,8 +526,34 @@ describe("runtime loop helpers (no model calls — keeps npm test free of Claude
     assert.match(capped, /truncated/);
   });
 
+  test("safeAbsPath refuses symlinks that lead outside the repo, even dangling ones, but allows links that stay inside", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "nb-sl-")));
+    const repo = join(base, "repo");
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(base, "outside.txt"), "secret");
+    writeFileSync(join(repo, "src", "a.ts"), "x");
+    symlinkSync(join(base, "outside.txt"), join(repo, "leak.txt"));
+    symlinkSync(join(base, "nowhere.txt"), join(repo, "dangling.txt"));
+    symlinkSync(join(base, "outdir"), join(repo, "outdir-link"));
+    symlinkSync(join(repo, "src", "a.ts"), join(repo, "inside-link.ts"));
+    const p = { root: repo };
+    assert.equal(safeAbsPath(p, "leak.txt"), null);
+    assert.equal(safeAbsPath(p, "dangling.txt"), null);
+    assert.equal(safeAbsPath(p, "outdir-link/new.ts"), null);
+    assert.equal(safeAbsPath(p, "inside-link.ts"), join(repo, "inside-link.ts"));
+    assert.equal(safeAbsPath(p, "src/a.ts"), join(repo, "src", "a.ts"));
+    assert.equal(safeAbsPath(p, "src/brand-new-file.ts"), join(repo, "src", "brand-new-file.ts"));
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  test("publicConnector never exposes environment values (they are often tokens)", () => {
+    const pc = publicConnector({ name: "gh", command: "npx", args: ["-y", "srv"], env: { GITHUB_TOKEN: "ghp_secretvalue", OTHER: "x" } }); // narrowbit-audit-ignore: fake fixture
+    assert.deepEqual(pc.envKeys, ["GITHUB_TOKEN", "OTHER"]);
+    assert.ok(!JSON.stringify(pc).includes("ghp_secretvalue"));
+  });
+
   test("safeAbsPath refuses paths that escape the repo root", () => {
-    const root = "/tmp/nb-safepath-test";
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "nb-safepath-")));
     const p = { root };
     assert.equal(safeAbsPath(p, "src/x.ts"), resolve(root, "src/x.ts"));
     assert.equal(safeAbsPath(p, "../../etc/passwd"), null);
@@ -581,6 +631,57 @@ describe("model error classification (errors.ts)", () => {
     assert.equal(isPermanentModelError("not logged in"), true);
     assert.equal(isPermanentModelError("model call timed out"), false);
     assert.equal(isPermanentModelError(""), false);
+  });
+});
+
+describe("security audit (audit.ts — model-free checkpoint)", () => {
+  const sh = (cwd, ...a) => execFileSync("git", a, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const repoWith = (files, ignore = "node_modules\n") => {
+    const dir = mkdtempSync(join(tmpdir(), "nb-audit-"));
+    sh(dir, "init", "-q");
+    sh(dir, "config", "user.email", "a@b.c");
+    sh(dir, "config", "user.name", "t");
+    writeFileSync(join(dir, ".gitignore"), ignore);
+    for (const [name, body] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, name)), { recursive: true });
+      writeFileSync(join(dir, name), body);
+    }
+    sh(dir, "add", "-A");
+    sh(dir, "commit", "-qm", "init");
+    return dir;
+  };
+
+  test("flags committed secret files, token-shaped strings (incl. Stripe) and browser-exposed secrets", () => {
+    const dir = repoWith({
+      ".env": "X=1\n",
+      "src/a.ts": 'const t = "ghp_' + "a".repeat(36) + '";\nconst s = "sk_live_' + "b".repeat(24) + '";\nconst u = process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY;\n', // narrowbit-audit-ignore: fake
+    });
+    const checks = auditRepo(dir, { history: false }).map((f) => `${f.severity}:${f.check}`);
+    assert.ok(checks.includes("high:secret file"), checks.join());
+    assert.ok(checks.filter((c) => c === "high:hardcoded secret").length >= 2, "github token and stripe key: " + checks.join());
+    assert.ok(checks.includes("high:secret exposed to the browser"), checks.join());
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a clean project passes, .env.example is fine, an unignored .env is flagged, an ignored one is not", () => {
+    const clean = repoWith({ ".env.example": "API_KEY=\n", "src/a.ts": "export const a = 1;\n" }, ".env\nnode_modules\n");
+    assert.deepEqual(auditRepo(clean, { history: false }), []);
+    writeFileSync(join(clean, ".env"), "SECRET=1\n");
+    assert.deepEqual(auditRepo(clean, { history: false }), [], "ignored .env is fine");
+    const risky = repoWith({ "src/a.ts": "x" });
+    writeFileSync(join(risky, ".env.production"), "SECRET=1\n");
+    assert.ok(auditRepo(risky, { history: false }).some((f) => f.check === "secret file not ignored"));
+    rmSync(clean, { recursive: true, force: true });
+    rmSync(risky, { recursive: true, force: true });
+  });
+
+  test("the audit-ignore marker silences a deliberate fixture, and a file list limits the scan", () => {
+    const dir = repoWith({ "t.js": 'const k = "ghp_' + "c".repeat(36) + '"; // narrowbit-audit-ignore\n', "u.js": 'const k = "ghp_' + "d".repeat(36) + '";\n' }); // narrowbit-audit-ignore: fake
+    const all = auditRepo(dir, { history: false });
+    assert.equal(all.filter((f) => f.file === "t.js").length, 0);
+    assert.equal(all.filter((f) => f.file === "u.js").length, 1);
+    assert.equal(auditRepo(dir, { files: ["t.js"] }).length, 0);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 

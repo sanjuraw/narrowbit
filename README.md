@@ -50,11 +50,14 @@ Measured on `honojs/hono`: 40 tasks mined from real commits (start at the parent
 
 Run the numbers yourself: see "Benchmarking" below. Full history, including the approaches that did *not* work, is in `CLAUDE.md`.
 
-## Security notes
+## Security
 
-- `connectors` run commands you configure (like any MCP client). Only add servers you trust; their environment variables (often tokens) are stored in `~/.narrowbit/connectors.json` with mode 0600.
+- **Every project gets a checkpoint.** `narrowbit audit` (no model, nothing leaves your machine) finds committed secrets, `.env` files git would commit, and secrets given browser-exposed prefixes; it also runs gitleaks over history if installed. The app runs the same scan when you click **Commit** and pauses if it finds credentials. The built-in **Security review** skill (in every project's Skills list) asks the agent for the judgement-based checks: access control, data handling, input handling, production hygiene.
+- **The agent asks before running commands** (in the app and in the terminal; `--allow-commands` opts out), and its file access is confined to the project folder, symlinks included.
+- **Connectors** run commands you configure, like any MCP client; their environment variables (often tokens) are stored in `~/.narrowbit/connectors.json` (mode 0600) and never sent to the app page. Only add servers you trust.
+- **Updates trust the repository:** the update button runs `npm install` and a build on whatever is on GitHub `main`. Keep the repo's owners on two-factor authentication.
 - Codex's `exec` has no switch to disable its own tools, so the adapter runs it read-only sandboxed; Claude runs fully tool-free.
-- Report vulnerabilities privately via GitHub security advisories rather than public issues.
+- Report vulnerabilities privately (see `SECURITY.md`).
 
 ## Contributing
 

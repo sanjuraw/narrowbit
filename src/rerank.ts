@@ -169,7 +169,7 @@ export async function rerank(
     throw new Error(
       cfg.provider === "local"
         ? `no local decider: set NARROWBIT_LOCAL_DECIDER (e.g. http://127.0.0.1:8721) and run scripts/laya_server.py`
-        : `no API key: set ${cfg.provider === "openrouter" ? "OPENROUTER_API_KEY" : "TYPESAFE_API_KEY"}`,
+        : `no API key: set ${cfg.provider === "openrouter" ? "OPENROUTER_API_KEY" : "TYPESAFE_API_KEY"}`, // narrowbit-audit-ignore: fake fixture
     );
   const t0 = Date.now();
   const head = files.slice(0, Math.min(cfg.topN, 255));

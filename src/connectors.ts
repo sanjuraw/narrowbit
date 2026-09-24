@@ -36,6 +36,11 @@ function save(all: Record<string, Connector>): void {
   writeFileSync(FILE, JSON.stringify(all, null, 2) + "\n", { mode: 0o600 });
 }
 
+/** What the app page may see: names only, never the environment values (they are often tokens). */
+export function publicConnector(c: Connector): { name: string; command: string; args: string[]; envKeys: string[] } {
+  return { name: c.name, command: c.command, args: c.args, envKeys: Object.keys(c.env ?? {}) };
+}
+
 export function listConnectors(): Connector[] {
   return Object.values(load()).sort((a, b) => a.name.localeCompare(b.name));
 }

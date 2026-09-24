@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline/promises";
 import { join, relative, resolve } from "node:path";
 import { benchmarkReport, benchmarkTemplate, runBenchmark } from "./bench.js";
 import { hookPrompt, installClaude, launchClaude } from "./claude.js";
@@ -18,6 +19,7 @@ import { availableModels, DEFAULT_TIERS, EFFORT_LEVELS, isProvider, PHASES, PROV
 import { keySource, setKey } from "./keys.js";
 import { fmtLimits, readLimits, refreshClaude, refreshCodex } from "./limits.js";
 import { checkReadiness, formatReadiness } from "./readiness.js";
+import { auditRepo, formatFindings } from "./audit.js";
 import { runTask } from "./runtime.js";
 import { getConnector, listConnectors, removeConnector, saveConnector } from "./connectors.js";
 import { listConnectorTools } from "./mcpClient.js";
@@ -79,10 +81,11 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit agent "<task>"            Narrowbit's own agent loop: reads, edits, runs commands,
       [--provider <name>] [--model X | --explore X --execute X --escalate X]
       [--effort low|medium|high|xhigh|max] [--max-steps N] [--force] [--dry-run]
+      [--allow-commands]   run shell commands without asking (default: ask before each one)
       [--no-boss] [--continue <task-id>]   lead mode (default): model 3 plans first and reviews the
       diff before "done"; --continue sends a follow-up to an earlier task
       verifies and remembers, driving the task end to end in THIS working tree (not a worktree —
-      edits are real). Refuses to run on a dirty git tree unless --force.
+      edits are real). Asks before each shell command, and refuses a dirty git tree unless --force.
   narrowbit ui [--port 4747] [--no-open]   the app: run tasks, approve each command, review the diff,
       commit or discard, pick models — in a local window (127.0.0.1 only). The macOS app wraps this.
   narrowbit models                    providers, numbered available models, and this repo's selection
@@ -91,6 +94,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit models set provider <claude|codex>     narrowbit models set effort <level>
   narrowbit models reset [--provider <name>]   back to the built-in defaults
   narrowbit models endpoint <provider> <base-url|default> [--key-env NAME]   point an API/local provider elsewhere
+  narrowbit audit [--changed]         security checkpoint (no model): committed secrets, unignored .env, browser-exposed secrets
   narrowbit doctor                    what can run right now: Claude/Codex login, local servers, API keys
   narrowbit limits [--refresh]        Claude and Codex subscription usage: 5-hour and weekly windows
   narrowbit keys [list]               which API keys are set    narrowbit keys set|remove <provider>
@@ -193,6 +197,9 @@ export async function main(argv: string[]): Promise<number> {
       const v = Object.entries(cfg.verify);
       out(v.length ? `verify commands: ${v.map(([k, c]) => `${k}=\`${c}\``).join(", ")}` : "verify commands: none detected (edit .narrowbit/config.json)");
       if (stats) printIndexStats(stats);
+      // The checkpoint every project gets on day one: cheap, offline, and it runs before anything is pushed.
+      const found = auditRepo(root, { history: false }).filter((f) => f.severity === "high");
+      out(found.length ? `security: ${found.length} high-severity issue(s) already in this project — run \`narrowbit audit\`` : "security: no committed secrets found. Before you share or ship, run `narrowbit audit` and the built-in \"Security review\" skill.");
       return 0;
     }
     case "index": {
@@ -459,7 +466,23 @@ export async function main(argv: string[]): Promise<number> {
       }
       out(`narrowbit agent: ${text}`);
       out(`${modelsLine}\n`);
+      // The agent runs shell commands, and it reads files that can contain instructions aimed at it, so
+      // like the app the terminal asks first. --allow-commands opts out (scripts, or a repo you trust).
+      let allowAll = !!args.flags["allow-commands"];
+      const approve = async (command: string): Promise<boolean> => {
+        if (allowAll) return true;
+        if (!process.stdin.isTTY) {
+          process.stderr.write(`      ! not run (no terminal to ask): ${command}   — pass --allow-commands to let the agent run commands unattended\n`);
+          return false;
+        }
+        const rl = createInterface({ input: process.stdin, output: process.stderr });
+        const a = (await rl.question(`      run \`${command}\`? [y]es / [n]o / [a]lways for this task: `)).trim().toLowerCase();
+        rl.close();
+        if (a === "a") allowAll = true;
+        return a === "y" || a === "a";
+      };
       const result = await runTask(p, text, {
+        approve,
         maxSteps,
         boss: args.flags["no-boss"] ? false : (cfg.agent?.boss ?? true),
         continueTask: strFlag(args, "continue"),
@@ -772,6 +795,15 @@ export async function main(argv: string[]): Promise<number> {
       out(list.length ? list.map(renderMemory).join("\n") : "no memory entries");
       return 0;
     }
+    case "audit": {
+      // Deterministic, model-free, sends nothing anywhere. --changed limits it to uncommitted files.
+      const g = gitState(root);
+      const files = args.flags.changed ? [...new Set([...g.dirty, ...g.staged, ...g.untracked])] : undefined;
+      const findings = auditRepo(root, { files });
+      out(formatFindings(findings));
+      if (!files && sh("gitleaks", ["version"], root).code !== 0) out("\n(Install gitleaks for a full git-history scan: brew install gitleaks)");
+      return findings.some((f) => f.severity === "high") ? 1 : 0;
+    }
     case "doctor": {
       out(formatReadiness(await checkReadiness(true)));
       return 0;
@@ -863,6 +895,10 @@ export async function main(argv: string[]): Promise<number> {
       }
       if (sub === "remove" || sub === "rm") {
         const name = pos[1];
+        if (name && getSkill(p, name)?.builtin) {
+          out(`"${name}" is built in. To change it, save your own skill with the same name.`);
+          return 1;
+        }
         const ok = name ? removeSkill(p, name) : false;
         out(ok ? `removed "${name}"` : `no skill named "${name}"`);
         return ok ? 0 : 1;
@@ -877,7 +913,7 @@ export async function main(argv: string[]): Promise<number> {
         return 0;
       }
       const list = listSkills(p);
-      out(list.length ? list.map((s) => `${s.name}${s.description ? " — " + s.description : ""}`).join("\n") : "no skills yet — narrowbit skills add \"<name>\" \"<instructions>\"");
+      out(list.length ? list.map((s) => `${s.name}${s.builtin ? " (built in)" : ""}${s.description ? " — " + s.description : ""}`).join("\n") : "no skills yet — narrowbit skills add \"<name>\" \"<instructions>\"");
       return 0;
     }
     case "claude": {
