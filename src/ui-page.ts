@@ -143,7 +143,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .examples button { border-radius: 99px; font-size: 13px; color: var(--muted); }
 .setup { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin: 20px 0; box-shadow: var(--shadow); }
 
-.msg-user { display: flex; justify-content: flex-end; margin: 22px 0 14px; }
+.msg-user { display: flex; flex-direction: column; align-items: flex-end; margin: 22px 0 14px; }
+.msg-actions { display: flex; align-items: center; gap: 2px; margin: 4px 2px 0; color: var(--faint); font-size: 12px; opacity: 0; transition: opacity .12s; }
+.msg-user:hover .msg-actions, .msg-actions:focus-within, .final-wrap:hover .msg-actions { opacity: 1; }
+.msg-actions .when { margin-right: 6px; }
+.msg-actions button { border: 0; background: transparent; color: var(--faint); padding: 5px 6px; border-radius: 7px; display: inline-grid; place-items: center; }
+.msg-actions button:hover { background: var(--panel-2); color: var(--text); }
+.msg-actions svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .msg-user .bubble { background: var(--panel-2); border-radius: 14px; padding: 10px 14px; max-width: 85%; white-space: pre-wrap; word-break: break-word; }
 .narr { margin: 12px 0 4px; font-family: var(--serif); font-size: 15.5px; line-height: 1.55; }
 .final { margin: 16px 0 6px; font-family: var(--serif); font-size: 15.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
@@ -996,6 +1002,29 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     }).catch(function (e) { banner("bad", e.message); });
   }
 
+  var ICON = {
+    copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>',
+    again: '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>',
+    fork: '<svg viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 7v10M6 12c0-3 3-3 6-3h4"/></svg>'
+  };
+  function iconBtn(icon, title, fn) {
+    var b = el("button", { title: title, "aria-label": title, onclick: fn });
+    b.innerHTML = ICON[icon];
+    return b;
+  }
+  function copyText(text, btn) {
+    function done() { var t = btn.title; btn.title = "Copied"; setTimeout(function () { btn.title = t; }, 1200); }
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done).catch(function () {});
+    else { var ta = el("textarea", { style: "position:fixed;opacity:0" }); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); done(); } catch (e) {} ta.remove(); }
+  }
+  function userActions(text, at) {
+    var copyBtn = iconBtn("copy", "Copy", function () { copyText(text, copyBtn); });
+    return el("div", { cls: "msg-actions" },
+      el("span", { cls: "when", text: at ? ago(at) : "" }),
+      copyBtn,
+      iconBtn("again", "Edit and send again", function () { input.value = text; autosize(); input.focus(); input.setSelectionRange(text.length, text.length); }),
+      iconBtn("fork", "Start a new task from this", function () { newTask(); input.value = text; autosize(); input.focus(); }));
+  }
   function add(node, force) { follow(function () { $("items").appendChild(node); }, force); placeWorking(); return node; }
   function setWorking(text) { if (!view) return; view.working = text; placeWorking(); }
   function placeWorking() {
@@ -1081,7 +1110,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (m.goal) $("title").textContent = m.goal;
       show($("welcome"), false);
       view.segTokens = 0; view.segCost = 0; view.segSteps = 0; view.segStart = new Date(e.at).getTime();
-      add(el("div", { cls: "msg-user" }, el("div", { cls: "bubble" }, rich(text))), true);
+      add(el("div", { cls: "msg-user" }, el("div", { cls: "bubble" }, rich(text)), userActions(text, e.at)), true);
       if (!replay) setWorking(S && S.lead && m.goal ? "Lead is planning…" : "Thinking…");
       return;
     }
@@ -1131,7 +1160,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     }
     if (e.type === "decision" && e.actor === "model" && e.summary.indexOf("done: ") === 0) {
       if (m.note) add(el("div", { cls: "narr" }, rich(m.note)));
-      add(el("div", { cls: "final" }, rich(e.summary.slice(6))));
+      var answer = e.summary.slice(6), ansCopy = iconBtn("copy", "Copy", function () { copyText(answer, ansCopy); });
+      add(el("div", { cls: "final-wrap" }, el("div", { cls: "final" }, rich(answer)), el("div", { cls: "msg-actions" }, ansCopy)));
       return;
     }
     if (e.type === "blocker" && e.actor === "model") { add(el("div", { cls: "final", style: "color:var(--warn)" }, rich("Blocked: " + e.summary))); return; }

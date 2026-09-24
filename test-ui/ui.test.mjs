@@ -273,6 +273,17 @@ describe("app page with a folder open", () => {
     assert.deepEqual(st.memory, [], "and the server no longer lists it");
   });
 
+  test("under each message: when it was sent, Copy, edit-and-send-again, and start a new task from it", async () => {
+    const sess = await page.until(() => [...page.w.document.querySelectorAll("#sessions .sess")].find((x) => /say hi/.test(x.textContent)), "a session");
+    sess.click();
+    const bar = await page.until(() => page.w.document.querySelector(".msg-user .msg-actions"), "the message actions");
+    const titles = [...bar.querySelectorAll("button")].map((b) => b.title);
+    assert.deepEqual(titles, ["Copy", "Edit and send again", "Start a new task from this"]);
+    assert.ok(bar.querySelector(".when").textContent.length > 0, "shows when it was sent");
+    bar.querySelector('[title="Edit and send again"]').click();
+    assert.equal(page.$("input").value, "say hi", "the message returns to the composer to edit");
+  });
+
   test("every project lists the built-in skills, without a delete button; user skills get one", async () => {
     const rows = () => [...page.w.document.querySelectorAll("#skillsList .skill-row")];
     await page.until(() => rows().length >= 6, "built-in skills");
