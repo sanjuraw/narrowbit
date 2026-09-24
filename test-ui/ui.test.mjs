@@ -204,6 +204,15 @@ describe("app page with a folder open", () => {
     assert.ok(!page.visible(page.$("repoOverlay")));
   });
 
+  test("Cloudflare asks for the account id itself, not a URL template to edit", async () => {
+    const sel = page.$("providerSel");
+    sel.value = "cloudflare";
+    sel.dispatchEvent(new page.w.Event("change"));
+    const box = await page.until(() => page.w.document.querySelector('#urlRow input[aria-label="Cloudflare account id"]'), "the account id field");
+    assert.ok(box, "account id input shown");
+    assert.ok(![...page.w.document.querySelectorAll("#urlRow input")].some((i) => /\{CLOUDFLARE/.test(i.value)), "no raw URL template");
+  });
+
   test("every project lists the built-in skills, without a delete button; user skills get one", async () => {
     const rows = () => [...page.w.document.querySelectorAll("#skillsList .skill-row")];
     await page.until(() => rows().length >= 6, "built-in skills");

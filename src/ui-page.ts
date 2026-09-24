@@ -759,7 +759,17 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var urlRow = clear($("urlRow"));
     var hasUrl = P.kind === "local" || draft.provider === "custom" || draft.provider === "cloudflare";
     show(urlRow, hasUrl);
-    if (hasUrl) {
+    if (hasUrl && draft.provider === "cloudflare") {
+      // The URL embeds the account id; ask for just the id so nobody edits a URL template by hand.
+      var idm = /\/accounts\/([0-9a-f]{32})\//.exec(P.baseUrl || "");
+      var a = el("input", { type: "text", cls: "mono", value: idm ? idm[1] : "", placeholder: "Account id (32 characters, from dash.cloudflare.com → Workers AI)", "aria-label": "Cloudflare account id", autocomplete: "off", spellcheck: "false" });
+      urlRow.appendChild(a);
+      urlRow.appendChild(el("button", { text: "Save id", onclick: function () {
+        var id = a.value.trim();
+        if (!/^[0-9a-f]{32}$/i.test(id)) { flash($("savedMsg"), "That doesn't look like an account id (32 letters/digits)"); return; }
+        api("/api/endpoint", { provider: "cloudflare", baseUrl: "https://api.cloudflare.com/client/v4/accounts/" + id + "/ai/v1" }).then(function (st) { delete modelLists.cloudflare; apply(st); flash($("savedMsg"), "Account id saved"); }).catch(function (e) { flash($("savedMsg"), e.message); });
+      } }));
+    } else if (hasUrl) {
       var u = el("input", { type: "text", cls: "mono", value: P.baseUrl || "", placeholder: "http://127.0.0.1:8080/v1", "aria-label": "Base URL" });
       urlRow.appendChild(u);
       urlRow.appendChild(el("button", { text: "Set URL", onclick: function () {

@@ -72,7 +72,7 @@ export const PROVIDER_INFO: Record<ProviderName, ProviderInfo> = {
     baseUrl: "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1",
     keyEnv: "CLOUDFLARE_API_TOKEN",
     keyUrl: "https://dash.cloudflare.com/profile/api-tokens",
-    hint: "Needs your account id: set CLOUDFLARE_ACCOUNT_ID, or put it in the base URL. Model ids look like @cf/meta/llama-3.3-70b-instruct-fp8-fast.",
+    hint: "Needs your account id (dash.cloudflare.com → Workers AI): enter it below, or set CLOUDFLARE_ACCOUNT_ID. Model ids look like @cf/meta/llama-3.3-70b-instruct-fp8-fast.",
   },
   cerebras: { label: "Cerebras", kind: "api", pricing: "free tier", free: true, baseUrl: "https://api.cerebras.ai/v1", keyEnv: "CEREBRAS_API_KEY", keyUrl: "https://cloud.cerebras.ai" },
   mistral: { label: "Mistral", kind: "api", pricing: "free tier", free: true, baseUrl: "https://api.mistral.ai/v1", keyEnv: "MISTRAL_API_KEY", keyUrl: "https://console.mistral.ai/api-keys" },
