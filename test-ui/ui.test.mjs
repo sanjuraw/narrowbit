@@ -135,6 +135,16 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.deepEqual(models, ["haiku", "sonnet", "opus"]);
   });
 
+  test("the Cloudflare account id saves with no folder open, and shows up in the endpoint", async () => {
+    const id = "0123456789abcdef0123456789abcdef";
+    const post = (b) => fetch(`${app.base}/api/account-id`, { method: "POST", headers: { "x-narrowbit-token": app.token, "content-type": "application/json" }, body: JSON.stringify(b) });
+    assert.equal((await post({ id: "nope" })).status, 400, "rejects a malformed id");
+    const res = await post({ id });
+    assert.equal(res.status, 200);
+    const st = await res.json();
+    assert.ok(st.providers.cloudflare.baseUrl.includes(id), "endpoint uses the saved id");
+  });
+
   test("the version is visible in the sidebar and in About", () => {
     assert.match(page.$("verLine").textContent, /^Narrowbit v\d+\.\d+\.\d+/);
     assert.match(page.$("aboutInfo").textContent, /Narrowbit v\d+\.\d+\.\d+/);

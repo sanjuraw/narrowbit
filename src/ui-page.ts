@@ -767,7 +767,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       urlRow.appendChild(el("button", { text: "Save id", onclick: function () {
         var id = a.value.trim();
         if (!/^[0-9a-f]{32}$/i.test(id)) { flash($("savedMsg"), "That doesn't look like an account id (32 letters/digits)"); return; }
-        api("/api/endpoint", { provider: "cloudflare", baseUrl: "https://api.cloudflare.com/client/v4/accounts/" + id + "/ai/v1" }).then(function (st) { delete modelLists.cloudflare; apply(st); flash($("savedMsg"), "Account id saved"); }).catch(function (e) { flash($("savedMsg"), e.message); });
+        api("/api/account-id", { id: id }).then(function (st) { delete modelLists.cloudflare; apply(st); flash($("savedMsg"), "Account id saved"); }).catch(function (e) { flash($("savedMsg"), e.message); });
       } }));
     } else if (hasUrl) {
       var u = el("input", { type: "text", cls: "mono", value: P.baseUrl || "", placeholder: "http://127.0.0.1:8080/v1", "aria-label": "Base URL" });

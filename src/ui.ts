@@ -581,6 +581,13 @@ export function startUi(opts: UiOptions) {
           setKey(prov, key || null);
           return json(res, 200, state());
         }
+        case "/api/account-id": {
+          // Global (like keys), so it works before any folder is open and in every repo.
+          const id = String(body.id ?? "").trim();
+          if (!/^[0-9a-f]{32}$/i.test(id)) return json(res, 400, { error: "That doesn't look like an account id (32 letters/digits)" });
+          setKey("CLOUDFLARE_ACCOUNT_ID", id);
+          return json(res, 200, state());
+        }
         case "/api/endpoint": {
           if (!root) return json(res, 400, { error: "no repository open" });
           const prov = String(body.provider ?? "");

@@ -171,7 +171,7 @@ export function resolveEndpoint(provider: ProviderName, agent?: AgentConfig): En
   const info = PROVIDER_INFO[provider];
   if (info.kind === "subscription") return null;
   const override = agent?.endpoints?.[provider] ?? {};
-  const baseUrl = (override.baseUrl ?? info.baseUrl ?? "").replace(/\/+$/, "").replace(/\{(\w+)\}/g, (m, v) => process.env[v]?.trim() || m);
+  const baseUrl = (override.baseUrl ?? info.baseUrl ?? "").replace(/\/+$/, "").replace(/\{(\w+)\}/g, (m, v) => process.env[v]?.trim() || getKey(v) || m);
   // Local servers take no key; a custom endpoint may or may not, so a key is used if one is set.
   const needsKey = info.kind === "api" && provider !== "custom";
   return { provider, baseUrl, apiKey: getKey(provider, override.keyEnv ?? info.keyEnv), needsKey };
