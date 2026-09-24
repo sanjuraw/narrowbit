@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { Connector } from "./connectors.js";
+import { openHttpSession } from "./mcpHttp.js";
 
 /**
  * A minimal MCP client over stdio: spawn a connector, do the initialize handshake, then either list
@@ -80,7 +81,15 @@ function initialize(send: (msg: object) => void, onMessage: (fn: (msg: any) => v
   send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "narrowbit", version: "0.1.0" } } });
 }
 
-export function listConnectorTools(c: Connector, timeoutMs = 15_000): Promise<McpTool[]> {
+export async function listConnectorTools(c: Connector, timeoutMs = 15_000): Promise<McpTool[]> {
+  if (c.url) {
+    const s = await openHttpSession(c, timeoutMs);
+    return ((await s.request("tools/list"))?.tools ?? []) as McpTool[];
+  }
+  return listStdioTools(c, timeoutMs);
+}
+
+function listStdioTools(c: Connector, timeoutMs: number): Promise<McpTool[]> {
   return withConnector<McpTool[]>(c, timeoutMs, (send, onMessage, done, fail) => {
     initialize(send, onMessage, () => send({ jsonrpc: "2.0", id: 2, method: "tools/list" }), fail);
     onMessage((m) => {
@@ -92,7 +101,18 @@ export function listConnectorTools(c: Connector, timeoutMs = 15_000): Promise<Mc
   });
 }
 
-export function callConnectorTool(c: Connector, tool: string, args: Record<string, unknown>, timeoutMs = 60_000): Promise<ToolCallResult> {
+export async function callConnectorTool(c: Connector, tool: string, args: Record<string, unknown>, timeoutMs = 60_000): Promise<ToolCallResult> {
+  if (c.url) {
+    const s = await openHttpSession(c, timeoutMs);
+    const r = await s.request("tools/call", { name: tool, arguments: args });
+    const content = Array.isArray(r?.content) ? r.content : [];
+    const text = content.map((part: any) => (typeof part?.text === "string" ? part.text : JSON.stringify(part))).join("\n");
+    return { text: text || "(no output)", isError: !!r?.isError };
+  }
+  return callStdioTool(c, tool, args, timeoutMs);
+}
+
+function callStdioTool(c: Connector, tool: string, args: Record<string, unknown>, timeoutMs: number): Promise<ToolCallResult> {
   return withConnector<ToolCallResult>(c, timeoutMs, (send, onMessage, done, fail) => {
     initialize(send, onMessage, () => send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: tool, arguments: args } }), fail);
     onMessage((m) => {

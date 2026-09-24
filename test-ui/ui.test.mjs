@@ -479,6 +479,17 @@ describe("pushing commits to the remote (a local bare repo stands in for GitHub)
     assert.equal(git(remote, "log", "--format=%s", "-1").trim(), "second");
   });
 
+  test("remote connectors: saved with a URL, the token stays hidden, and the sign-in callback rejects an unknown state", async () => {
+    const r = await api("/api/connectors", { name: "linear", url: "https://mcp.example.com/mcp", authHeader: "Bearer secret-value" });
+    assert.equal(r.status, 200);
+    const text = JSON.stringify(await (await api("/api/state")).json());
+    assert.ok(text.includes("https://mcp.example.com/mcp") && !text.includes("secret-value"), "URL shown, token never sent to the page");
+    const cb = await fetch(`${app.base}/oauth/callback?code=x&state=forged`);
+    assert.match(await cb.text(), /Sign-in failed/);
+    assert.equal((await api("/api/connectors", { name: "bad", url: "ftp://x" })).status, 400);
+    await api("/api/connectors/delete", { name: "linear" });
+  });
+
   test("the GitHub section says which repo it pushes to and who commits are by", async () => {
     const g = await (await api("/api/github")).json();
     assert.equal(g.remoteUrl, remote);

@@ -871,6 +871,14 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text });
         return text;
       }
+      // Anything an external service can do (create an issue, post a message) leaves this machine, so like a
+      // shell command it waits for the user's OK wherever approvals are on.
+      const label = `connector: ${serverName}.${toolName} ${redact(JSON.stringify(d.args ?? {})).slice(0, 300)}`;
+      if (approve && !(await approve(label))) {
+        const text = `connector: the user declined ${serverName}.${toolName} — do not retry it; take a different approach or ask the user`;
+        appendEvent(p, taskId, { actor: "user", type: "tool_result", summary: text, meta: { server: serverName, tool: toolName, declined: true } });
+        return text;
+      }
       try {
         const r = await callConnectorTool(connector, toolName, d.args ?? {});
         // Every other action (read/grep/search/run) redacts at its source (package.ts/query.ts/

@@ -1,0 +1,150 @@
+import { createHash, randomBytes } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+/**
+ * OAuth 2.1 sign-in for remote MCP servers (Linear, Slack, Notion, Atlassian…): discovery of the
+ * server's authorization endpoints, dynamic client registration, authorization-code + PKCE via the
+ * user's own browser, and refresh. Tokens live in ~/.narrowbit/oauth.json (0600) and are never sent to
+ * the page; the app only learns "signed in or not". No client secret is used (public client + PKCE).
+ */
+interface Stored {
+  clientId: string;
+  tokenEndpoint: string;
+  access: string;
+  refresh?: string;
+  /** ms since epoch; 0 = unknown (treated as valid until the server says otherwise). */
+  expiresAt: number;
+}
+
+const file = () => join(homedir(), ".narrowbit", "oauth.json");
+
+function load(): Record<string, Stored> {
+  try {
+    return JSON.parse(readFileSync(file(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+function save(all: Record<string, Stored>): void {
+  mkdirSync(join(homedir(), ".narrowbit"), { recursive: true, mode: 0o700 });
+  writeFileSync(file(), JSON.stringify(all, null, 2) + "\n", { mode: 0o600 });
+  if (existsSync(file())) chmodSync(file(), 0o600);
+}
+
+export const isSignedIn = (name: string): boolean => !!load()[name]?.access;
+export function signOut(name: string): void {
+  const all = load();
+  delete all[name];
+  save(all);
+}
+
+async function getJson(url: string, init?: RequestInit): Promise<any> {
+  const r = await fetch(url, { ...init, signal: AbortSignal.timeout(15_000) });
+  if (!r.ok) throw new Error(`${new URL(url).host} answered ${r.status}`);
+  return r.json();
+}
+
+interface AsMeta {
+  authorization_endpoint: string;
+  token_endpoint: string;
+  registration_endpoint?: string;
+}
+
+/** Finds the authorization server for an MCP server URL (RFC 9728 protected-resource metadata, then RFC 8414). */
+export async function discover(mcpUrl: string): Promise<AsMeta> {
+  const u = new URL(mcpUrl);
+  let issuer = u.origin;
+  try {
+    const rm = await getJson(`${u.origin}/.well-known/oauth-protected-resource`);
+    if (Array.isArray(rm.authorization_servers) && rm.authorization_servers[0]) issuer = String(rm.authorization_servers[0]).replace(/\/+$/, "");
+  } catch {
+    /* the MCP server may be its own authorization server */
+  }
+  for (const path of ["/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"]) {
+    try {
+      const m = await getJson(issuer + path);
+      if (m.authorization_endpoint && m.token_endpoint) return m as AsMeta;
+    } catch {
+      /* try the next well-known path */
+    }
+  }
+  throw new Error("this server doesn't advertise a sign-in flow Narrowbit can use (it may need an API token instead: add it as an Authorization header)");
+}
+
+interface Pending {
+  name: string;
+  url: string;
+  verifier: string;
+  clientId: string;
+  tokenEndpoint: string;
+  redirectUri: string;
+  at: number;
+}
+const pending = new Map<string, Pending>();
+
+const b64url = (b: Buffer) => b.toString("base64url");
+
+/** Step 1: returns the URL to open in the user's browser. */
+export async function startSignIn(name: string, mcpUrl: string, redirectUri: string): Promise<string> {
+  const meta = await discover(mcpUrl);
+  if (!meta.registration_endpoint) throw new Error("this server requires a pre-registered app (no dynamic registration); use an API token as an Authorization header instead");
+  const reg = await getJson(meta.registration_endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ client_name: "Narrowbit", redirect_uris: [redirectUri], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" }),
+  });
+  if (!reg.client_id) throw new Error("registration didn't return a client id");
+  const verifier = b64url(randomBytes(32));
+  const state = b64url(randomBytes(16));
+  for (const [k, v] of pending) if (Date.now() - v.at > 10 * 60_000) pending.delete(k);
+  pending.set(state, { name, url: mcpUrl, verifier, clientId: String(reg.client_id), tokenEndpoint: meta.token_endpoint, redirectUri, at: Date.now() });
+  const q = new URLSearchParams({
+    response_type: "code",
+    client_id: String(reg.client_id),
+    redirect_uri: redirectUri,
+    state,
+    code_challenge: b64url(createHash("sha256").update(verifier).digest()),
+    code_challenge_method: "S256",
+    resource: mcpUrl,
+  });
+  return `${meta.authorization_endpoint}${meta.authorization_endpoint.includes("?") ? "&" : "?"}${q}`;
+}
+
+/** Step 2: the browser came back to our redirect URI. The one-time `state` ties it to a sign-in we started. */
+export async function completeSignIn(state: string, code: string): Promise<string> {
+  const p = pending.get(state);
+  if (!p) throw new Error("this sign-in link is unknown or expired — start again from Connectors");
+  pending.delete(state);
+  const tok = await tokenRequest(p.tokenEndpoint, { grant_type: "authorization_code", code, redirect_uri: p.redirectUri, client_id: p.clientId, code_verifier: p.verifier, resource: p.url });
+  const all = load();
+  all[p.name] = { clientId: p.clientId, tokenEndpoint: p.tokenEndpoint, access: tok.access_token, refresh: tok.refresh_token, expiresAt: tok.expires_in ? Date.now() + Number(tok.expires_in) * 1000 : 0 };
+  save(all);
+  return p.name;
+}
+
+async function tokenRequest(endpoint: string, form: Record<string, string>): Promise<any> {
+  const r = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: new URLSearchParams(form), signal: AbortSignal.timeout(15_000) });
+  const j: any = await r.json().catch(() => ({}));
+  if (!r.ok || !j.access_token) throw new Error(`sign-in was refused (${j.error_description ?? j.error ?? r.status})`);
+  return j;
+}
+
+/** A usable access token for this connector, refreshed when it has (nearly) expired. Null = not signed in. */
+export async function accessToken(name: string, forceRefresh = false): Promise<string | null> {
+  const all = load();
+  const s = all[name];
+  if (!s?.access) return null;
+  const stale = forceRefresh || (s.expiresAt && Date.now() > s.expiresAt - 30_000);
+  if (!stale) return s.access;
+  if (!s.refresh) return forceRefresh ? null : s.access;
+  try {
+    const tok = await tokenRequest(s.tokenEndpoint, { grant_type: "refresh_token", refresh_token: s.refresh, client_id: s.clientId });
+    all[name] = { ...s, access: tok.access_token, refresh: tok.refresh_token ?? s.refresh, expiresAt: tok.expires_in ? Date.now() + Number(tok.expires_in) * 1000 : 0 };
+    save(all);
+    return all[name].access;
+  } catch {
+    return null;
+  }
+}

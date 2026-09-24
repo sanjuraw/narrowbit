@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { ensureDirs, loadConfig, paths, saveConfig, type AgentConfig, type Paths } from "./config.js";
 import { getConnector, listConnectors, publicConnector, removeConnector, saveConnector } from "./connectors.js";
+import { completeSignIn, signOut, startSignIn } from "./oauth.js";
 import { fold, readEvents, type Event } from "./events.js";
 import { changedSince, githubIdentity, gitState, pushBranch, remoteInfo } from "./git.js";
 import { listConnectorTools } from "./mcpClient.js";
@@ -445,6 +446,23 @@ export function startUi(opts: UiOptions) {
         res.writeHead(200, { ...SEC_HEADERS, "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" });
         return res.end(uiPage());
       }
+      if (req.method === "GET" && url.pathname === "/oauth/callback") {
+        // The user's browser returns here after signing in. No app token (the browser has none): the one-time
+        // `state` we issued is the proof, and the Host check above already limits this to the loopback server.
+        const page = (title: string, body: string) => {
+          res.writeHead(200, { ...SEC_HEADERS, "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'" });
+          res.end(`<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font:16px system-ui;max-width:32em;margin:15vh auto;padding:0 1em"><h2>${title}</h2><p>${body}</p>`);
+        };
+        const err = url.searchParams.get("error");
+        if (err) return page("Sign-in cancelled", "The service reported: " + err.replace(/[<>&"]/g, "") + ". You can close this tab.");
+        try {
+          const name = await completeSignIn(url.searchParams.get("state") ?? "", url.searchParams.get("code") ?? "");
+          emit({ type: "log", line: `${name}: signed in` });
+          return page("Signed in", `Narrowbit is now connected to ${name.replace(/[<>&"]/g, "")}. You can close this tab and go back to the app.`);
+        } catch (e: any) {
+          return page("Sign-in failed", String(e.message).replace(/[<>&"]/g, ""));
+        }
+      }
       if (!url.pathname.startsWith("/api/")) return json(res, 404, { error: "not found" });
       const given = url.pathname === "/api/stream" ? url.searchParams.get("t") : req.headers["x-narrowbit-token"];
       if (given !== token) return json(res, 401, { error: "missing or wrong token — reopen the app" });
@@ -613,14 +631,31 @@ export function startUi(opts: UiOptions) {
               if (eq > 0) env[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
             }
           }
+          const remote = { url: typeof body.url === "string" ? body.url : "", headers: {} as Record<string, string> };
+          if (typeof body.authHeader === "string" && body.authHeader.trim()) remote.headers.Authorization = body.authHeader.trim();
           try {
-            saveConnector(name, command, cargs, env);
+            saveConnector(name, command, cargs, env, remote);
           } catch (e: any) {
             return json(res, 400, { error: e.message });
           }
           return json(res, 200, state());
         }
+        case "/api/connectors/signin": {
+          const c = getConnector(String(body.name ?? ""));
+          if (!c?.url) return json(res, 400, { error: "sign-in is only for remote (URL) connectors" });
+          try {
+            const port = (server.address() as { port: number }).port;
+            return json(res, 200, { url: await startSignIn(c.name, c.url, `http://127.0.0.1:${port}/oauth/callback`) });
+          } catch (e: any) {
+            return json(res, 400, { error: e.message });
+          }
+        }
+        case "/api/connectors/signout": {
+          signOut(String(body.name ?? ""));
+          return json(res, 200, state());
+        }
         case "/api/connectors/delete": {
+          signOut(String(body.name ?? ""));
           removeConnector(String(body.name ?? ""));
           return json(res, 200, state());
         }

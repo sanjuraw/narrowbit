@@ -427,6 +427,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <div id="connectorsList"></div>
     <div class="connector-form">
       <input type="text" id="connName" placeholder="Name (e.g. github)">
+      <input type="text" id="connUrl" placeholder="Remote server URL (e.g. https://mcp.linear.app/mcp) — or a command below">
+      <input type="password" id="connAuth" placeholder="API token for a remote server (optional): Bearer ghp_…" autocomplete="off">
       <input type="text" id="connCommand" placeholder="Command (e.g. npx)">
       <input type="text" id="connArgs" placeholder="Args, space-separated (e.g. -y @modelcontextprotocol/server-github)">
       <input type="text" id="connEnv" placeholder="Env (optional): KEY=value,KEY2=value2">
@@ -784,11 +786,22 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var list = (S && S.connectors) || [];
     if (!list.length) { box.appendChild(el("div", { cls: "muted", style: "font-size:12.5px;padding:4px 0", text: "No connectors yet." })); return; }
     list.forEach(function (c) {
+      var signBtn = !c.url || c.headerKeys.length ? null : c.signedIn
+        ? el("button", { title: "Forget this sign-in", onclick: function () { api("/api/connectors/signout", { name: c.name }).then(apply).catch(function (e) { banner("bad", e.message); }); } }, "Sign out")
+        : el("button", { cls: "primary", title: "Sign in with your browser", onclick: function () { signIn(c.name); } }, "Sign in");
       box.appendChild(el("div", { cls: "conn-row" },
-        el("span", { cls: "cn", title: c.command + " " + c.args.join(" ") }, c.name),
+        el("span", { cls: "cn", title: c.url || (c.command + " " + c.args.join(" ")) }, c.name + (c.url ? (c.signedIn ? " · signed in" : c.headerKeys.length ? " · token" : " · remote") : "")),
+        signBtn,
         el("button", { title: "Connect once and list its tools", onclick: function () { testConnector(c.name); } }, "Test"),
         el("button", { title: "Remove connector", onclick: function () { deleteConnector(c.name); } }, "×")));
     });
+  }
+  function signIn(name) {
+    flash($("savedMsg"), "Opening your browser to sign in…");
+    api("/api/connectors/signin", { name: name }).then(function (r) {
+      if (native) native.postMessage({ type: "openUrl", url: r.url }); else window.open(r.url, "_blank", "noopener");
+      var n = $("connectorErr"); n.textContent = "Finish signing in in your browser, then press Test. If nothing opened, copy this link: " + r.url; show(n, true); n.style.color = "var(--muted)";
+    }).catch(function (e) { var n = $("connectorErr"); n.textContent = e.message; show(n, true); n.style.color = "var(--bad)"; });
   }
   function testConnector(name) {
     flash($("savedMsg"), "Testing " + name + "…");
@@ -801,10 +814,11 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   }
   $("addConnector").onclick = function () {
     var name = $("connName").value.trim(), command = $("connCommand").value.trim(), argsStr = $("connArgs").value.trim(), envStr = $("connEnv").value.trim();
-    if (!name || !command) { var n = $("connectorErr"); n.textContent = "Name and command are both required."; show(n, true); return; }
+    var curl = $("connUrl").value.trim(), cauth = $("connAuth").value.trim();
+    if (!name || (!command && !curl)) { var n = $("connectorErr"); n.textContent = "A name, and either a remote URL or a command, are required."; show(n, true); return; }
     show($("connectorErr"), false);
-    api("/api/connectors", { name: name, command: command, args: argsStr, env: envStr })
-      .then(function (st) { apply(st); $("connName").value = ""; $("connCommand").value = ""; $("connArgs").value = ""; $("connEnv").value = ""; })
+    api("/api/connectors", { name: name, command: command, args: argsStr, env: envStr, url: curl, authHeader: cauth })
+      .then(function (st) { apply(st); $("connName").value = ""; $("connCommand").value = ""; $("connArgs").value = ""; $("connEnv").value = ""; $("connUrl").value = ""; $("connAuth").value = ""; })
       .catch(function (e) { var n = $("connectorErr"); n.textContent = e.message; show(n, true); });
   };
 
@@ -1327,7 +1341,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   // ---------- approvals ----------
   function onApproval(ev) {
     if (!view || view.approvals[ev.id]) return;
-    var box = el("div", { cls: "approval" }, el("div", { cls: "ah", text: "Run this command?" }), el("pre", { text: ev.command }));
+    var isConn = ev.command.indexOf("connector: ") === 0;
+    var box = el("div", { cls: "approval" }, el("div", { cls: "ah", text: isConn ? "Use this connector tool?" : "Run this command?" }), el("pre", { text: isConn ? ev.command.slice(11) : ev.command }));
     var btns = el("div", { cls: "btns" });
     var a = { box: box, btns: btns, done: false };
     a.decide = function (d) {
@@ -1375,7 +1390,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function onApprovalResolved(ev) {
     var a = view && view.approvals[ev.id]; if (!a) return;
     a.done = true; a.box.classList.add("resolved");
-    a.box.firstChild.textContent = ev.allowed ? "Command allowed" : "Command denied";
+    a.box.firstChild.textContent = (a.box.firstChild.textContent.indexOf("connector") >= 0 ? "Connector tool " : "Command ") + (ev.allowed ? "allowed" : "denied");
     a.btns.remove();
   }
 

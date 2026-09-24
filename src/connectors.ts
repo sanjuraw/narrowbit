@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isSignedIn } from "./oauth.js";
 
 /**
  * Connectors: arbitrary MCP servers the owned runtime (runtime.ts) can call out to — GitHub, Slack,
@@ -16,16 +17,21 @@ import { join } from "node:path";
  */
 export interface Connector {
   name: string;
+  /** Local (stdio) connectors run this command; remote ones have `url` instead and an empty command. */
   command: string;
   args: string[];
   env?: Record<string, string>;
+  /** Remote MCP server (streamable HTTP). */
+  url?: string;
+  /** Static request headers for a remote server — typically `Authorization: Bearer <token>`. Secret. */
+  headers?: Record<string, string>;
 }
 
-const FILE = join(homedir(), ".narrowbit", "connectors.json");
+const file = () => join(homedir(), ".narrowbit", "connectors.json");
 
 function load(): Record<string, Connector> {
   try {
-    return JSON.parse(readFileSync(FILE, "utf8"));
+    return JSON.parse(readFileSync(file(), "utf8"));
   } catch {
     return {};
   }
@@ -33,12 +39,12 @@ function load(): Record<string, Connector> {
 
 function save(all: Record<string, Connector>): void {
   mkdirSync(join(homedir(), ".narrowbit"), { recursive: true, mode: 0o700 });
-  writeFileSync(FILE, JSON.stringify(all, null, 2) + "\n", { mode: 0o600 });
+  writeFileSync(file(), JSON.stringify(all, null, 2) + "\n", { mode: 0o600 });
 }
 
 /** What the app page may see: names only, never the environment values (they are often tokens). */
-export function publicConnector(c: Connector): { name: string; command: string; args: string[]; envKeys: string[] } {
-  return { name: c.name, command: c.command, args: c.args, envKeys: Object.keys(c.env ?? {}) };
+export function publicConnector(c: Connector): { name: string; command: string; args: string[]; envKeys: string[]; url: string | null; headerKeys: string[]; signedIn: boolean } {
+  return { name: c.name, command: c.command, args: c.args, envKeys: [...Object.keys(c.env ?? {})], url: c.url ?? null, headerKeys: Object.keys(c.headers ?? {}), signedIn: !!c.url && isSignedIn(c.name) };
 }
 
 export function listConnectors(): Connector[] {
@@ -49,11 +55,14 @@ export function getConnector(name: string): Connector | null {
   return load()[name] ?? null;
 }
 
-export function saveConnector(name: string, command: string, args: string[], env?: Record<string, string>): Connector {
+export function saveConnector(name: string, command: string, args: string[], env?: Record<string, string>, remote?: { url?: string; headers?: Record<string, string> }): Connector {
   const trimmedName = name.trim();
   if (!trimmedName) throw new Error("a connector needs a name");
-  if (!command.trim()) throw new Error("a connector needs a command to run");
-  const c: Connector = { name: trimmedName, command: command.trim(), args, env: env && Object.keys(env).length ? env : undefined };
+  const url = remote?.url?.trim();
+  if (url && !/^https?:\/\/[^\s]+$/.test(url)) throw new Error("the URL must start with https:// (or http:// for a local server)");
+  if (!url && !command.trim()) throw new Error("a connector needs a command to run, or a URL for a remote server");
+  const headers = remote?.headers && Object.keys(remote.headers).length ? remote.headers : undefined;
+  const c: Connector = { name: trimmedName, command: url ? "" : command.trim(), args: url ? [] : args, env: env && Object.keys(env).length ? env : undefined, ...(url ? { url, headers } : {}) };
   const all = load();
   all[trimmedName] = c;
   save(all);

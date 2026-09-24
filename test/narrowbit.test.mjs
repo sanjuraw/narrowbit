@@ -891,3 +891,102 @@ describe("ask action", () => {
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 });
+
+// --- remote MCP: HTTP transport + OAuth sign-in against a mock server ---
+const { createServer: createHttp } = await import("node:http");
+const { createHash } = await import("node:crypto");
+const { startSignIn, completeSignIn, isSignedIn, accessToken, signOut } = await dist("oauth.js");
+const { saveConnector, getConnector } = await dist("connectors.js");
+const { listConnectorTools, callConnectorTool } = await dist("mcpClient.js");
+
+function mockMcpWorld() {
+  const state = { challenge: "", tokens: new Set(["tok1"]), refreshes: 0, calls: [], sse: true };
+  const srv = createHttp((req, res) => {
+    const url = new URL(req.url, "http://x");
+    const base = `http://127.0.0.1:${srv.address().port}`;
+    const json = (o, code = 200, h = {}) => { res.writeHead(code, { "content-type": "application/json", ...h }); res.end(JSON.stringify(o)); };
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      if (url.pathname === "/.well-known/oauth-protected-resource") return json({ authorization_servers: [base] });
+      if (url.pathname === "/.well-known/oauth-authorization-server") return json({ authorization_endpoint: base + "/authorize", token_endpoint: base + "/token", registration_endpoint: base + "/register" });
+      if (url.pathname === "/register") return json({ client_id: "cid" });
+      if (url.pathname === "/authorize") {
+        state.challenge = url.searchParams.get("code_challenge");
+        res.writeHead(302, { location: `${url.searchParams.get("redirect_uri")}?code=abc&state=${url.searchParams.get("state")}` });
+        return res.end();
+      }
+      if (url.pathname === "/token") {
+        const f = new URLSearchParams(body);
+        if (f.get("grant_type") === "authorization_code") {
+          const ok = f.get("code") === "abc" && createHash("sha256").update(f.get("code_verifier")).digest("base64url") === state.challenge;
+          if (!ok) return json({ error: "invalid_grant" }, 400);
+          return json({ access_token: "tok1", refresh_token: "ref1", expires_in: 3600 });
+        }
+        if (f.get("grant_type") === "refresh_token" && f.get("refresh_token") === "ref1") { state.refreshes++; state.tokens.add("tok2"); return json({ access_token: "tok2", expires_in: 3600 }); }
+        return json({ error: "bad" }, 400);
+      }
+      if (url.pathname === "/mcp") {
+        const auth = req.headers.authorization ?? "";
+        if (!state.tokens.has(auth.replace(/^Bearer /, "")) && auth !== "Bearer static-token") return json({ error: "unauthorized" }, 401);
+        const m = JSON.parse(body);
+        state.calls.push(m.method);
+        if (m.method === "notifications/initialized") { res.writeHead(202); return res.end(); }
+        if (m.method === "initialize") return json({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "mock" } } }, 200, { "mcp-session-id": "sess-1" });
+        if (req.headers["mcp-session-id"] !== "sess-1") return json({ error: "no session" }, 400);
+        const reply = m.method === "tools/list" ? { tools: [{ name: "create_issue" }, { name: "list_issues" }] } : { content: [{ type: "text", text: `ran ${m.params.name} ${JSON.stringify(m.params.arguments)}` }] };
+        if (state.sse && m.method === "tools/list") { res.writeHead(200, { "content-type": "text/event-stream" }); return res.end(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: m.id, result: reply })}\n\n`); }
+        return json({ jsonrpc: "2.0", id: m.id, result: reply });
+      }
+      json({ error: "nope" }, 404);
+    });
+  });
+  return new Promise((r) => srv.listen(0, "127.0.0.1", () => r({ srv, state, base: `http://127.0.0.1:${srv.address().port}` })));
+}
+
+describe("remote MCP servers", () => {
+  const realHome = process.env.HOME;
+  let home, world;
+  before(async () => { home = mkdtempSync(join(tmpdir(), "nb-mcphome-")); process.env.HOME = home; world = await mockMcpWorld(); });
+  after(() => { process.env.HOME = realHome; world.srv.close(); rmSync(home, { recursive: true, force: true }); });
+
+  test("full sign-in: discovery, registration, PKCE via the browser redirect, token stored 0600 and never public", async () => {
+    saveConnector("mock", "", [], undefined, { url: world.base + "/mcp" });
+    assert.equal(publicConnector(getConnector("mock")).signedIn, false);
+    const authUrl = await startSignIn("mock", world.base + "/mcp", "http://127.0.0.1:1/oauth/callback");
+    const back = await fetch(authUrl, { redirect: "manual" }); // what the browser does
+    const cb = new URL(back.headers.get("location"));
+    assert.equal(cb.searchParams.get("code"), "abc");
+    assert.equal(await completeSignIn(cb.searchParams.get("state"), cb.searchParams.get("code")), "mock");
+    assert.equal(isSignedIn("mock"), true);
+    const mode = (await import("node:fs")).statSync(join(home, ".narrowbit", "oauth.json")).mode & 0o777;
+    assert.equal(mode, 0o600);
+    assert.ok(!JSON.stringify(publicConnector(getConnector("mock"))).includes("tok1"), "the token never appears in what the page sees");
+    await assert.rejects(() => completeSignIn(cb.searchParams.get("state"), "abc"), /unknown or expired/, "a state can be used once");
+  });
+
+  test("lists tools (from an event stream) and calls one (plain JSON), with the session id echoed", async () => {
+    const c = getConnector("mock");
+    assert.deepEqual((await listConnectorTools(c)).map((t) => t.name), ["create_issue", "list_issues"]);
+    const r = await callConnectorTool(c, "create_issue", { title: "hi" });
+    assert.match(r.text, /ran create_issue {"title":"hi"}/);
+  });
+
+  test("an expired access token is refreshed once and the call succeeds", async () => {
+    world.state.tokens.delete("tok1"); // the server no longer accepts the first token
+    const c = getConnector("mock");
+    const r = await callConnectorTool(c, "list_issues", {});
+    assert.match(r.text, /ran list_issues/);
+    assert.equal(world.state.refreshes, 1);
+    assert.equal(await accessToken("mock"), "tok2");
+  });
+
+  test("signed out: a clear 'sign in' message, and a static Authorization header works without OAuth", async () => {
+    signOut("mock");
+    await assert.rejects(() => listConnectorTools(getConnector("mock")), /sign-in required/);
+    saveConnector("token-based", "", [], undefined, { url: world.base + "/mcp", headers: { Authorization: "Bearer static-token" } });
+    assert.equal((await listConnectorTools(getConnector("token-based"))).length, 2);
+    assert.deepEqual(publicConnector(getConnector("token-based")).headerKeys, ["Authorization"]);
+    assert.ok(!JSON.stringify(publicConnector(getConnector("token-based"))).includes("static-token"));
+  });
+});

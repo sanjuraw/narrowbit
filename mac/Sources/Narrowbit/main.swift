@@ -139,6 +139,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                       let data = try? JSONEncoder().encode(path), let arg = String(data: data, encoding: .utf8) else { return }
                 self?.web.evaluateJavaScript("window.narrowbitFolderPicked(\(arg))")
             }
+        case "openUrl":
+            // Sign-in pages for connectors open in the user's own browser, never inside this window.
+            if let raw = body["url"] as? String, let url = URL(string: raw), url.scheme == "https" || url.scheme == "http" {
+                NSWorkspace.shared.open(url)
+            }
         case "copy":
             if let text = body["text"] as? String {
                 NSPasteboard.general.clearContents()
