@@ -1,0 +1,7 @@
+{
+  "name": "narrowbit-ui-tests",
+  "private": true,
+  "type": "module",
+  "description": "Browser-level checks of the app page. Kept apart from the main package so installs stay light.",
+  "devDependencies": { "jsdom": "^26.0.0" }
+}

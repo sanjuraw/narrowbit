@@ -437,6 +437,11 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       sessionId,
       resume: !freshSessionPending,
     };
+    // Tell the model when the budget is nearly gone so it wraps up (a read-only task's answer is its
+    // "done" summary) instead of spending the last steps on more probing and ending with nothing.
+    if (steps === maxSteps - 3 && maxSteps >= 6) {
+      callOpts.prompt += `\n\nOnly 3 steps remain in the budget. Stop exploring; finish now with a "done" action whose summary is your complete answer.`;
+    }
     let res = await call(callOpts);
     // A non-fatal error (timeout, killed process, no result event) is presumed transient, not a
     // real problem with the request — retry the identical call before giving up on the task.

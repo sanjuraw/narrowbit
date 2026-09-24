@@ -66,8 +66,8 @@ Finish with the tests and type check passing, and a short summary of what moved 
     name: "Explain this code",
     description: "Read-only walkthrough of how a part of the project works, with file and line references",
     builtin: true,
-    body: `Explain how the part of the project named below works. Read the code; change nothing.
+    body: `Explain how the part of the project named below works. This is read-only: read the files, change nothing, and don't run experiments. Reading is enough, so stop reading as soon as you can explain it (usually a handful of files, not the whole project).
 
-Start with what it is for and where it sits in the project, then trace the main path through it step by step (entry point, what calls what, where data is read and written). Refer to files and line numbers so I can follow along. Point out the non-obvious parts: hidden assumptions, surprising behaviour, and anything that looks fragile or wrong. Say plainly what you did not read or are unsure about instead of guessing.`,
+Your final message IS the explanation, so write all of it there. Start with what the code is for and where it sits in the project, then trace the main path step by step (entry point, what calls what, where data is read and written). Refer to files and line numbers so I can follow along. Point out the non-obvious parts: hidden assumptions, surprising behaviour, and anything that looks fragile or wrong. Say plainly what you did not read or are unsure about instead of guessing.`,
   },
 ];

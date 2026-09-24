@@ -259,3 +259,5 @@ State lives in `.narrowbit/` in the target repo (self-gitignored, files `0600`):
 ## Competitors and comparisons to keep in mind
 
 Serena (LSP-based symbol tools, MCP), Aider repo map, Zilliz claude-context, 9router RTK, jcode, DeepSeek Harness, Claude Code's own compaction/subagents/caching. Narrowbit must beat *realistic* baselines, not just an unoptimized agent.
+
+- **UI checks + built-in skills live-tested (2026-09-24).** `npm run test:ui` (`test-ui/`, jsdom, 19 tests, separate package so the runtime stays dependency-free) boots a real `narrowbit ui` with a fake HOME and checks the page in both states (no folder / folder open): pill above composer, dialog always closable, skills, error cards, commit secret gate, CSP headers; proven by mutation testing. Built-in skills run live on a small project: Bug fix, Code review, Write tests, Refactor all completed; Explain this code initially burned the step budget on probing — fixed by a runtime warning 3 steps before the budget ends ("finish now with done") plus a read-only wording in the skill; now answers in 8 steps.
