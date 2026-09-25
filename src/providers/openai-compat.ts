@@ -53,6 +53,15 @@ export async function callOpenAICompat(ep: Endpoint, opts: ModelCallOptions): Pr
 
   const body: Record<string, unknown> = { model: opts.model, messages, max_tokens: 8192 };
   if (ep.provider === "openrouter") body.usage = { include: true };
+  // DeepSeek V4 thinks by default at "high" effort, and its reasoning counts as output tokens — the priciest kind
+  // (74% of the bill in our Hono runs). Map Narrowbit's effort levels onto its two controls.
+  if (ep.provider === "deepseek" && opts.effort) {
+    // "medium" is Narrowbit's default and is left to DeepSeek's own default (thinking on, high effort): on 20 Hono
+    // tasks that scored 20/20, against 19/20 for reasoning-low and 18/20 with thinking off.
+    if (opts.effort === "low") body.thinking = { type: "disabled" };
+    else if (opts.effort === "high") body.reasoning_effort = "high";
+    else if (opts.effort === "xhigh" || opts.effort === "max") body.reasoning_effort = "max";
+  }
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (ep.apiKey) headers.authorization = `Bearer ${ep.apiKey}`;
   if (ep.provider === "openrouter") headers["x-title"] = "Narrowbit";

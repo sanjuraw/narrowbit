@@ -1313,3 +1313,21 @@ describe("lenient action parsing (failures seen from DeepSeek V4.1 Flash on Hono
     assert.equal(parseDecisions("I think we should look at the tests first."), null);
   });
 });
+
+describe("DeepSeek effort mapping", () => {
+  async function bodyFor(effort) {
+    let body = null;
+    const srv = createHttp((req, res) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { body = JSON.parse(b); res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ choices: [{ message: { content: "{}" } }], usage: {} })); }); });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    const { callOpenAICompat } = await dist("providers/openai-compat.js");
+    try { await callOpenAICompat({ provider: "deepseek", baseUrl: `http://127.0.0.1:${srv.address().port}`, apiKey: "k", needsKey: true }, { prompt: "x", model: "deepseek-flash", role: "t", effort }); } finally { srv.close(); }
+    return body;
+  }
+  test("low turns thinking off; high/max map to reasoning_effort; medium changes nothing", async () => {
+    assert.deepEqual((await bodyFor("low")).thinking, { type: "disabled" });
+    assert.equal((await bodyFor("medium")).reasoning_effort, undefined, "the default effort leaves DeepSeek's own default alone");
+    assert.equal((await bodyFor("medium")).thinking, undefined);
+    assert.equal((await bodyFor("high")).reasoning_effort, "high");
+    assert.equal((await bodyFor("max")).reasoning_effort, "max");
+  });
+});

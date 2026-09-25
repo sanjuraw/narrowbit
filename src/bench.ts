@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ensureDirs, loadConfig, paths, saveConfig, detectVerify, type Paths } from "./config.js";
@@ -12,6 +12,7 @@ import { mcpServerConfig } from "./claude.js";
 import { fold, readEvents } from "./events.js";
 import { runTask } from "./runtime.js";
 import { sh, shortId, now } from "./util.js";
+import { getKey } from "./keys.js";
 
 export interface BenchTask {
   id: string;
@@ -41,6 +42,13 @@ export interface BenchArm {
   runtime?: boolean;
   /** runtime arm only: cap on loop steps (default 20). */
   runtimeMaxSteps?: number;
+  /** An external agent program instead of any Narrowbit loop: `command` is run in the task worktree with these
+   * placeholders — {workspace} {prompt} {home} (an empty, isolated home) {usage} (a file it writes token totals to:
+   * {input, cacheRead, output, turns, tools}). Provider key comes from `keyProvider` via keys.ts, passed as an
+   * environment variable and never logged. Used to compare against other harnesses (e.g. DeepSeek Harness). */
+  external?: { command: string[]; keyProvider?: string; keyEnv?: string; env?: Record<string, string> };
+  /** runtime arm only: effort level passed to the model calls (low/medium/high/xhigh/max). */
+  effort?: string;
   /** runtime arm only: which provider drives the model calls (default claude); see providers/models.ts. */
   provider?: string;
   /** runtime arm only: explicit model per tier (otherwise every tier uses the file's `model`, i.e. no routing). */
@@ -229,9 +237,42 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
           const t0 = Date.now();
           let agentExit: number;
           let s: ReturnType<typeof parseStream>;
-          if (arm.runtime) {
+          if (arm.external) {
+            log(`${tag}: running external agent (${arm.external.command[0]})…`);
+            const home = mkdtempSync(join(tmpdir(), "nb-ext-home-"));
+            const usageFile = join(runDir, `${t.id}-${arm.name}-${r}.usage.json`);
+            // A minimal, isolated environment: an empty HOME, and only the one provider key the agent needs.
+            const env2: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: home, LANG: "en_US.UTF-8", ...(arm.external.env ?? {}) };
+            if (arm.external.keyProvider && arm.external.keyEnv) {
+              const k = getKey(arm.external.keyProvider, arm.external.keyEnv);
+              if (k) env2[arm.external.keyEnv] = k;
+            }
+            const fill = (x: string) => x.split("{workspace}").join(wt).split("{prompt}").join(t.prompt).split("{home}").join(join(home, "dsh-home")).split("{usage}").join(usageFile);
+            const [cmd, ...cargs] = arm.external.command.map(fill);
+            agentExit = await new Promise<number>((resolve) => {
+              const child = spawn(cmd, cargs, { cwd: wt, env: env2, stdio: ["ignore", "pipe", "pipe"] });
+              const timer = setTimeout(() => child.kill("SIGKILL"), (spec.timeoutMinutes ?? 30) * 60_000);
+              let errText = "";
+              child.stderr.on("data", (d) => (errText = (errText + d).slice(-2000)));
+              child.on("error", () => resolve(127));
+              child.on("close", (c) => { clearTimeout(timer); if (c) log(`${tag}: external agent exited ${c}: ${errText.trim().split("\n").pop()?.slice(0, 200)}`); resolve(c ?? 1); });
+            });
+            let u = { input: 0, cacheRead: 0, output: 0, turns: 0, tools: 0 };
+            try { u = { ...u, ...JSON.parse(readFileSync(usageFile, "utf8")) }; } catch { /* the agent crashed before reporting */ }
+            rmSync(home, { recursive: true, force: true });
+            s = {
+              toolCalls: { ext_tools: u.tools },
+              filesRead: 0,
+              turns: u.turns,
+              durationMs: Date.now() - t0,
+              costUsd: null,
+              isError: agentExit !== 0 && !u.turns,
+              errorText: "",
+              usage: { input: u.input, cacheCreate: 0, cacheRead: u.cacheRead, output: u.output },
+            };
+          } else if (arm.runtime) {
             log(`${tag}: running narrowbit's own loop…`);
-            const result = await runTask(wp, t.prompt, { provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, router: arm.router ? { kind: arm.router, url: arm.routerUrl } : undefined, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss });
+            const result = await runTask(wp, t.prompt, { effort: arm.effort, provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, router: arm.router ? { kind: arm.router, url: arm.routerUrl } : undefined, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss });
             const ledger = fold(result.taskId, readEvents(wp, result.taskId)).ledgerByRole;
             const roles = Object.values(ledger);
             const sum = (k: "inputTokens" | "cacheCreationTokens" | "cacheReadTokens" | "outputTokens") => roles.reduce((a, x) => a + x[k], 0);
