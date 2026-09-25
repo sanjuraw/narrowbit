@@ -1261,3 +1261,55 @@ console.log(JSON.stringify({ type: "result", subtype: "error", is_error: true, r
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe("working-style hints are for non-Claude models only", () => {
+  async function systemPromptSeen(provider) {
+    const { root, p } = tinyRepo();
+    let seen = "";
+    const srv = createHttp((req, res) => {
+      let b = ""; req.on("data", (d) => (b += d));
+      req.on("end", () => {
+        const j = JSON.parse(b); seen = seen || JSON.stringify(j.messages);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify({ action: "done", summary: "ok" }) } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
+      });
+    });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    try {
+      const cfg = loadConfig(p);
+      cfg.agent = { endpoints: { custom: { baseUrl: `http://127.0.0.1:${srv.address().port}/v1` } }, models: { custom: { explore: "m", execute: "m", escalate: "m" } } };
+      (await dist("config.js")).saveConfig(p, cfg);
+      await runTask(p, "say hi", { provider, models: { explore: "m", execute: "m", escalate: "m" }, boss: false, maxSteps: 4 });
+    } finally { srv.close(); rmSync(root, { recursive: true, force: true }); }
+    return seen;
+  }
+  test("an API provider is told to batch actions; the text is absent for Claude (its prompt is unchanged)", async () => {
+    assert.match(await systemPromptSeen("custom"), /Working style for this model: send a JSON ARRAY/);
+    const claude = readFileSync(join(here, "..", "dist", "runtime.js"), "utf8");
+    assert.match(claude, /provider === "claude" \? ""/, "the hint is conditional on the provider");
+  });
+});
+
+describe("lenient action parsing (failures seen from DeepSeek V4.1 Flash on Hono)", () => {
+  test("prose before the array, and a stray echoed tag with brackets after it, still parse", () => {
+    const t = 'Let me look at the failing test.\n\n[{"action":"read","path":"a.ts","start":1,"end":20},{"action":"grep","pattern":"x"}]\n\n<system>[1/2] read a.ts:1-20\nfoo</system>';
+    assert.deepEqual(parseDecisions(t)?.map((d) => d.action), ["read", "grep"]);
+  });
+  test("a string containing brackets and braces inside an edit does not confuse the scanner", () => {
+    const t = 'Fixing it.\n[{"action":"edit","path":"a.ts","old":"const a = [1, 2];\\nif (x) { y() }","new":"const a = [1, 2, 3];"}] trailing ] }';
+    const d = parseDecisions(t);
+    assert.equal(d?.length, 1);
+    assert.equal(d?.[0].new, "const a = [1, 2, 3];");
+  });
+  test("DeepSeek's native tool-call markup is read as the same actions", () => {
+    const t = 'I\'ll start by exploring.\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name="grep">\n<｜｜DSML｜｜ parameter name="pattern" string="true">expandIPv6</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n<｜｜DSML｜｜ invoke name="read">\n<｜｜DSML｜｜ parameter name="path" string="true">src/utils/ipaddr.ts</｜｜DSML｜｜ parameter>\n<｜｜DSML｜｜ parameter name="start" string="false">11</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>';
+    const d = parseDecisions(t);
+    assert.deepEqual(d?.map((x) => x.action), ["grep", "read"]);
+    assert.equal(d?.[0].pattern, "expandIPv6");
+    assert.equal(d?.[1].path, "src/utils/ipaddr.ts");
+    assert.equal(d?.[1].start, 11);
+  });
+  test("plain nonsense still fails so the corrective retry happens", () => {
+    assert.equal(parseDecisions("I think we should look at the tests first."), null);
+  });
+});

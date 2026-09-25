@@ -195,15 +195,60 @@ interface Decision {
 /** Parses one turn's response into 1-MAX_BATCH_ACTIONS decisions: a bare action object, or a JSON
  * array of action objects (batching). Excess entries past the cap are dropped, not rejected —
  * a model that over-batches still gets the actions up to the limit rather than a wasted retry. */
+/** Every balanced JSON-looking slice ([...] or {...}) in the text, respecting strings, in order of appearance. */
+function balancedSlices(text: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const open = text[i];
+    if (open !== "[" && open !== "{") continue;
+    const close = open === "[" ? "]" : "}";
+    let depth = 0;
+    let inStr = false;
+    for (let k = i; k < text.length; k++) {
+      const c = text[k];
+      if (inStr) {
+        if (c === "\\") k++;
+        else if (c === '"') inStr = false;
+      } else if (c === '"') inStr = true;
+      else if (c === "[" || c === "{") depth++;
+      else if (c === "]" || c === "}") {
+        depth--;
+        if (depth === 0) {
+          if (c === close) out.push(text.slice(i, k + 1));
+          break;
+        }
+      }
+    }
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
+/**
+ * Some models fall back to their own native tool-call markup instead of the requested JSON — DeepSeek's is
+ * `<｜｜DSML｜｜ invoke name="read"><｜｜DSML｜｜ parameter name="path">a.ts</｜｜DSML｜｜ parameter>…`. When it is well formed we can
+ * read it as the same actions; anything malformed returns nothing and the usual corrective retry follows.
+ */
+function parseNativeToolMarkup(text: string): Decision[] {
+  const out: Decision[] = [];
+  const invokeRe = /invoke\s+name="(\w+)">([\s\S]*?)(?=<[^<>]*invoke\s+name=|<\/[^<>]*invoke>|$)/g;
+  for (const m of text.matchAll(invokeRe)) {
+    const d: Record<string, unknown> = { action: m[1] };
+    for (const pm of m[2].matchAll(/parameter\s+name="(\w+)"[^>]*>([\s\S]*?)<\/[^<>]*parameter>/g)) {
+      const raw = pm[2].replace(/^\n|\n$/g, "");
+      d[pm[1]] = /^\d+$/.test(raw.trim()) && ["start", "end"].includes(pm[1]) ? Number(raw.trim()) : raw;
+    }
+    if (typeof d.action === "string" && Object.keys(d).length > 1 || m[1] === "verify") out.push(d as unknown as Decision);
+  }
+  return out;
+}
+
 export function parseDecisions(text: string): Decision[] | null {
   const trimmed = text.trim();
-  // A greedy object-shaped regex over an array of objects (e.g. wrapped in stray tags the model
-  // echoed from elsewhere) matches from the first { to the last }, skipping the enclosing [ ] and
-  // producing invalid JSON — so the array candidate must be tried, not just the object one, and
-  // whichever candidate actually parses wins rather than picking one by a fixed priority alone.
-  const candidates = [trimmed, /\[[\s\S]*\]/.exec(trimmed)?.[0], /\{[\s\S]*\}/.exec(trimmed)?.[0]];
+  // Try the whole text, then every balanced [...] / {...} slice in order — not a greedy first-to-last-bracket
+  // match, which breaks when the model adds prose, echoes tags like "<system>[1/2] read …", or writes two arrays.
+  const candidates = [trimmed, ...balancedSlices(trimmed)];
   for (const candidate of candidates) {
-    if (!candidate) continue;
     let parsed: unknown;
     try {
       parsed = JSON.parse(candidate);
@@ -214,7 +259,8 @@ export function parseDecisions(text: string): Decision[] | null {
     const decisions = items.filter((d): d is Decision => !!d && typeof d === "object" && typeof (d as any).action === "string");
     if (decisions.length) return decisions.slice(0, MAX_BATCH_ACTIONS);
   }
-  return null;
+  const native = parseNativeToolMarkup(trimmed);
+  return native.length ? native.slice(0, MAX_BATCH_ACTIONS) : null;
 }
 
 export function parseDecision(text: string): Decision | null {
@@ -384,7 +430,10 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // subprocess spawned); otherwise one discovery call per connector at task start, not per turn —
   // matches SYSTEM_INSTRUCTIONS being sent once per session, not resent every step.
   const connectorsBlock = await discoverConnectors();
-  const systemPrompt = SYSTEM_INSTRUCTIONS + connectorsBlock;
+  // Some models (seen with Codex's GPT-6) answer with exactly one action per turn however many the rules allow,
+  // and read for 20 steps without ever editing. Say it plainly for them; Claude already batches unprompted.
+  const batchHint = provider === "claude" ? "" : `\n\nWorking style for this model: send a JSON ARRAY of up to ${MAX_BATCH_ACTIONS} actions whenever they are independent — for example [{"action":"read",...},{"action":"read",...},{"action":"grep",...}] to look at several files at once. One action per turn wastes the step budget. Read only what you need, then edit; a task rarely needs more than a handful of reads before the first edit.`;
+  const systemPrompt = SYSTEM_INSTRUCTIONS + connectorsBlock + batchHint;
   let hasEdited = false;
   // "done" gate. First real-repo use (narrowbit agent on this repo): Haiku replied "done" on its
   // second call with a confident, detailed summary of changes it never made — no read, no edit,
@@ -736,6 +785,10 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     const nudge = stalling
       ? `\n\nSTOP: you've taken ${sinceLastEdit} steps without editing anything. Re-running the same check will not fix it. Read the actual implementation file the test exercises (not the test file) and make a real change before checking again.`
       : "";
+    // Same models, second symptom: reading forever. A gentle nudge every few steps until the first edit.
+    const readOnlyNudge = provider !== "claude" && !hasEdited && steps + 1 >= 6 && (steps + 1) % 3 === 0
+      ? `\n\nYou have used ${steps + 1} steps without editing anything. If the task needs a change, you now know enough to make your best edit — make it, then verify. If it is only a question, answer it with "done".`
+      : "";
     const combined = batchResults.join("\n\n") || "(no actions executed)";
     const stopNote = stopReason
       ? `\n\n(stopped the batch early — ${stopReason}; ${decisions.length - batchResults.length} planned action(s) after it were not run)`
@@ -744,6 +797,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     const resultParts: Part[] = batchResults.map((r, i) => part("result", batchLabels[i] ?? "result", r));
     if (stopNote) resultParts.push(part("note", "the batch stopped early", stopNote));
     if (nudge) resultParts.push(part("nudge", "stall guard: stop re-running the check", nudge));
+    if (readOnlyNudge) resultParts.push(part("nudge", "reminder to start editing", readOnlyNudge));
     if (steps + 1 === maxSteps - 3 && maxSteps >= 6) resultParts.push({ kind: "nudge", label: "budget warning", tokens: 30 });
     // Compact on the context the model just processed, not a fixed turn count: a task with big
     // reads compacts sooner than one with small ones, and a cheap task may never compact at all.
@@ -766,7 +820,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       nextPrompt = `You are continuing this task after a context compaction. Nothing was lost, only compacted — use read/grep/search again for anything you need in full, rather than assuming what you remember is still current. Progress so far:\n\n${digest}\n\nMost recent result(s):\n${combined}${stopNote}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
     } else {
       nextParts = resultParts;
-      nextPrompt = `${combined}${stopNote}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
+      nextPrompt = `${combined}${stopNote}${nudge}${readOnlyNudge}\n\nWhat is the next action? Respond with JSON only.`;
     }
   }
 

@@ -313,6 +313,8 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             `${tag}: ${m.success === null ? "no verify" : m.success ? "SUCCESS" : "FAIL"} — ${m.totalInputTokens.toLocaleString()} input tok (${m.cacheReadTokens.toLocaleString()} cached), ${m.turns} turns, ${m.totalToolCalls} tools, ${m.costUsd !== null ? "$" + m.costUsd.toFixed(3) : ""}`,
           );
         } finally {
+          // Keep the runtime arm's event logs: they are the only record of what the model said and did.
+          if (arm.runtime) sh("cp", ["-R", join(wt, ".narrowbit", "runtime"), join(runDir, `${t.id}-${arm.name}-${r}-runtime`)], p.root);
           sh("git", ["worktree", "remove", "--force", wt], p.root);
           if (existsSync(wt)) rmSync(wt, { recursive: true, force: true });
         }
