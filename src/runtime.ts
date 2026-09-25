@@ -2,19 +2,20 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { loadConfig, type Paths } from "./config.js";
-import { runCommand } from "./compress.js";
+import { capOutput, runCommand } from "./compress.js";
 import { getConnector, listConnectors } from "./connectors.js";
 import { project } from "./context.js";
 import { writeEvidence } from "./evidence.js";
 import { appendEvent, fold, readEvents, subscribe, type Event, type PlanStep } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { ensureIsolated } from "./isolate.js";
+import { chooseTier } from "./route.js";
 import { callConnectorTool, listConnectorTools } from "./mcpClient.js";
 import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./memory.js";
 import { classifyModelError, isPermanentModelError } from "./errors.js";
 import { callModel, type ModelCallOptions, type ModelCallResult } from "./providers/claude-cli.js";
 import { callCodex } from "./providers/codex-cli.js";
-import { DEFAULT_TIERS, resolveEndpoint, unavailableReason, type ModelTiers, type ProviderName } from "./providers/models.js";
+import { DEFAULT_TIERS, resolveEndpoint, resolveSelection, unavailableReason, type ModelTiers, type ProviderName } from "./providers/models.js";
 import { callOpenAICompat, hasSession } from "./providers/openai-compat.js";
 import { redact } from "./redact.js";
 import { readLines } from "./package.js";
@@ -289,6 +290,10 @@ export interface RuntimeOptions {
   /** Continue an earlier task with `taskText` as a follow-up request, in the same event log —
    * resuming its model session when it still exists, else from a deterministic digest. */
   continueTask?: string;
+  /** How each turn's model tier is chosen. "rules" (default): Haiku-class until the first edit, then the executor, the
+   * escalation model when stuck. "decider": ask a local Jev-style decision model (`url`, see scripts/decider_server.py)
+   * from compact metadata; falls back to the rules if it is unreachable or unsure. Experimental — see bench.ts. */
+  router?: { kind: "rules" | "decider"; url?: string; minConfidence?: number };
   /** Work in a throwaway git worktree instead of the folder itself (isolate.ts); nothing changes the folder until applied. */
   isolate?: boolean;
   /** Every event appended for this task, as it happens (the app renders these). */
@@ -345,16 +350,30 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // Isolated: code operations (read/edit/run/verify) use the worktree as their root; state (index, memory,
   // event log, config) keeps living in the real folder's .narrowbit, since those paths were fixed above.
   if (opts.isolate) p = { ...p, root: ensureIsolated(p, taskId).dir };
-  const provider = opts.provider ?? "claude";
+  let provider = opts.provider ?? "claude";
   const cfg = loadConfig(p);
-  const tiers = opts.models ? { ...DEFAULT_TIERS[provider], ...opts.models } : opts.model ? { explore: opts.model, execute: opts.model, escalate: opts.model } : DEFAULT_TIERS[provider];
+  let tiers = opts.models ? { ...DEFAULT_TIERS[provider], ...opts.models } : opts.model ? { explore: opts.model, execute: opts.model, escalate: opts.model } : DEFAULT_TIERS[provider];
   const effort = opts.effort ?? "medium";
   // Refuse clearly up front (Codex without its adapter, a missing key, an unchosen model) rather
   // than silently running on a different provider or failing on the first call.
   const unavailable = unavailableReason({ provider, tiers, effort }, cfg.agent);
   if (unavailable) throw new Error(unavailable);
   const endpoint = resolveEndpoint(provider, cfg.agent);
-  const call = endpoint ? (o: ModelCallOptions) => callOpenAICompat(endpoint, o) : provider === "codex" ? callCodex : callModel;
+  const callFor = (prov: ProviderName) => {
+    const ep = resolveEndpoint(prov, cfg.agent);
+    return ep ? (o: ModelCallOptions) => callOpenAICompat(ep, o) : prov === "codex" ? callCodex : callModel;
+  };
+  let call = endpoint ? (o: ModelCallOptions) => callOpenAICompat(endpoint, o) : provider === "codex" ? callCodex : callModel;
+  // A configured backup provider: taken only if it is ready, and only once per task.
+  let fallback: { provider: ProviderName; tiers: ModelTiers } | null = null;
+  if (cfg.agent?.fallback && cfg.agent.fallback !== provider) {
+    try {
+      const sel = resolveSelection(cfg.agent, { provider: cfg.agent.fallback });
+      if (!unavailableReason(sel, cfg.agent)) fallback = { provider: sel.provider, tiers: sel.tiers };
+    } catch {
+      /* an unknown fallback name is ignored */
+    }
+  }
   const store = openStore(p);
   indexRepo(p, store);
   const maxSteps = opts.maxSteps ?? 20;
@@ -451,6 +470,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     }
   }
   let reviews = 0;
+  const recentActions: string[] = [];
+  let lastResultHead = "";
   const asks = { n: 0 };
 
   for (; steps < maxSteps; steps++) {
@@ -466,7 +487,15 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     // put ordinary reading on Opus — on this repo's first real task, 5 plain reads/greps in a row
     // escalated, most of a 143k-token run for a one-file change.
     const stuck = checksSinceEdit >= 2 || sinceLastEdit >= 2 * STALL_THRESHOLD;
-    const turnModel = stuck ? tiers.escalate : hasEdited ? tiers.execute : tiers.explore;
+    const ruleTier = stuck ? "escalate" : hasEdited ? "execute" : "explore";
+    let tierName: "explore" | "execute" | "escalate" = ruleTier;
+    if (opts.router?.kind === "decider" && opts.router.url) {
+      const d = await chooseTier(opts.router.url, { goal, step: steps, maxSteps, edits: editsApplied, editedSinceVerify, checksSinceEdit, sinceLastEdit, recent: recentActions, lastResult: lastResultHead });
+      const sure = d && (d.confidence === null || d.confidence >= (opts.router.minConfidence ?? 0));
+      if (d && sure) tierName = d.tier;
+      appendEvent(p, taskId, { actor: "system", type: "decision", summary: `route: ${tierName}${d ? "" : " (decider unavailable — rules)"} — rules said ${ruleTier}`, meta: { route: { chosen: tierName, rules: ruleTier, probs: d?.probs, confidence: d?.confidence ?? null, ms: d?.ms ?? null, used: !!(d && sure) } } });
+    }
+    const turnModel = tiers[tierName];
     const callOpts = {
       cwd: p.root,
       systemPrompt: freshSessionPending ? systemPrompt : undefined,
@@ -497,6 +526,27 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         callOpts.sessionId = sessionId;
       }
       res = await call(callOpts);
+    }
+    // The main provider failed for a reason the backup might not share (a usage limit, rate limit, timeout or server
+    // error): continue on the backup in a fresh session seeded with the deterministic digest, rather than ending
+    // the task. Sign-in problems don't fall back — a different provider can't fix those, and hiding them would confuse.
+    if (res.isError && fallback && classifyModelError(res.errorMessage).kind !== "auth") {
+      const failedWith = res.errorMessage ?? "no result";
+      const to = fallback;
+      fallback = null;
+      provider = to.provider;
+      tiers = to.tiers;
+      call = callFor(to.provider);
+      sessionId = randomUUID();
+      freshSessionPending = true;
+      cumulativeCost = 0;
+      const digest = project(fold(taskId, readEvents(p, taskId)), { budget: cfg.budget.initial });
+      appendEvent(p, taskId, { actor: "system", type: "decision", summary: `fallback: ${failedWith.slice(0, 120)} — continuing on ${to.provider}`, meta: { fallback: { to: to.provider, reason: failedWith.slice(0, 300) } } });
+      log(`[${steps}] main model failed (${failedWith.slice(0, 80)}) — continuing on ${to.provider}`);
+      nextParts = [part("digest", "summary of the work so far (new model)", digest), part("nudge", "the step that was in progress", nextPrompt), part("instructions", "Narrowbit's instructions (resent to the backup model)", systemPrompt)];
+      nextPrompt = `You are taking over this task on a different model because the previous one became unavailable. Nothing was lost — use read/grep/search again for anything you need in full. Progress so far:\n\n${digest}\n\nThe input for the step that was in progress:\n${nextPrompt}`;
+      steps--;
+      continue;
     }
     freshSessionPending = false;
     // Codex assigns its own thread id rather than accepting the one we requested (see
@@ -636,6 +686,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       }
       log(`      → ${resultText.split("\n")[0].slice(0, 100)}`);
       batchResults.push(`${tag}${resultText}`);
+      lastResultHead = resultMeta(decision, resultText);
+      recentActions.push(`${decision.action}${decision.path ? " " + decision.path : ""}${checkFailedLabel(decision, resultText)}`);
       batchLabels.push(`${decision.action}${decision.path ? ` ${decision.path}` : decision.server ? ` ${decision.server}.${decision.tool}` : decision.command ? ` ${decision.command.slice(0, 60)}` : decision.query ? ` "${decision.query.slice(0, 40)}"` : decision.pattern ? ` "${decision.pattern.slice(0, 40)}"` : ""}`);
       // executeAction returns "edited <path>" only when the file was actually written; a refused
       // edit (old text not found / not unique) doesn't count as progress for the done gate.
@@ -723,6 +775,23 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   appendEvent(p, taskId, { actor: "system", type: "decision", summary: `outcome: ${outcome}`, meta: { outcome, summary, steps, ...(failure ? { errorKind: failure.kind, resets: failure.resets } : {}) } });
   store.close();
   return { taskId, outcome, summary, steps, actionCounts, compactions };
+}
+
+/** A one-line, content-free description of what an action returned — this is all the router's decision model sees. */
+function resultMeta(d: Decision, result: string): string {
+  const lines = result.split("\n").length;
+  switch (d.action) {
+    case "read": return /file not found/.test(result) ? "the file was not found" : `read ${d.path ?? "a file"} (${lines} lines)`;
+    case "grep": case "search": return /no matches/i.test(result) ? "no matches" : `${Math.max(0, lines - 1)} result lines`;
+    case "edit": return result.startsWith("edited ") ? "the edit was applied" : "the edit was refused";
+    case "verify": return result.startsWith("VERIFICATION FAILED") ? "verification failed" : "verification passed";
+    case "run": { const m = /\(exit (\d+)/.exec(result); return m ? (m[1] === "0" ? "the command succeeded" : `the command failed (exit ${m[1]})`) : "the command ran"; }
+    default: return `${d.action} returned ${lines} line(s)`;
+  }
+}
+
+function checkFailedLabel(d: Decision, result: string): string {
+  return (d.action === "verify" && result.startsWith("VERIFICATION FAILED")) || (d.action === "run" && /^\$ .*\(exit [1-9]/.test(result)) ? " (failed)" : "";
 }
 
 /** Executes one action and returns the (capped) result text to feed back as the next turn's prompt. */
@@ -847,7 +916,7 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
         return text;
       }
       const r = await runCommand(p, command);
-      const capped = capSummary(r.rendered);
+      const capped = capOutput(r.rendered);
       const handle = writeEvidence(p, taskId, "command", r.rendered, capped);
       appendEvent(p, taskId, { actor: "system", type: "command", summary: capped, evidenceRef: handle.id, meta: { command: d.command, exit: r.exit } });
       return capped;
@@ -857,7 +926,7 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       const store = openStore(p);
       const v = await verify(p, cfg, store, null);
       store.close();
-      const capped = capSummary(v.report);
+      const capped = capOutput(v.report);
       const handle = writeEvidence(p, taskId, "command", v.report, capped);
       appendEvent(p, taskId, { actor: "system", type: "verify", summary: capped, evidenceRef: handle.id, meta: { ok: v.ok } });
       return capped;
@@ -941,7 +1010,7 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
         // treatment explicitly here, not just writeEvidence's own internal redact() of the disk copy
         // (which wouldn't cover the text that re-enters the model's context or the visible event log).
         const cleaned = redact(r.text);
-        const capped = capSummary(cleaned);
+        const capped = capOutput(cleaned);
         const text = `${serverName}.${toolName}${r.isError ? " (error)" : ""}:\n${capped}`;
         const handle = writeEvidence(p, taskId, "other", cleaned, capped);
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, evidenceRef: handle.id, meta: { server: serverName, tool: toolName } });

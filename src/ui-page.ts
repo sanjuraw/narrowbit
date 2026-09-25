@@ -428,6 +428,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <h3>Behaviour</h3>
     <label class="check"><input type="checkbox" id="leadChk"><span>Lead mode<small>Model 3 writes a plan before work starts and reviews the diff before it's reported done. Two extra calls to your strongest model per task.</small></span></label>
     <label class="check"><input type="checkbox" id="askChk"><span>Ask before running commands<small>Reads, edits and verify run freely; shell commands wait for you.</small></span></label>
+    <div class="field" style="margin-top:10px"><label for="fallbackSel">Backup — if this provider hits a limit or fails, continue on</label><select id="fallbackSel"></select></div>
     <div class="note hidden" id="providerNote"></div>
     <div class="saved" id="savedMsg"></div>
 
@@ -966,6 +967,14 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     fillModelList();
     if (!list) loadModelList(draft.provider);
 
+    var fb = clear($("fallbackSel"));
+    fb.appendChild(el("option", { value: "", text: "Nothing — stop with an error" }));
+    Object.keys(S.providers).forEach(function (prov) {
+      var Q = S.providers[prov];
+      if (prov === draft.provider || Q.unavailable) return;
+      var o = el("option", { value: prov, text: Q.label }); if (prov === S.fallback) o.selected = true; fb.appendChild(o);
+    });
+    fb.onchange = function () { saveModels(null, { fallback: fb.value }); };
     var eff = clear($("effort"));
     S.efforts.forEach(function (l) { var o = el("option", { value: l, text: l }); if (l === draft.effort) o.selected = true; eff.appendChild(o); });
     $("leadChk").checked = S.lead;

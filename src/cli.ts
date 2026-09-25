@@ -94,6 +94,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit models                    providers, numbered available models, and this repo's selection
   narrowbit models choose             pick provider, model 1 (explore), 2 (execute), 3 (escalate) and effort from numbered menus
   narrowbit models set <explore|execute|escalate|all> <model name or number> [--provider <name>]
+  narrowbit models set fallback <provider|none>   a backup provider that takes over mid-task if the main one hits a limit or fails
   narrowbit models set provider <claude|codex>     narrowbit models set effort <level>
   narrowbit models reset [--provider <name>]   back to the built-in defaults
   narrowbit models endpoint <provider> <base-url|default> [--key-env NAME]   point an API/local provider elsewhere
@@ -738,7 +739,7 @@ export async function main(argv: string[]): Promise<number> {
       }
       const [key, value] = [pos[1], pos[2]];
       if (!key || !value) {
-        process.stderr.write("usage: narrowbit models set <explore|execute|escalate|all|provider|effort> <value> [--provider <name>]\n");
+        process.stderr.write("usage: narrowbit models set <explore|execute|escalate|all|provider|effort|fallback> <value> [--provider <name>]\n");
         return 2;
       }
       if (key === "provider") {
@@ -747,6 +748,12 @@ export async function main(argv: string[]): Promise<number> {
           return 2;
         }
         agent.provider = value;
+      } else if (key === "fallback") {
+        if (value === "none" || value === "off") delete agent.fallback;
+        else if (!isProvider(value)) {
+          process.stderr.write(`narrowbit: unknown provider "${value}" (expected one of ${PROVIDERS.join(", ")}, or none)\n`);
+          return 2;
+        } else agent.fallback = value;
       } else if (key === "effort") {
         agent.effort = value;
       } else if (key === "all" || (PHASES as readonly string[]).includes(key)) {

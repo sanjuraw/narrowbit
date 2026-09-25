@@ -303,7 +303,7 @@ export function startUi(opts: UiOptions) {
       const ga = globalAgent();
       let selection;
       try { selection = resolveSelection(ga); } catch { selection = resolveSelection(undefined); }
-      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? true, connectors: listConnectors().map(publicConnector), skills: [], history: [] };
+      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? true, fallback: ga?.fallback ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: [] };
     }
     const p = paths(root);
     const initialized = existsSync(p.db);
@@ -335,6 +335,7 @@ export function startUi(opts: UiOptions) {
       running: !!run?.running && run.root === root,
       runningTask: run?.running && run.root === root ? run.taskId : null,
       lead: effAgent(cfg)?.boss ?? true,
+      fallback: effAgent(cfg)?.fallback ?? "",
       history: initialized ? taskHistory(p) : [],
       skills: listSkills(p),
       memory: openMemory(p).load().filter((e) => e.status === "active" && !e.external).map((e) => ({ id: e.id, type: e.type, text: e.text, reason: e.reason ?? "", date: e.date })),
@@ -567,6 +568,10 @@ export function startUi(opts: UiOptions) {
           }
           models[provider as ProviderName] = slots;
           const next = { ...base, provider, effort, models, ...(typeof body.lead === "boolean" ? { boss: body.lead } : {}) } as AgentConfig;
+          if (typeof body.fallback === "string") {
+            if (body.fallback && isProvider(body.fallback) && body.fallback !== provider) next.fallback = body.fallback;
+            else delete next.fallback;
+          }
           if (p) {
             (cfg as any).agent = next;
             ensureDirs(p);
@@ -574,7 +579,7 @@ export function startUi(opts: UiOptions) {
           }
           // Also remembered globally so the next repo (or the next launch with no folder) starts here.
           mkdirSync(join(homedir(), ".narrowbit"), { recursive: true, mode: 0o700 });
-          writeFileSync(GLOBAL_AGENT, JSON.stringify({ provider, effort, models, boss: next.boss }, null, 2) + "\n", { mode: 0o600 });
+          writeFileSync(GLOBAL_AGENT, JSON.stringify({ provider, effort, models, boss: next.boss, fallback: next.fallback }, null, 2) + "\n", { mode: 0o600 });
           return json(res, 200, state());
         }
         case "/api/skills": {

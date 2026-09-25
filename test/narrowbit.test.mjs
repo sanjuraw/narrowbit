@@ -13,7 +13,7 @@ const dist = (m) => import(join(here, "..", "dist", m));
 
 const { parseSource } = await dist("parser.js");
 const { IgnoreMatcher } = await dist("files.js");
-const { compressOutput } = await dist("compress.js");
+const { compressOutput, groupSimilar, capOutput } = await dist("compress.js");
 const { redact } = await dist("redact.js");
 const { paths, ensureDirs, loadConfig } = await dist("config.js");
 const { Store } = await dist("store.js");
@@ -842,12 +842,13 @@ function fakeClaude(replies) {
 const fs = require("fs");
 const f = ${JSON.stringify(join(dir, "replies.json"))}, c = ${JSON.stringify(join(dir, "count"))};
 const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
+fs.appendFileSync(${JSON.stringify(join(dir, "models.log"))}, (process.argv[process.argv.indexOf("--model") + 1] || "?") + "\\n");
 const r = JSON.parse(fs.readFileSync(f, "utf8")); const text = r[Math.min(n, r.length - 1)];
 const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
 console.log(JSON.stringify({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }));
 console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
 `, { mode: 0o755 });
-  return { bin, dir, calls: () => Number(readFileSync(join(dir, "count"), "utf8")) };
+  return { bin, dir, calls: () => Number(readFileSync(join(dir, "count"), "utf8")), models: () => readFileSync(join(dir, "models.log"), "utf8").trim().split("\n") };
 }
 function tinyRepo() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "nb-rt-")));
@@ -1138,5 +1139,125 @@ describe("connector tools are described on demand, not listed in full every turn
       const first = ev.find((e) => e.type === "model_call").meta.context.parts.find((x) => x.kind === "instructions");
       assert.ok(first.tokens < 3500, "the fixed instructions stay small (names only: " + first.tokens + " est. tokens)");
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("experimental decider routing", () => {
+  const tiers = { explore: "m-explore", execute: "m-execute", escalate: "m-escalate" };
+  const script = () => [JSON.stringify({ action: "read", path: "a.txt" }), JSON.stringify({ action: "done", summary: "ok" })];
+  let srv, url, asked = [];
+  before(async () => {
+    srv = createHttp((req, res) => {
+      let b = ""; req.on("data", (d) => (b += d));
+      req.on("end", () => {
+        const body = JSON.parse(b); asked.push(body.state);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ answers: { tier: { choice: "escalate", probabilities: { explore: 0.1, execute: 0.2, escalate: 0.7 }, confidence: 0.7 } } }));
+      });
+    });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    url = `http://127.0.0.1:${srv.address().port}`;
+  });
+  after(() => srv.close());
+
+  test("rules (the default) route reading to the explore tier", async () => {
+    const { root, p } = tinyRepo(); const fake = fakeClaude(script());
+    try {
+      await runTask(p, "read a.txt", { claudeBin: fake.bin, boss: false, maxSteps: 6, models: tiers });
+      assert.equal(fake.models()[0], "m-explore");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("with the decider router, its choice picks the tier, and only compact metadata is sent to it", async () => {
+    asked = [];
+    const { root, p } = tinyRepo(); writeFileSync(join(root, "a.txt"), "SECRET-CONTENT-OF-A-FILE\n");
+    const fake = fakeClaude(script());
+    try {
+      const r = await runTask(p, "read a.txt", { claudeBin: fake.bin, boss: false, maxSteps: 6, models: tiers, router: { kind: "decider", url } });
+      assert.equal(fake.models()[0], "m-escalate", "the decider said escalate");
+      const route = readEvents(p, r.taskId).find((e) => e.meta?.route)?.meta.route;
+      assert.equal(route.chosen, "escalate"); assert.equal(route.rules, "explore"); assert.equal(route.used, true);
+      assert.ok(asked.length >= 1 && asked.every((st) => /Task: read a\.txt/.test(st) && /step \d+ of/.test(st)));
+      assert.ok(!asked.some((st) => st.includes("SECRET-CONTENT")), "file contents never leave the runtime — only metadata");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("an unreachable decider falls back to the rules instead of failing the task", async () => {
+    const { root, p } = tinyRepo(); const fake = fakeClaude(script());
+    try {
+      const r = await runTask(p, "read a.txt", { claudeBin: fake.bin, boss: false, maxSteps: 6, models: tiers, router: { kind: "decider", url: "http://127.0.0.1:1" } });
+      assert.equal(r.outcome, "done");
+      assert.equal(fake.models()[0], "m-explore");
+      assert.match(readEvents(p, r.taskId).find((e) => e.meta?.route).summary, /decider unavailable/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("output compression ideas borrowed from OmniRoute", () => {
+  test("near-identical lines collapse into one with a count; error lines are never grouped", () => {
+    const lines = ["start", ...Array.from({ length: 40 }, (_, i) => `progress ${i}/40 at 2026-09-25T10:00:${String(i).padStart(2, "0")}Z id=${(i * 7919).toString(16).padStart(8, "a")}`), "error TS2304 a.ts(12,3): Cannot find name x", "error TS2304 a.ts(15,3): Cannot find name y", "error TS2304 a.ts(18,3): Cannot find name z", "done"];
+    const g = groupSimilar(lines);
+    assert.ok(g.length < 10, `collapsed (${g.length} lines)`);
+    assert.ok(g.some((l) => /\[\+39 similar lines\]/.test(l)));
+    assert.equal(g.filter((l) => /error TS2304/.test(l)).length, 3, "all three distinct errors survive");
+  });
+
+  test("a long output keeps its start, its end and the error lines from the middle (the old cut kept only the start)", () => {
+    const lines = Array.from({ length: 600 }, (_, i) => `line ${i} some ordinary output text that takes up room`);
+    lines[300] = "FAIL src/middle.test.ts: expected 1 received 2";
+    lines[599] = "Tests: 1 failed, 599 passed";
+    const out = capOutput(lines.join("\n"), 400);
+    assert.match(out, /line 0 /); assert.match(out, /Tests: 1 failed, 599 passed/); assert.match(out, /FAIL src\/middle\.test\.ts/);
+    assert.match(out, /lines omitted/);
+    assert.ok(out.length < 400 * 3.6 + 400, `stays near its budget (${out.length} chars)`);
+    assert.equal(capOutput("short", 400), "short", "small output is untouched");
+  });
+
+  test("the fidelity gate falls back to the raw output when a condenser would lose the reported errors", () => {
+    const raw = Array.from({ length: 40 }, (_, i) => `src/file${i}.ts(${i + 1},1): error TS${2300 + i}: Something is wrong ${i}`).join("\n");
+    const c = compressOutput(raw, 1);
+    const have = [...raw.matchAll(/TS23\d\d/g)].slice(0, 20).filter((m) => c.text.includes(m[0])).length;
+    assert.ok(have >= 17, `at least 85% of the first 20 error codes are still present (${have}/20)`);
+  });
+});
+
+describe("fallback provider (idea from OmniRoute's failover)", () => {
+  test("when the main model hits a usage limit, a configured backup takes over mid-task instead of the task ending", async () => {
+    const { root, p } = tinyRepo();
+    const dir = mkdtempSync(join(tmpdir(), "nb-limit-"));
+    const bin = join(dir, "claude");
+    writeFileSync(bin, `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "result", subtype: "error", is_error: true, result: "You've hit your session limit · resets 1am", usage: {}, session_id: "s" }));
+`, { mode: 0o755 });
+    let hits = 0;
+    const srv = createHttp((req, res) => {
+      let b = ""; req.on("data", (d) => (b += d));
+      req.on("end", () => { hits++; res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: JSON.stringify({ action: "done", summary: "finished on the backup" }) } }], usage: { prompt_tokens: 20, completion_tokens: 5 } })); });
+    });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    try {
+      const cfg = loadConfig(p);
+      cfg.agent = { fallback: "custom", endpoints: { custom: { baseUrl: `http://127.0.0.1:${srv.address().port}/v1` } }, models: { custom: { explore: "m", execute: "m", escalate: "m" } } };
+      (await dist("config.js")).saveConfig(p, cfg);
+      const r = await runTask(p, "say hello", { claudeBin: bin, boss: false, maxSteps: 6 });
+      assert.equal(r.outcome, "done");
+      assert.match(r.summary, /finished on the backup/);
+      const ev = readEvents(p, r.taskId);
+      assert.ok(ev.some((e) => /^fallback: .*session limit.*continuing on custom/.test(e.summary)), "the switch is logged with its reason");
+      assert.ok(hits >= 1);
+    } finally { srv.close(); rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("without a fallback, the same limit ends the task with a clear error (nothing changes for people who don't opt in)", async () => {
+    const { root, p } = tinyRepo();
+    const dir = mkdtempSync(join(tmpdir(), "nb-limit-"));
+    const bin = join(dir, "claude");
+    writeFileSync(bin, `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "result", subtype: "error", is_error: true, result: "You've hit your session limit · resets 1am", usage: {}, session_id: "s" }));
+`, { mode: 0o755 });
+    try {
+      const r = await runTask(p, "say hello", { claudeBin: bin, boss: false, maxSteps: 6 });
+      assert.equal(r.outcome, "error");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
   });
 });

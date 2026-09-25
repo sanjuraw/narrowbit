@@ -34,6 +34,9 @@ export interface AgentConfig {
   models?: Record<string, { explore?: string; execute?: string; escalate?: string }>;
   /** Per-provider endpoint overrides for API/local providers, e.g. { custom: { baseUrl: "http://…/v1", keyEnv: "MY_KEY" } }. */
   endpoints?: Record<string, { baseUrl?: string; keyEnv?: string }>;
+  /** Backup provider (its saved models are used) that takes over mid-task if the main one fails with a limit, timeout or
+   * server error — instead of ending the task. Idea from OmniRoute's fallback chain. Off unless set. */
+  fallback?: string;
   /** Lead mode: model 3 plans the task up front and reviews the diff before "done". Default on. */
   boss?: boolean;
 }

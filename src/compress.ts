@@ -42,6 +42,87 @@ function collapse(lines: string[]): string[] {
   return out;
 }
 
+const ERR_LINE = /\b(?:error|Error|ERROR|failed|FAILED|FAIL|fatal|panic|exception|Exception|Traceback|Cannot|not found|ENOENT|EADDRINUSE|ECONNREFUSED|denied|expected|received|AssertionError)\b|✗|×/;
+
+/**
+ * Collapses runs of near-identical lines (same text once numbers, hex ids and timestamps are masked) into the
+ * first one plus a count — the repeated "progress 12/300", "GET /x 200 4ms" kind of noise. Error lines are never
+ * grouped: two errors that differ only by line number are two different errors. (Idea from OmniRoute's RTK.)
+ */
+export function groupSimilar(lines: string[], minRun = 3): string[] {
+  const norm = (l: string) => l.replace(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?/g, "<T>").replace(/\b[0-9a-f]{8,40}\b/gi, "<H>").replace(/\d+/g, "<N>").replace(/\s+/g, " ").trim();
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; ) {
+    const l = lines[i];
+    if (ERR_LINE.test(l) || !l.trim()) { out.push(l); i++; continue; }
+    const key = norm(l);
+    let j = i + 1;
+    while (j < lines.length && !ERR_LINE.test(lines[j]) && norm(lines[j]) === key) j++;
+    if (j - i >= minRun) out.push(`${l}  [+${j - i - 1} similar lines]`);
+    else for (let k = i; k < j; k++) out.push(lines[k]);
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * Cuts long output to a token budget the way a person skims it: the start, the end (where the summary and the
+ * final error usually are), and any error lines from the middle — not just the first N characters. Used for
+ * command, verification and connector output; a plain file read keeps head-only, since its range is explicit.
+ */
+export function capOutput(text: string, capTokens = 800): string {
+  if (estimateTokens(text) <= capTokens) return text;
+  const lines = text.split("\n");
+  const budget = Math.floor(capTokens * 3.6);
+  const take = (from: number, to: number, step: 1 | -1, chars: number) => {
+    const got: number[] = [];
+    let used = 0;
+    for (let i = from; step === 1 ? i < to : i >= to; i += step) {
+      used += lines[i].length + 1;
+      if (used > chars && got.length) break;
+      got.push(i);
+    }
+    return step === 1 ? got : got.reverse();
+  };
+  const head = take(0, lines.length, 1, Math.floor(budget * 0.15));
+  const tailAll = take(lines.length - 1, 0, -1, Math.floor(budget * 0.2));
+  const tail = tailAll.filter((i) => i > head[head.length - 1]);
+  const keep = new Set([...head, ...tail]);
+  let used = 0;
+  for (const i of keep) used += lines[i].length + 1;
+  const mid: number[] = [];
+  for (let i = head[head.length - 1] + 1; i < (tail[0] ?? lines.length); i++) {
+    if (!ERR_LINE.test(lines[i]) || used + lines[i].length > budget) continue;
+    mid.push(i);
+    used += lines[i].length + 1;
+    if (mid.length >= 40) break;
+  }
+  const chosen = [...new Set([...head, ...mid, ...tail])].sort((a, b) => a - b);
+  const out: string[] = [];
+  let prev = -1;
+  for (const i of chosen) {
+    if (prev >= 0 && i > prev + 1) out.push(`… ${i - prev - 1} line${i - prev - 1 === 1 ? "" : "s"} omitted …`);
+    out.push(lines[i]);
+    prev = i;
+  }
+  if (prev < lines.length - 1) out.push(`… ${lines.length - 1 - prev} more lines omitted …`);
+  return out.join("\n") + "\n(shortened: kept the start, the end and the error lines; ask for a narrower range or query for more)";
+}
+
+/** Identifiers a reader would act on: error codes and failing test files, from lines that report a problem. (Not file:line
+ * — condensers legitimately reformat locations, e.g. tsc's grouping by file.) */
+function criticalTokens(raw: string, max = 20): string[] {
+  const seen: string[] = [];
+  for (const l of raw.split("\n")) {
+    if (!ERR_LINE.test(l)) continue;
+    for (const m of l.matchAll(/\bTS\d{4}\b|\b[A-Z]{2,}\d{3,}\b|\bE[A-Z]{3,}\b|(?<=FAIL\s+)\S+/g)) {
+      if (!seen.includes(m[0])) seen.push(m[0]);
+      if (seen.length >= max) return seen;
+    }
+  }
+  return seen;
+}
+
 function tsc(lines: string[]): Compressed | null {
   const re1 = /^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$/;
   const re2 = /^(.+?):(\d+):(\d+) - error (TS\d+): (.*)$/;
@@ -200,10 +281,14 @@ function grepOut(lines: string[]): Compressed | null {
 
 export function compressOutput(raw: string, exit: number): Compressed {
   const all = stripAnsi(raw).split("\n");
-  const lines = collapse(all.filter((l) => !NOISE.some((re) => re.test(l))));
+  const lines = groupSimilar(collapse(all.filter((l) => !NOISE.some((re) => re.test(l)))));
   const r = tsc(lines) ?? tests(lines) ?? eslint(lines) ?? gitDiff(lines) ?? grepOut(lines) ?? npm(lines) ?? generic(lines, exit);
   // Fail-safe (from 9router's RTK): a compressor must never make things worse or hide everything.
-  if (r.text.length >= raw.length || !r.text.trim()) {
+  // Fidelity gate (idea from OmniRoute): the condensed text must still mention what the raw output reported —
+  // its error codes and failing test files. If it lost more than 15% of them, the raw output wins.
+  const crit = criticalTokens(raw);
+  const lostTooMuch = crit.length >= 3 && crit.filter((t) => r.text.includes(t)).length < Math.ceil(crit.length * 0.85);
+  if (r.text.length >= raw.length || !r.text.trim() || lostTooMuch) {
     const t = redact(raw.length > 12_000 ? raw.slice(0, 12_000) + "\n… (truncated)" : raw);
     return { kind: "generic", text: t, errorCount: r.errorCount, summary: r.summary };
   }

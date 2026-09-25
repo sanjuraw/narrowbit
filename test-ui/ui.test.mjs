@@ -357,6 +357,16 @@ describe("app page with a folder open", () => {
     page.$("closeSkill").click();
   });
 
+  test("a backup provider can be chosen in settings, is remembered, and can be cleared", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const save = (fb) => fetch(`${app.base}/api/models`, { method: "POST", headers: H, body: JSON.stringify({ provider: "claude", effort: "medium", tiers: { explore: "haiku", execute: "sonnet", escalate: "opus" }, fallback: fb }) }).then((r) => r.json());
+    assert.equal((await save("codex")).fallback, "codex");
+    assert.equal((await save("claude")).fallback, "", "the main provider can't be its own backup");
+    assert.equal((await save("codex")).fallback, "codex");
+    assert.equal((await save("")).fallback, "");
+    assert.ok(page.$("fallbackSel"), "the settings panel has the backup selector");
+  });
+
   test("every project lists the built-in skills, without a delete button; user skills get one", async () => {
     const rows = () => [...page.w.document.querySelectorAll("#skillsList .skill-row")];
     await page.until(() => rows().length >= 6, "built-in skills");

@@ -41,6 +41,13 @@ export interface BenchArm {
   runtime?: boolean;
   /** runtime arm only: cap on loop steps (default 20). */
   runtimeMaxSteps?: number;
+  /** runtime arm only: which provider drives the model calls (default claude); see providers/models.ts. */
+  provider?: string;
+  /** runtime arm only: explicit model per tier (otherwise every tier uses the file's `model`, i.e. no routing). */
+  tiers?: { explore: string; execute: string; escalate: string };
+  /** runtime arm only: how tiers are chosen — "rules" (default) or "decider" (needs `routerUrl`). */
+  router?: "rules" | "decider";
+  routerUrl?: string;
   /** runtime arm only: lead mode (plan + review). Defaults to runTask's own default (true). */
   boss?: boolean;
   /** Extra args for `claude` in this arm. */
@@ -224,7 +231,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
           let s: ReturnType<typeof parseStream>;
           if (arm.runtime) {
             log(`${tag}: running narrowbit's own loop…`);
-            const result = await runTask(wp, t.prompt, { model: spec.model, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss });
+            const result = await runTask(wp, t.prompt, { provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, router: arm.router ? { kind: arm.router, url: arm.routerUrl } : undefined, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss });
             const ledger = fold(result.taskId, readEvents(wp, result.taskId)).ledgerByRole;
             const roles = Object.values(ledger);
             const sum = (k: "inputTokens" | "cacheCreationTokens" | "cacheReadTokens" | "outputTokens") => roles.reduce((a, x) => a + x[k], 0);
