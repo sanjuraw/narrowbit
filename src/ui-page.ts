@@ -338,6 +338,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .note { font-size: 12px; color: var(--warn); margin-top: 6px; }
 .saved { font-size: 12px; color: var(--ok); min-height: 16px; }
 .overlay { position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 70%, transparent); backdrop-filter: blur(6px); display: grid; place-items: center; z-index: 40; padding: 16px; }
+.wn { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 10px; }
+.wn-d { color: var(--muted); font-size: 13px; white-space: pre-wrap; margin-top: 2px; }
 .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; width: min(560px, 100%); max-height: 85vh; overflow-y: auto; padding: 22px; box-shadow: 0 20px 60px rgba(0,0,0,.2); }
 .modal h1 { font-family: var(--serif); font-weight: 400; font-size: 24px; margin: 0 0 4px; }
 .modal .recent { display: flex; flex-direction: column; gap: 6px; margin: 16px 0; }
@@ -475,6 +477,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   </div>
 </div>
 
+<div class="overlay hidden" id="whatsNew">
+  <div class="modal">
+    <div id="whatsNewBody"></div>
+    <div style="text-align:right;margin-top:14px"><button class="primary" id="whatsNewClose">Got it</button></div>
+  </div>
+</div>
 <div class="overlay hidden" id="repoOverlay">
   <div class="modal">
     <h1>Open a repository</h1>
@@ -793,7 +801,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     $("verLine").textContent = line;
     var a = clear($("aboutInfo"));
     a.appendChild(el("div", { text: line || "Version unknown" }));
-    var msg = !U ? "Checking for updates…" : U.canApply ? "Update available (" + U.behind + " new change" + (U.behind === 1 ? "" : "s") + ") — use the banner at the top." : U.behind > 0 ? (U.reason || "A newer version is available.") : U.supported ? "Up to date." : (U.reason || "Update check unavailable.");
+    var msg = !U ? "Checking for updates…" : U.canApply ? "" + (U.number ? "Update " + U.number + " is available" : "An update is available") + " — use the banner at the top." : U.behind > 0 ? (U.reason || "A newer version is available.") : U.supported ? "Up to date." : (U.reason || "Update check unavailable.");
     a.appendChild(el("div", { cls: "muted", style: "font-size:12.5px", text: msg }));
     a.appendChild(el("button", { text: "Check now", onclick: function () { loadUpdate(true); } }));
     var box = el("textarea", { cls: "diag hidden", readonly: "readonly", rows: "8" });
@@ -812,18 +820,44 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function loadUpdate(refresh) {
     return api("/api/update" + (refresh ? "?refresh=1" : "")).then(function (u) { U = u; renderUpdate(); }).catch(function () {});
   }
+  // Banner text: what the update brings, in a line. Commit titles are already written for people; keep the first few short.
+  function shortChanges(list) {
+    var t = (list || []).slice(0, 3).map(function (c) { c = c.replace(/\s*\(.*$/, ""); return c.length > 70 ? c.slice(0, 67) + "…" : c; });
+    var more = (list || []).length > 3 ? " and more" : "";
+    return t.length ? t.join(" · ") + more : "bug fixes and improvements";
+  }
+  // After updating, say what changed in detail. The app restarts, so the server keeps the notes until they've been seen.
+  function showWhatsNew(r) {
+    if (!r || !r.notes) return;
+    var box = clear($("whatsNewBody"));
+    box.appendChild(el("h1", { text: r.number ? "Updated to update " + r.number : "Narrowbit is updated" }));
+    box.appendChild(el("p", { cls: "muted", style: "margin:0 0 12px", text: "Here is what this update brought." }));
+    var ul = el("ul", { cls: "wn" });
+    r.notes.forEach(function (n) {
+      var li = el("li", {}, el("strong", { text: n.title }));
+      if (n.details) li.appendChild(el("div", { cls: "wn-d", text: n.details }));
+      ul.appendChild(li);
+    });
+    if (!r.notes.length) ul.appendChild(el("li", { text: "Bug fixes and improvements." }));
+    box.appendChild(ul);
+    show($("whatsNew"), true);
+  }
+  $("whatsNewClose").onclick = function () { show($("whatsNew"), false); api("/api/update/ack", {}).catch(function () {}); };
   function renderUpdate() {
+    if (U && U.justUpdated && $("whatsNew").classList.contains("hidden") && !U.justUpdated.shown) { U.justUpdated.shown = true; showWhatsNew(U.justUpdated); }
     renderVersion();
     var bar = $("updBar");
     var show_ = !!(U && U.canApply && store("dismissedUpdate") !== U.latest);
     show(bar, show_);
     if (!show_) return;
     clear(bar);
-    var msg = el("span", { cls: "u-msg" }, el("strong", { text: "Update available" }), " — " + U.behind + " new change" + (U.behind === 1 ? "" : "s") + " on GitHub. ", el("span", { cls: "u-list", text: U.changes.slice(0, 3).join(" · ") }));
+    var num = U.number ? "Update " + U.number + " is available" : "An update is available";
+    var msg = el("span", { cls: "u-msg" }, el("strong", { text: num }), " — " + shortChanges(U.changes) + " ");
     var go = el("button", { cls: "primary", text: "Update now", onclick: function () {
       go.disabled = true; later.disabled = true; go.textContent = "Updating…";
       api("/api/update/apply", {}).then(function (r) {
-        clear(bar).appendChild(el("span", { cls: "u-msg", text: r.restarting ? "Updated " + r.from + " → " + r.to + ". Restarting…" : "Updated " + r.from + " → " + r.to + ". Quit Narrowbit (⌘Q) and reopen it to use the new version." }));
+        showWhatsNew(r);
+        clear(bar).appendChild(el("span", { cls: "u-msg", text: r.restarting ? "Updated. Restarting…" : "Updated. Quit Narrowbit (⌘Q) and reopen it to use the new version." }));
       }).catch(function (e) { go.disabled = false; later.disabled = false; go.textContent = "Update now"; banner("bad", e.message); });
     } });
     var later = el("button", { cls: "link", text: "Later", onclick: function () { store("dismissedUpdate", U.latest); renderUpdate(); } });

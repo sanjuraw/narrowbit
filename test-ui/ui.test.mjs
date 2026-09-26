@@ -5,7 +5,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -153,6 +153,25 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.equal(res.status, 200);
     const st = await res.json();
     assert.ok(st.providers.cloudflare.baseUrl.includes(id), "endpoint uses the saved id");
+  });
+
+  test("after an update the app says what it brought, in detail, until it is dismissed", async () => {
+    mkdirSync(join(home, ".narrowbit"), { recursive: true });
+    const file = join(home, ".narrowbit", "last-update.json");
+    writeFileSync(file, JSON.stringify({ number: 187, from: "aaaaaaa", to: "bbbbbbb", notes: [{ title: "Attach images and PDFs", details: "Claude and Codex see images.\nPDFs go as text elsewhere." }, { title: "Hide the sidebar", details: "" }] }));
+    const p2 = await openPage(app.url);
+    try {
+      await p2.until(() => !p2.$("whatsNew").classList.contains("hidden"), "the what's-new dialog");
+      const text = p2.$("whatsNewBody").textContent;
+      assert.match(text, /update 187/);
+      assert.match(text, /Attach images and PDFs/);
+      assert.match(text, /PDFs go as text elsewhere/, "the details are shown, not just titles");
+      assert.doesNotMatch(text, /github/i);
+      p2.$("whatsNewClose").click();
+      await p2.until(() => !existsSync(file), "the notes to be cleared once seen");
+    } finally {
+      p2.close();
+    }
   });
 
   test("the GitHub button beside the folder pill stays hidden when the repository has no GitHub remote", () => {

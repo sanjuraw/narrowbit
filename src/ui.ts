@@ -34,7 +34,7 @@ import {
   type ProviderName,
 } from "./providers/models.js";
 import { runTask, safeAbsPath } from "./runtime.js";
-import { applyUpdate, checkUpdate, readVersion } from "./update.js";
+import { acknowledgeUpdateNotes, applyUpdate, checkUpdate, pendingUpdateNotes, readVersion } from "./update.js";
 import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
 import { sh } from "./util.js";
@@ -497,7 +497,7 @@ export function startUi(opts: UiOptions) {
         return;
       }
 
-      if (route === "GET /api/update") return json(res, 200, await checkUpdate(url.searchParams.has("refresh")));
+      if (route === "GET /api/update") return json(res, 200, { ...(await checkUpdate(url.searchParams.has("refresh"))), justUpdated: pendingUpdateNotes() });
 
       if (route === "GET /api/github") {
         if (!root) return json(res, 400, { error: "no repository open" });
@@ -720,6 +720,10 @@ export function startUi(opts: UiOptions) {
           } catch (e: any) {
             return json(res, 200, { ok: false, error: e.message });
           }
+        }
+        case "/api/update/ack": {
+          acknowledgeUpdateNotes();
+          return json(res, 200, { ok: true });
         }
         case "/api/update/apply": {
           if (run?.running) return json(res, 409, { error: "Stop the running task before updating." });
