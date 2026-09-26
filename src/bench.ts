@@ -11,6 +11,7 @@ import { Tasks } from "./tasks.js";
 import { mcpServerConfig } from "./claude.js";
 import { fold, readEvents } from "./events.js";
 import { runTask } from "./runtime.js";
+import { classifyModelError } from "./errors.js";
 import { sh, shortId, now } from "./util.js";
 import { getKey } from "./keys.js";
 
@@ -26,6 +27,22 @@ export interface BenchTask {
   expectedFiles?: string[];
   /** Start state: check these paths out of another commit first (e.g. the fix's tests, which must fail). */
   apply?: { from: string; paths: string[] };
+}
+
+/** Milliseconds until a limit's stated reset ("4:06 PM", "1am (Asia/Calcutta)", "in 30 minutes"); half an hour if unreadable, capped at 6 hours. */
+export function msUntilReset(resets?: string, now = new Date()): number {
+  const fallback = 30 * 60_000;
+  if (!resets) return fallback;
+  const rel = /in\s+(\d+)\s*(minute|hour)/i.exec(resets);
+  if (rel) return Math.min(6 * 3600_000, Number(rel[1]) * (rel[2].toLowerCase().startsWith("h") ? 3600_000 : 60_000) + 60_000);
+  const m = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i.exec(resets);
+  if (!m) return fallback;
+  let h = Number(m[1]) % 12;
+  if (m[3].toLowerCase() === "pm") h += 12;
+  const t = new Date(now);
+  t.setHours(h, Number(m[2] ?? 0), 0, 0);
+  if (t.getTime() <= now.getTime()) t.setDate(t.getDate() + 1);
+  return Math.min(6 * 3600_000, t.getTime() - now.getTime() + 60_000);
 }
 
 export interface BenchArm {
@@ -274,7 +291,17 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             };
           } else if (arm.runtime) {
             log(`${tag}: running narrowbit's own loop…`);
-            const result = await runTask(wp, t.prompt, { jsonActions: arm.jsonActions, effort: arm.effort, provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, router: arm.router ? { kind: arm.router, url: arm.routerUrl } : undefined, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss });
+            const runOpts = { jsonActions: arm.jsonActions, effort: arm.effort, provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, router: arm.router ? { kind: arm.router, url: arm.routerUrl } : undefined, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss };
+            let result = await runTask(wp, t.prompt, runOpts);
+            // A usage limit is not a wrong answer. Wait for the reset and continue the same task (same worktree, same log),
+            // so a long unattended run survives a plan's 5-hour window instead of recording a string of bogus failures.
+            for (let wait = 0; wait < 6 && result.outcome === "error" && classifyModelError(result.summary).kind === "limit"; wait++) {
+              const ms = msUntilReset(classifyModelError(result.summary).resets);
+              log(`${tag}: usage limit — waiting ${Math.round(ms / 60000)} min for it to reset, then continuing`);
+              await new Promise((r) => setTimeout(r, ms));
+              const again = await runTask(wp, "The provider's usage limit has reset. Continue the task from where you left off.", { ...runOpts, continueTask: result.taskId });
+              result = { ...again, steps: result.steps + again.steps, actionCounts: Object.fromEntries([...new Set([...Object.keys(result.actionCounts), ...Object.keys(again.actionCounts)])].map((k) => [k, (result.actionCounts[k] ?? 0) + (again.actionCounts[k] ?? 0)])) };
+            }
             const ledger = fold(result.taskId, readEvents(wp, result.taskId)).ledgerByRole;
             const roles = Object.values(ledger);
             const sum = (k: "inputTokens" | "cacheCreationTokens" | "cacheReadTokens" | "outputTokens") => roles.reduce((a, x) => a + x[k], 0);

@@ -1419,3 +1419,13 @@ test("Codex's usage-limit message is a limit with its reset time", async () => {
   const { classifyModelError } = await dist("errors.js");
   assert.deepEqual(classifyModelError("You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 4:06 PM."), { kind: "limit", resets: "4:06 PM" });
 });
+
+test("benchmark waits for a usage limit's stated reset time (capped, with a fallback)", async () => {
+  const { msUntilReset } = await dist("bench.js");
+  const now = new Date(2026, 8, 26, 13, 0, 0);
+  assert.equal(msUntilReset("4:06 PM", now), (3 * 60 + 6) * 60_000 + 60_000);
+  assert.equal(msUntilReset("1am (Asia/Calcutta)", now), 12 * 3600_000 > 6 * 3600_000 ? 6 * 3600_000 : 0, "next-day resets are capped at 6h");
+  assert.equal(msUntilReset("in 30 minutes", now), 31 * 60_000);
+  assert.equal(msUntilReset(undefined, now), 30 * 60_000);
+  assert.equal(msUntilReset("whenever", now), 30 * 60_000);
+});
