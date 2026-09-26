@@ -1385,6 +1385,7 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 7000
       assert.equal(b.reasoningTokens, 4);
       const calls = readFileSync(join(dir, "args.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
       assert.ok(calls[0].includes("features.shell_tool=false"), "Codex's own tools are switched off");
+      assert.equal(calls[0][calls[0].indexOf("-s") + 1], "workspace-write", "so the model isn't told its workspace is read-only");
       assert.ok(calls[0].some((x) => x.startsWith("model_instructions_file=")), "our rules replace Codex's base instructions");
       assert.ok(!calls[0].some((x) => x.includes("RULES")), "…instead of being pasted into the prompt");
       assert.ok(calls[1].some((x) => x.startsWith("model_instructions_file=")), "and stay the same on resumed calls");

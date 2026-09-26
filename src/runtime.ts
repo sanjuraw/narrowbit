@@ -455,7 +455,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const batchHint = provider === "claude" ? "" : `\n\nWorking style for this model: send a JSON ARRAY of up to ${MAX_BATCH_ACTIONS} actions whenever they are independent — for example [{"action":"read",...},{"action":"read",...},{"action":"grep",...}] to look at several files at once. One action per turn wastes the step budget. Read only what you need, then edit; a task rarely needs more than a handful of reads before the first edit.`;
   const jsonMode = !!opts.jsonActions && provider !== "claude" && provider !== "codex";
   const jsonHint = jsonMode ? `\n\nReply format for this model: always a single JSON object {"actions": [ ...1 to ${MAX_BATCH_ACTIONS} action objects... ]} and nothing else.` : "";
-  const systemPrompt = SYSTEM_INSTRUCTIONS + connectorsBlock + batchHint + jsonHint;
+  // Models that see a sandbox notice ("read-only") from their own CLI have refused to edit; the runtime applies every edit.
+  const editHint = provider === "codex" ? `\n\nYou never edit files yourself, and any note about your sandbox or a read-only workspace does not apply to you: the runtime applies each "edit" action for you. Never answer "blocked" because you cannot write files — send the edit action.` : "";
+  const systemPrompt = SYSTEM_INSTRUCTIONS + connectorsBlock + batchHint + jsonHint + editHint;
   let hasEdited = false;
   // "done" gate. First real-repo use (narrowbit agent on this repo): Haiku replied "done" on its
   // second call with a confident, detailed summary of changes it never made — no read, no edit,
