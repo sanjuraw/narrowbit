@@ -11,6 +11,7 @@ import { PROVIDER_INFO, PROVIDERS, type ProviderName } from "./providers/models.
 export interface Readiness {
   claude: { installed: boolean; loggedIn: boolean; detail?: string };
   codex: { installed: boolean; loggedIn: boolean; detail?: string };
+  antigravity: { installed: boolean; loggedIn: boolean; detail?: string };
   local: { ollama: { running: boolean; models: number }; lmstudio: { running: boolean; models: number } };
   keys: Partial<Record<ProviderName, boolean>>;
   /** Providers usable right now with no further setup beyond choosing models. */
@@ -66,9 +67,11 @@ export async function checkReadiness(force = false): Promise<Readiness> {
   if (!force && cache && Date.now() - cache.at < 20_000) return cache.value;
   const claudeBin = process.env.NARROWBIT_CLAUDE ?? "claude";
   const codexBin = process.env.NARROWBIT_CODEX ?? "codex";
-  const [c, x, ollama, lmstudio] = await Promise.all([
+  const agyBin = process.env.NARROWBIT_AGY ?? `${process.env.HOME ?? ""}/.local/bin/agy`;
+  const [c, x, g, ollama, lmstudio] = await Promise.all([
     run(claudeBin, ["auth", "status"], 8_000),
     run(codexBin, ["login", "status"], 8_000),
+    run(agyBin, ["models"], 12_000),
     probe("http://127.0.0.1:11434/api/tags"),
     probe("http://127.0.0.1:1234/v1/models"),
   ]);
@@ -82,6 +85,12 @@ export async function checkReadiness(force = false): Promise<Readiness> {
     : x.code === 0
       ? { installed: true, loggedIn: true }
       : { installed: true, loggedIn: false, detail: "Not logged in — run `codex login`." };
+  // `agy models` lists the plan's models only when signed in; otherwise it asks to sign in.
+  const antigravity = g.missing
+    ? { installed: false, loggedIn: false, detail: "Antigravity CLI isn't installed — see antigravity.google/docs/getting-started (CLI tab), then run `agy` and sign in." }
+    : g.code === 0 && /^[\w.-]+\t/m.test(g.out)
+      ? { installed: true, loggedIn: true }
+      : { installed: true, loggedIn: false, detail: "Not signed in — run `agy` in a terminal and sign in with Google." };
   const keys: Partial<Record<ProviderName, boolean>> = {};
   for (const prov of PROVIDERS) {
     const info = PROVIDER_INFO[prov];
@@ -90,12 +99,14 @@ export async function checkReadiness(force = false): Promise<Readiness> {
   const ready: ProviderName[] = [];
   if (claude.loggedIn) ready.push("claude");
   if (codex.loggedIn) ready.push("codex");
+  if (antigravity.loggedIn) ready.push("antigravity");
   for (const [prov, has] of Object.entries(keys)) if (has) ready.push(prov as ProviderName);
   if (ollama !== null) ready.push("ollama");
   if (lmstudio !== null) ready.push("lmstudio");
   const value: Readiness = {
     claude,
     codex,
+    antigravity,
     local: { ollama: { running: ollama !== null, models: ollama ?? 0 }, lmstudio: { running: lmstudio !== null, models: lmstudio ?? 0 } },
     keys,
     ready,
@@ -110,6 +121,7 @@ export function formatReadiness(r: Readiness): string {
   const lines = [
     `${mark(r.claude.loggedIn)} Claude (subscription)   ${r.claude.loggedIn ? "ready" : r.claude.detail}`,
     `${mark(r.codex.loggedIn)} Codex (ChatGPT plan)     ${r.codex.loggedIn ? "ready" : r.codex.detail}`,
+    `${mark(r.antigravity.loggedIn)} Antigravity (Google)    ${r.antigravity.loggedIn ? "ready" : r.antigravity.detail}`,
     `${mark(r.local.ollama.running)} Ollama (local)           ${r.local.ollama.running ? `running, ${r.local.ollama.models} model(s)` : "not running"}`,
     `${mark(r.local.lmstudio.running)} LM Studio (local)       ${r.local.lmstudio.running ? `running, ${r.local.lmstudio.models} model(s)` : "not running"}`,
   ];

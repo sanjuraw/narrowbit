@@ -843,6 +843,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     function useBtn(prov) { if (!hasRoot) return null; return el("button", { cls: "primary", text: "Use", onclick: function () { draft.provider = prov; saveModels(S.providers[prov].tiers).then(function () { if (S.providers[prov].unavailable) openDrawer(); }); } }); }
     row("Claude", R.claude.loggedIn ? "Signed in — uses your Claude plan." : R.claude.detail, R.claude.loggedIn ? useBtn("claude") : null);
     row("Codex", R.codex.loggedIn ? "Signed in — uses your ChatGPT plan." : R.codex.detail, R.codex.loggedIn ? useBtn("codex") : null);
+    row("Antigravity", R.antigravity.loggedIn ? "Signed in — uses your Antigravity plan (Gemini, Claude)." : R.antigravity.detail, R.antigravity.loggedIn ? useBtn("antigravity") : null);
     if (R.local.ollama.running) row("Ollama", R.local.ollama.models + " local model(s) running — free, offline.", el("button", { text: "Choose models", onclick: function () { draft.provider = "ollama"; saveModels(S.providers.ollama.tiers).then(openDrawer); } }));
     if (R.local.lmstudio.running) row("LM Studio", R.local.lmstudio.models + " local model(s) running — free, offline.", el("button", { text: "Choose models", onclick: function () { draft.provider = "lmstudio"; saveModels(S.providers.lmstudio.tiers).then(openDrawer); } }));
     var free = ["gemini", "groq", "openrouter"].filter(function (p) { return S.providers[p]; });
