@@ -16,7 +16,7 @@ export const PROVIDERS = [
   "claude", "codex",
   "openrouter", "nvidia", "cloudflare", "groq", "gemini", "cerebras", "mistral", "github", "huggingface", "sambanova",
   "openai", "deepseek", "together", "fireworks", "xai",
-  "ollama", "lmstudio", "freellmapi", "custom",
+  "ollama", "ollamacloud", "lmstudio", "freellmapi", "custom",
 ] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
 export const PHASES = ["explore", "execute", "escalate"] as const;
@@ -111,6 +111,16 @@ export const PROVIDER_INFO: Record<ProviderName, ProviderInfo> = {
     hint: "Start Ollama and pull a coding model first. Its default context window is small; set OLLAMA_CONTEXT_LENGTH=32768 before `ollama serve`, or long reads get cut off silently.",
   },
   lmstudio: { label: "LM Studio", kind: "local", pricing: "free, on this Mac", baseUrl: "http://127.0.0.1:1234/v1", hint: "Load a model in LM Studio and start its local server (Developer tab)." },
+  ollamacloud: {
+    label: "Ollama Cloud",
+    kind: "api",
+    pricing: "free starter credits, then paid",
+    free: true,
+    baseUrl: "https://ollama.com/v1",
+    keyEnv: "OLLAMA_API_KEY",
+    keyUrl: "https://ollama.com/settings/keys",
+    hint: "Large open models (DeepSeek, Kimi, GLM, GPT-OSS…) hosted by Ollama; nothing to install. Create a free key at ollama.com. The free tier allows one request at a time.",
+  },
   freellmapi: {
     label: "FreeLLMAPI (your own gateway)",
     kind: "api",
