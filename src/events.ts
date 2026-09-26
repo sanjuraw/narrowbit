@@ -96,6 +96,8 @@ export interface FoldedState {
   lastVerify: { ok: boolean; summary: string } | null;
   blocker: string | null;
   filesTouched: string[];
+  /** Notes this task saved to project memory with `remember` (id, type, text) — durable, so the summary always lists them. */
+  remembered: { id: string; type: string; text: string }[];
   /** Non-model-call events, oldest first, capped to `recentLimit`. */
   recent: Event[];
   /** Token/cost totals per `tokens.role`, for the per-task usage ledger. */
@@ -107,7 +109,7 @@ export interface FoldedState {
  * This is what makes the projection in context.ts testable and reproducible.
  */
 export function fold(taskId: string, events: Event[], recentLimit = 8): FoldedState {
-  const state: FoldedState = { taskId, goal: null, plan: [], lastVerify: null, blocker: null, filesTouched: [], recent: [], ledgerByRole: {} };
+  const state: FoldedState = { taskId, goal: null, plan: [], lastVerify: null, blocker: null, filesTouched: [], remembered: [], recent: [], ledgerByRole: {} };
   const touched = new Set<string>();
   const recent: Event[] = [];
   for (const e of events) {
@@ -117,6 +119,7 @@ export function fold(taskId: string, events: Event[], recentLimit = 8): FoldedSt
     if (e.type === "blocker") state.blocker = e.summary;
     if (e.type === "decision" && e.meta?.resolvesBlocker) state.blocker = null;
     if (e.type === "edit" && typeof e.meta?.path === "string") touched.add(e.meta.path);
+    if (e.type === "decision" && typeof e.meta?.memoryId === "string") state.remembered.push({ id: e.meta.memoryId, type: String(e.meta.memoryType ?? "note"), text: e.summary.replace(/^remembered \[[^\]]*\] \([^)]*\):\s*/, "") });
     if (e.tokens) {
       const bucket = (state.ledgerByRole[e.tokens.role] ??= { inputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 });
       bucket.inputTokens += e.tokens.inputTokens;

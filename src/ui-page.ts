@@ -399,6 +399,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
           <label class="tog" title="Work in a separate copy of the folder; nothing changes your files until you press Apply"><input type="checkbox" id="isoTog"> Isolate</label>
           <label class="tog" title="Shell commands wait for your approval"><input type="checkbox" id="askTog"> Ask before commands</label>
           <span class="spacer"></span>
+          <button class="ghost hidden" id="compactBtn" title="Start a fresh session from a short summary of this chat — smaller context, nothing lost from the files or your saved notes">Compact</button>
           <span class="usage" id="usage"></span>
           <button class="stop hidden" id="stopBtn" title="Stop after the current step"><i></i></button>
           <button class="send" id="sendBtn" title="Send (Enter)">↑</button>
@@ -1049,9 +1050,15 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(false); }
   });
   function viewingRun() { return !!(view && run.active && (view.pendingNew || (view.taskId && run.taskId === view.taskId))); }
+  $("compactBtn").onclick = function () {
+    if (!view || !view.taskId) return;
+    api("/api/compact", { task: view.taskId }).then(function (r) { flash($("savedMsg"), "Compacting " + r.when); showToast("Compact requested — takes effect " + r.when + ". Notes saved to project memory are kept and listed in the summary."); })
+      .catch(function (e) { banner("bad", e.message); });
+  };
   function renderComposer() {
     var busy = run.active;
     var P = S && S.providers && S.providers[S.selection.provider];
+    show($("compactBtn"), !!(view && view.taskId));
     show($("stopBtn"), viewingRun());
     show($("sendBtn"), !viewingRun());
     $("sendBtn").disabled = !S || !S.root || !S.initialized || busy || !!(P && P.unavailable);
@@ -1399,7 +1406,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       collapseWork(m.outcome === "done", new Date(e.at).getTime());
       return;
     }
-    if (e.type === "handoff") { add(el("div", { cls: "divider", text: "context compacted — continuing in a fresh session" })); return; }
+    if (e.type === "handoff") { add(el("div", { cls: "divider", text: m.manual ? e.summary : "context compacted — continuing in a fresh session" })); return; }
     if (e.type === "blocker") {
       var sm = e.summary;
       var parse = /could not parse a JSON action.*attempt (\d+)\/(\d+)/.exec(sm);

@@ -38,7 +38,7 @@ import type { ModelCallOptions, ModelCallResult } from "./claude-cli.js";
  * Codex features that add tool definitions (and their instructions) to every request. Narrowbit executes every action
  * itself, so the model needs none of them — the Codex equivalent of Claude's `--tools ""`. Measured on codex-cli
  * 0.156 with gpt-6-luna: a one-word reply cost 13.5k input tokens by default, 6.8k with these off and Codex's base
- * instructions replaced by ours. Unknown feature names (older/newer CLIs) are ignored without --strict-config.
+ * instructions replaced by ours, web search and the bundled-skills list off (7.0k → 4.0k on a one-word call). Unknown feature names (older/newer CLIs) are ignored without --strict-config.
  * Not `code_mode_host`: with it off, gpt-6 models end every real task with "Code Mode is unavailable… will fail closed".
  */
 const LEAN_OFF = ["apps", "browser_use", "browser_use_external", "computer_use", "goals", "image_generation", "multi_agent", "plugins", "remote_plugin", "shell_tool", "skill_search", "sleep_tool", "tool_suggest", "view_image", "unified_exec", "workspace_dependencies", "worktrees", "in_app_browser", "hooks", "skill_mcp_dependency_install"];
@@ -62,7 +62,12 @@ export function callCodex(opts: ModelCallOptions): Promise<ModelCallResult> {
   if (opts.model) modelFlags.push("-m", opts.model);
   if (opts.effort) modelFlags.push("-c", `model_reasoning_effort=${opts.effort}`);
   const lean = process.env.NARROWBIT_CODEX_LEAN !== "0";
-  if (lean) for (const f of LEAN_OFF) modelFlags.push("-c", `features.${f}=false`);
+  if (lean) {
+    for (const f of LEAN_OFF) modelFlags.push("-c", `features.${f}=false`);
+    // Two more fixed costs found with `codex debug prompt-input` and one-word calls (gpt-6-luna, codex-cli 0.156): the web-search
+    // tool definition (~2.5k tokens per call) and the bundled-skills list (~0.6k). Neither is usable through our JSON actions.
+    modelFlags.push("-c", "web_search=\"disabled\"", "-c", "skills.bundled.enabled=false");
+  }
 
   let args: string[];
   let instr: string | undefined;

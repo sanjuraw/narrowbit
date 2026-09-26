@@ -16,6 +16,10 @@ function render(state: FoldedState): string {
   if (state.blocker) lines.push(`BLOCKER: ${state.blocker}`);
   if (state.lastVerify) lines.push(`LAST VERIFY: ${state.lastVerify.ok ? "PASSED" : "FAILED"} — ${state.lastVerify.summary}`);
   if (state.filesTouched.length) lines.push(`FILES TOUCHED: ${state.filesTouched.join(", ")}`);
+  if (state.remembered.length) {
+    lines.push("SAVED TO PROJECT MEMORY IN THIS TASK (already stored; search with recall, don't re-save):");
+    for (const n of state.remembered) lines.push(`  - [${n.id}] (${n.type}) ${n.text}`);
+  }
   if (state.recent.length) {
     lines.push("RECENT:");
     for (const e of state.recent) lines.push(`  - ${e.type}: ${e.summary}`);

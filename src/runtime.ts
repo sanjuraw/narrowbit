@@ -360,6 +360,11 @@ export interface RuntimeOptions {
   /** Experimental, API providers only: ask for a pure JSON object reply ({"actions":[…]}) via the provider's JSON mode,
    * instead of free text that should contain JSON. Removes prose/markup around the actions; measured in bench.ts. */
   jsonActions?: boolean;
+  /** Effort per tier, overriding `effort` for that tier's calls (e.g. { explore: "low" }: the cheap reading phase thinks less).
+   * Claude's hidden thinking is ~2/3 of its output tokens; measured in bench.ts before it is used anywhere by default. */
+  effortByTier?: Partial<Record<"explore" | "execute" | "escalate", string>>;
+  /** Polled before each model call's follow-up: return true to compact now (the app's "Compact now" button). */
+  compactNow?: () => boolean;
   /** Work in a throwaway git worktree instead of the folder itself (isolate.ts); nothing changes the folder until applied. */
   isolate?: boolean;
   /** Every event appended for this task, as it happens (the app renders these). */
@@ -529,7 +534,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     const lastSession = last?.meta?.sessionId as string | undefined;
     // A session keeps the instructions it started with, so after an update it would go on behaving the old
     // way; resume only if those instructions are still the current ones.
-    const resumable = lastSession && last?.meta?.provider === provider && last?.meta?.instr === INSTRUCTIONS_ID && (provider === "claude" || hasSession(lastSession));
+    const lastCallAt = prior.lastIndexOf(last as Event);
+    const compactedSince = prior.some((e, i) => i > lastCallAt && e.type === "handoff");
+    const resumable = !compactedSince && lastSession && last?.meta?.provider === provider && last?.meta?.instr === INSTRUCTIONS_ID && (provider === "claude" || hasSession(lastSession));
     if (resumable) {
       sessionId = lastSession;
       freshSessionPending = false;
@@ -537,7 +544,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       nextPrompt = `Follow-up request from the user: ${taskText}\n\nThe earlier work is already in the files. Respond with your next action as JSON.`;
       nextParts = [part("task", "your follow-up", taskText)];
     } else {
-      const digest = project(fold(taskId, prior), { budget: cfg.budget.initial });
+      const digest = digestWithMemory(p, taskId, cfg.budget.initial);
       nextParts = [part("task", "your follow-up", taskText), part("digest", "summary of the earlier work", digest), part("instructions", "Narrowbit's instructions", systemPrompt)];
       nextPrompt = `You are continuing an earlier task (original goal: ${goal}). Progress so far:\n\n${digest}\n\nNew request from the user: ${taskText}\n\nUse read/grep/search for anything you need in full. Respond with your next action as JSON.`;
     }
@@ -577,7 +584,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       systemPrompt: freshSessionPending ? systemPrompt : undefined,
       prompt: nextPrompt,
       model: turnModel,
-      effort,
+      effort: opts.effortByTier?.[tierName] ?? effort,
       role,
       claudeBin: opts.claudeBin,
       sessionId,
@@ -835,18 +842,19 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     // Codex's CLI adds ~7-14k tokens of its own to every call; before this, it counted toward the 30k limit, so a Codex
     // task compacted (lost its conversation) almost every step, re-read the same files and rarely reached an edit.
     if (wasFresh) providerOverhead = Math.max(0, contextTokens - sentEstimate);
-    if (contextTokens - providerOverhead >= compactThreshold) {
+    const manualCompact = !!opts.compactNow?.();
+    if (manualCompact || contextTokens - providerOverhead >= compactThreshold) {
       const previousSessionId = sessionId;
       sessionId = randomUUID();
       freshSessionPending = true;
       cumulativeCost = 0;
       compactions++;
-      const digest = project(fold(taskId, readEvents(p, taskId)), { budget: cfg.budget.initial });
+      const digest = digestWithMemory(p, taskId, cfg.budget.initial);
       appendEvent(p, taskId, {
-        actor: "system",
+        actor: manualCompact ? "user" : "system",
         type: "handoff",
-        summary: `compacted after ${steps + 1} turn(s), ~${contextTokens} context tokens — starting a new session`,
-        meta: { previousSessionId, contextTokens },
+        summary: manualCompact ? `you compacted this chat after ${steps + 1} turn(s) — continuing in a fresh session` : `compacted after ${steps + 1} turn(s), ~${contextTokens} context tokens — starting a new session`,
+        meta: { previousSessionId, contextTokens, manual: manualCompact },
       });
       log(`      ~ compacted (${contextTokens} context tokens) — new session`);
       nextParts = [part("digest", "summary after compacting the session", digest), ...resultParts, part("instructions", "Narrowbit's instructions (resent to the new session)", systemPrompt)];
@@ -875,6 +883,18 @@ function resultMeta(d: Decision, result: string): string {
     case "run": { const m = /\(exit (\d+)/.exec(result); return m ? (m[1] === "0" ? "the command succeeded" : `the command failed (exit ${m[1]})`) : "the command ran"; }
     default: return `${d.action} returned ${lines} line(s)`;
   }
+}
+
+/** The deterministic summary, plus what project memory holds — a pointer, not an injection: notes are still fetched only on `recall`. */
+export function digestWithMemory(p: Paths, taskId: string, budget: number): string {
+  const digest = project(fold(taskId, readEvents(p, taskId)), { budget });
+  let active = 0;
+  try {
+    active = openMemory(p).load().filter((e) => e.status === "active").length;
+  } catch {
+    /* no memory store yet */
+  }
+  return active ? `${digest}\n\nPROJECT MEMORY: ${active} active note${active === 1 ? "" : "s"} exist for this repository. None are shown here; use the recall action with a topic to search them.` : digest;
 }
 
 function checkFailedLabel(d: Decision, result: string): string {

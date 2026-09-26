@@ -842,13 +842,15 @@ function fakeClaude(replies) {
 const fs = require("fs");
 const f = ${JSON.stringify(join(dir, "replies.json"))}, c = ${JSON.stringify(join(dir, "count"))};
 const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
+fs.appendFileSync(${JSON.stringify(join(dir, "resumes.log"))}, (process.argv.includes("--resume") ? "resume" : "fresh") + "\\n");
 fs.appendFileSync(${JSON.stringify(join(dir, "models.log"))}, (process.argv[process.argv.indexOf("--model") + 1] || "?") + "\\n");
+fs.appendFileSync(${JSON.stringify(join(dir, "efforts.log"))}, (process.argv[process.argv.indexOf("--effort") + 1] || "?") + "\\n");
 const r = JSON.parse(fs.readFileSync(f, "utf8")); const text = r[Math.min(n, r.length - 1)];
 const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
 console.log(JSON.stringify({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }));
 console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
 `, { mode: 0o755 });
-  return { bin, dir, calls: () => Number(readFileSync(join(dir, "count"), "utf8")), models: () => readFileSync(join(dir, "models.log"), "utf8").trim().split("\n") };
+  return { bin, dir, calls: () => Number(readFileSync(join(dir, "count"), "utf8")), models: () => readFileSync(join(dir, "models.log"), "utf8").trim().split("\n"), efforts: () => readFileSync(join(dir, "efforts.log"), "utf8").trim().split("\n"), resumes: () => readFileSync(join(dir, "resumes.log"), "utf8").trim().split("\n") };
 }
 function tinyRepo() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "nb-rt-")));
@@ -1385,6 +1387,7 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 7000
       assert.equal(b.reasoningTokens, 4);
       const calls = readFileSync(join(dir, "args.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
       assert.ok(calls[0].includes("features.shell_tool=false"), "Codex's own tools are switched off");
+      assert.ok(calls[0].includes('web_search="disabled"') && calls[0].includes("skills.bundled.enabled=false"), "web search and bundled skills are off");
       assert.equal(calls[0][calls[0].indexOf("-s") + 1], "workspace-write", "so the model isn't told its workspace is read-only");
       assert.ok(calls[0].some((x) => x.startsWith("model_instructions_file=")), "our rules replace Codex's base instructions");
       assert.ok(!calls[0].some((x) => x.includes("RULES")), "…instead of being pasted into the prompt");
@@ -1429,4 +1432,65 @@ test("benchmark waits for a usage limit's stated reset time (capped, with a fall
   assert.equal(msUntilReset("in 30 minutes", now), 31 * 60_000);
   assert.equal(msUntilReset(undefined, now), 30 * 60_000);
   assert.equal(msUntilReset("whenever", now), 30 * 60_000);
+});
+
+describe("effort per tier", () => {
+  test("the exploring tier can think less than the executing tier", async () => {
+    const { root, p } = tinyRepo(); writeFileSync(join(root, "b.txt"), "x\n");
+    const fake = fakeClaude([
+      JSON.stringify({ action: "read", path: "b.txt" }),
+      JSON.stringify({ action: "edit", path: "b.txt", old: "x", new: "y" }),
+      JSON.stringify({ action: "verify" }),
+      JSON.stringify({ action: "done", summary: "changed" }),
+    ]);
+    try {
+      await runTask(p, "change x to y", { claudeBin: fake.bin, boss: false, maxSteps: 8, models: { explore: "m-explore", execute: "m-execute", escalate: "m-escalate" }, effort: "medium", effortByTier: { explore: "low" } });
+      const m = fake.models(), e = fake.efforts();
+      assert.equal(m[0], "m-explore"); assert.equal(e[0], "low", "reading runs at low effort");
+      const firstExec = m.indexOf("m-execute");
+      assert.ok(firstExec > 0); assert.equal(e[firstExec], "medium", "editing keeps the normal effort");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("Compact now, and how it meets project memory", () => {
+  test("the summary lists notes this task saved, and points at recall without injecting other notes", async () => {
+    const { root, p } = tinyRepo();
+    const m = new Memory(p); m.add({ type: "convention", text: "An unrelated project note that must not be injected" });
+    const fake = fakeClaude([
+      JSON.stringify({ action: "remember", type: "decision", text: "Use pnpm here", reason: "lockfile" }),
+      JSON.stringify({ action: "read", path: "a.txt" }),
+      JSON.stringify({ action: "done", summary: "ok" }),
+    ]);
+    try {
+      let compactOnce = 0;
+      const r = await runTask(p, "note a decision then read a.txt", { claudeBin: fake.bin, boss: false, maxSteps: 8, compactNow: () => (compactOnce++ === 1) });
+      const ev = readEvents(p, r.taskId);
+      const h = ev.find((e) => e.type === "handoff");
+      assert.ok(h && h.meta.manual === true && /you compacted this chat/.test(h.summary), "the manual compaction is logged as the user's");
+      const { digestWithMemory } = await dist("runtime.js");
+      const d = digestWithMemory(p, r.taskId, 8000);
+      assert.match(d, /SAVED TO PROJECT MEMORY IN THIS TASK[\s\S]*\(decision\) Use pnpm here/);
+      assert.match(d, /PROJECT MEMORY: 2 active notes/);
+      assert.ok(!d.includes("unrelated project note"), "other notes are not injected");
+      assert.ok(fake.resumes().includes("fresh") && fake.resumes().filter((x) => x === "fresh").length >= 2, "the call after the compaction started a fresh session");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("compacting an idle chat makes the next follow-up start fresh instead of resuming", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([JSON.stringify({ action: "read", path: "a.txt" }), JSON.stringify({ action: "done", summary: "first" }), JSON.stringify({ action: "done", summary: "second" })]);
+    try {
+      const r1 = await runTask(p, "read a.txt", { claudeBin: fake.bin, boss: false, maxSteps: 6 });
+      const before = fake.resumes().length;
+      appendEvent(p, r1.taskId, { actor: "user", type: "handoff", summary: "you compacted this chat", meta: { manual: true } });
+      await runTask(p, "and now?", { claudeBin: fake.bin, boss: false, maxSteps: 6, continueTask: r1.taskId });
+      assert.equal(fake.resumes()[before], "fresh", "no --resume after a compaction");
+      // Control: without the marker, a follow-up resumes.
+      const r2 = await runTask(p, "read a.txt again", { claudeBin: fake.bin, boss: false, maxSteps: 6 });
+      const b2 = fake.resumes().length;
+      await runTask(p, "and now?", { claudeBin: fake.bin, boss: false, maxSteps: 6, continueTask: r2.taskId });
+      assert.equal(fake.resumes()[b2], "resume");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
 });

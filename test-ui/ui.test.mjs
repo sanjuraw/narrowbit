@@ -367,6 +367,23 @@ describe("app page with a folder open", () => {
     assert.ok(page.$("fallbackSel"), "the settings panel has the backup selector");
   });
 
+  test("Compact now: the button shows on an open chat, and compacting an idle chat is recorded in its log", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const sess = await page.until(() => [...page.w.document.querySelectorAll("#sessions .sess")].find((x) => /what is in a\.txt/.test(x.textContent)), "a session");
+    sess.click();
+    const btn = await page.until(() => { const b = page.$("compactBtn"); return page.visible(b) && b; }, "the Compact button");
+    assert.match(btn.title, /fresh session/);
+    const post = (b) => fetch(`${app.base}/api/compact`, { method: "POST", headers: H, body: JSON.stringify(b) });
+    assert.equal((await post({ task: "../x" })).status, 400);
+    assert.equal((await post({ task: "rt-nope-000" })).status, 404);
+    const r = await post({ task: "rt-work-test" });
+    assert.equal(r.status, 200);
+    assert.match((await r.json()).when, /next message/);
+    const t = await (await fetch(`${app.base}/api/task/rt-work-test`, { headers: H })).json();
+    const h = t.events.find((e) => e.type === "handoff");
+    assert.ok(h && h.meta.manual && h.actor === "user", "the compaction is in the chat's log, as the user's action");
+  });
+
   test("every project lists the built-in skills, without a delete button; user skills get one", async () => {
     const rows = () => [...page.w.document.querySelectorAll("#skillsList .skill-row")];
     await page.until(() => rows().length >= 6, "built-in skills");

@@ -8,7 +8,7 @@ import { getConnector, listConnectors, publicConnector, removeConnector, saveCon
 import { completeSignIn, signOut, startSignIn } from "./oauth.js";
 import { applyIsolated, discardIsolated, readIsolated } from "./isolate.js";
 import { findSkills } from "./skillimport.js";
-import { fold, readEvents, type Event } from "./events.js";
+import { appendEvent, fold, readEvents, type Event } from "./events.js";
 import { changedSince, githubIdentity, gitState, pushBranch, remoteInfo } from "./git.js";
 import { listConnectorTools } from "./mcpClient.js";
 import { initProject } from "./project.js";
@@ -68,6 +68,8 @@ interface Run {
   /** Commands the user allowed for the rest of this task. */
   allowed: Set<string>;
   running: boolean;
+  /** Set by the app's "Compact now"; the loop takes it before its next call and starts a fresh session. */
+  compactRequested: boolean;
   /** Untracked files that existed before the run — Discard never deletes these. */
   untrackedBefore: Set<string>;
   taskId: string | null;
@@ -364,6 +366,7 @@ export function startUi(opts: UiOptions) {
       questions: new Map(),
       allowed: new Set(),
       running: true,
+      compactRequested: false,
       // A follow-up keeps the original task's baseline, so the first request's new files still count as its work.
       untrackedBefore: untrackedAtStart(p, continueTask) ?? new Set(g.untracked),
     };
@@ -384,6 +387,11 @@ export function startUi(opts: UiOptions) {
       models: sel.tiers,
       effort: sel.effort,
       signal: thisRun.controller.signal,
+      compactNow: () => {
+        const r = thisRun.compactRequested;
+        thisRun.compactRequested = false;
+        return r;
+      },
       ask: (question, options) => {
         if (thisRun.controller.signal.aborted) return Promise.resolve(null);
         const id = `q${++questionSeq}`;
@@ -756,6 +764,21 @@ export function startUi(opts: UiOptions) {
           const answer = typeof body.answer === "string" ? body.answer.trim().slice(0, 4000) : "";
           if (!answer) return json(res, 400, { error: "type an answer" });
           return json(res, resolveQuestion(String(body.id ?? ""), answer) ? 200 : 404, { ok: true });
+        }
+        case "/api/compact": {
+          if (!root) return json(res, 400, { error: "no repository open" });
+          const id = String(body.task ?? "");
+          if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
+          if (run?.running && run.taskId === id) {
+            run.compactRequested = true;
+            return json(res, 200, { ok: true, when: "after the model's current step" });
+          }
+          if (run?.running) return json(res, 409, { error: "another task is running" });
+          const p = paths(root);
+          if (!readEvents(p, id).length) return json(res, 404, { error: "no such chat" });
+          // An idle chat: mark it, so the next message starts a fresh session from the summary instead of resuming.
+          appendEvent(p, id, { actor: "user", type: "handoff", summary: "you compacted this chat — your next message starts a fresh session from a short summary", meta: { manual: true } });
+          return json(res, 200, { ok: true, when: "with your next message" });
         }
         case "/api/stop": {
           if (!run?.running) return json(res, 200, { ok: true });
