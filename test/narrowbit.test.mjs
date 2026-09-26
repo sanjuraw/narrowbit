@@ -1681,3 +1681,37 @@ test("GitHub remotes become a browser link; other hosts and odd URLs do not", as
   assert.deepEqual(githubWebUrl("https://gitlab.com/a/b.git"), {});
   assert.deepEqual(githubWebUrl("/some/local/path"), {});
 });
+
+describe("scout: research in a separate conversation", () => {
+  test("the scout reads on its own, only its report reaches the worker, and both are accounted for", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([
+      JSON.stringify({ action: "read", path: "a.txt" }),
+      JSON.stringify({ action: "done", summary: "REPORT: a.txt holds a greeting" }),
+      JSON.stringify({ action: "read", path: "a.txt" }),
+      JSON.stringify({ action: "done", summary: "checked it" }),
+    ]);
+    try {
+      const r = await runTask(p, "what does a.txt say", { claudeBin: fake.bin, boss: false, maxSteps: 6, scout: { model: "haiku" }, models: { explore: "sonnet", execute: "sonnet", escalate: "sonnet" } });
+      assert.equal(r.outcome, "done");
+      const ev = readEvents(p, r.taskId);
+      assert.ok(ev.some((e) => e.meta?.scout && /REPORT: a\.txt/.test(e.meta.report)), "the report is logged");
+      const roles = ev.filter((e) => e.type === "model_call").map((e) => e.tokens?.role);
+      assert.deepEqual(roles.slice(0, 2), ["scouting", "scouting"]);
+      const firstWorker = ev.find((e) => e.type === "model_call" && e.tokens?.role !== "scouting");
+      assert.ok(firstWorker.meta.context.parts.some((x) => x.kind === "scout"), "the worker was sent the report");
+      assert.equal(fake.models()[0], "haiku", "the scout ran on its own model");
+      assert.ok(fake.models().slice(2).every((m) => m === "sonnet"), "the worker never switched model");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("a scout that cannot answer does not stop the task", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude(["not json", "still not json", "nope", JSON.stringify({ action: "read", path: "a.txt" }), JSON.stringify({ action: "done", summary: "fine" })]);
+    try {
+      const r = await runTask(p, "read a.txt", { claudeBin: fake.bin, boss: false, maxSteps: 6, scout: { model: "haiku", maxSteps: 2 } });
+      assert.equal(r.outcome, "done");
+      assert.ok(readEvents(p, r.taskId).some((e) => /scout gave no report/.test(e.summary)));
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});

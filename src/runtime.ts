@@ -161,6 +161,11 @@ const LEAD_REVIEW_INSTRUCTIONS = `You are the lead engineer reviewing a cheaper 
 Respond with EXACTLY ONE JSON object, no prose:
 {"verdict":"approve"} or {"verdict":"revise","feedback":"<specific: what is wrong or missing, and where>"}`;
 
+const SCOUT_INSTRUCTIONS = `You are a research assistant on a coding task. You cannot change anything. Another engineer will do the work using only your report, so it must be complete and short.
+Each turn reply with one JSON action, or a JSON array of up to ${MAX_BATCH_ACTIONS} independent ones: {"action":"read","path":"<file>","start":1,"end":80}, {"action":"grep","pattern":"<regex>","glob":"<optional glob>"}, {"action":"search","query":"<words>"}. Nothing else is allowed.
+When you know enough (usually within 3-6 turns) finish with {"action":"done","summary":"<report>"}.
+The report is under 350 words: the files and functions that matter with line numbers; the exact lines that look wrong or must change (quote them); what the tests expect; your best guess at the cause. Say plainly what you are unsure of. No plan and no code changes.`;
+
 /** Reviews per task (and per follow-up); after this many, "done" is accepted as the worker reports it. */
 const MAX_REVIEWS = 2;
 
@@ -336,6 +341,9 @@ export interface RuntimeOptions {
   effort?: string;
   claudeBin?: string;
   role?: string;
+  /** Research in a separate conversation first: this model (from `provider`, default the main one) reads the repository and
+   * returns a short report that goes to the worker. See scoutPhase. */
+  scout?: { provider?: ProviderName; model: string; effort?: string; maxSteps?: number };
   /** Absolute paths of images/PDFs to show the model. Sent on the first call only; see attachments.ts. */
   attachments?: string[];
   /** Context size (input + cache-creation + cache-read tokens, from the most recent call) above
@@ -504,6 +512,18 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     if (plan) log(`      → ${plan.steps.length} steps`);
   }
 
+  let scoutReport: string | null = null;
+  if (opts.scout && !continuing) {
+    const sp = opts.scout.provider ?? provider;
+    const why = unavailableReason({ provider: sp, tiers: { explore: opts.scout.model, execute: opts.scout.model, escalate: opts.scout.model }, effort }, cfg.agent);
+    if (why) log(`[scout] skipped: ${why}`);
+    else {
+      log(`[scout] (${sp}: ${opts.scout.model}) researching`);
+      scoutReport = await scoutPhase(p, taskId, taskText, store, callFor(sp), opts.scout.model, opts.scout.effort ?? effort, opts.scout.maxSteps ?? 6, log, opts.claudeBin);
+      if (scoutReport) log(`      → report ready (${estimateTokens(scoutReport)} tokens)`);
+    }
+  }
+
   let outcome: RuntimeResult["outcome"] = "max_steps";
   let summary = "";
   let steps = 0;
@@ -526,8 +546,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   type Part = { kind: string; label: string; tokens: number };
   const part = (kind: string, label: string, text: string): Part => ({ kind, label, tokens: estimateTokens(text) });
   let nextParts: Part[] = [];
-  let nextPrompt = `Task: ${taskText}\n\n${plan ? renderPlanForWorker(plan) + "\n\n" : ""}Respond with your first action as JSON.`;
-  nextParts = [part("task", "your request", taskText), ...(plan ? [part("plan", "the lead's plan", renderPlanForWorker(plan))] : []), part("instructions", "Narrowbit's instructions (sent once per session)", systemPrompt)];
+  const scoutBlock = scoutReport ? `Research report from a scout who has already read the code (unverified; trust the code over it, and read a file yourself before editing it):\n${scoutReport}\n\n` : "";
+  let nextPrompt = `Task: ${taskText}\n\n${plan ? renderPlanForWorker(plan) + "\n\n" : ""}${scoutBlock}Respond with your first action as JSON.`;
+  nextParts = [part("task", "your request", taskText), ...(plan ? [part("plan", "the lead's plan", renderPlanForWorker(plan))] : []), ...(scoutReport ? [part("scout", "the scout's research report", scoutReport)] : []), part("instructions", "Narrowbit's instructions (sent once per session)", systemPrompt)];
   // callModel's costUsd is Claude Code's CUMULATIVE cost for the whole resumed session, not a
   // per-call charge (confirmed by direct measurement: it strictly increases call over call, unlike
   // every other usage field, which the Anthropic API reports per-request). Track the running total
@@ -1249,6 +1270,55 @@ async function leadCall(ctx: LeadCtx, purpose: "planning" | "review", system: st
   } catch {
     return null;
   }
+}
+
+/**
+ * Research in a separate conversation. A cheaper model (any provider) reads the repository on its own and hands back a short
+ * report; only that text goes to the worker. Keeping the scout's many reads out of the worker's conversation matters twice:
+ * they are never billed again at the worker's price, and no model is swapped inside a conversation (a prompt cache belongs
+ * to one model, so swapping rewrites it). Returns null if the scout fails; the task then just runs without a report.
+ */
+async function scoutPhase(p: Paths, taskId: string, taskText: string, store: ReturnType<typeof openStore>, call: (o: ModelCallOptions) => Promise<ModelCallResult>, model: string, effort: string, maxSteps: number, log: (l: string) => void, claudeBin?: string): Promise<string | null> {
+  let sessionId: string = randomUUID();
+  let resume = false;
+  let prompt = `Task: ${taskText}\n\nRepository search results for the task:\n${capSummary(searchText(p, store, taskText), 1200)}\n\nRespond with your first action(s) as JSON.`;
+  let report: string | null = null;
+  for (let i = 0; i <= maxSteps && !report; i++) {
+    const last = i === maxSteps;
+    if (last) prompt += `\n\nNo more research steps. Reply now with {"action":"done","summary":"<your report>"} from what you have.`;
+    const res = await call({ cwd: p.root, systemPrompt: resume ? undefined : SCOUT_INSTRUCTIONS, prompt, model, effort, role: "scouting", sessionId, resume, claudeBin });
+    appendEvent(p, taskId, {
+      actor: "model",
+      type: "model_call",
+      summary: res.isError ? "scouting: model call failed" : `scouting: ${res.text.slice(0, 100)}`,
+      tokens: { model, role: "scouting", inputTokens: res.usage.input, cacheCreationTokens: res.usage.cacheCreate, cacheReadTokens: res.usage.cacheRead, outputTokens: res.usage.output, costUsd: res.costUsd ?? 0 },
+    });
+    if (res.isError) break;
+    if (res.sessionId) sessionId = res.sessionId;
+    resume = true;
+    const ds = parseDecisions(res.text);
+    if (!ds) {
+      prompt = `That was not valid JSON. Reply with JSON action(s) only.`;
+      continue;
+    }
+    const results: string[] = [];
+    for (const d of ds.slice(0, MAX_BATCH_ACTIONS)) {
+      if (d.action === "done") {
+        report = String(d.summary ?? "").trim().slice(0, 3000) || null;
+        break;
+      }
+      if (d.action !== "read" && d.action !== "grep" && d.action !== "search") {
+        results.push(`${d.action}: not allowed while researching — only read, grep and search`);
+        continue;
+      }
+      log(`      scout: ${d.action} ${d.path ?? d.pattern ?? d.query ?? ""}`);
+      results.push(await executeAction(p, taskId, d));
+    }
+    prompt = `${results.join("\n\n")}\n\nContinue, or finish with done.`;
+  }
+  if (report) appendEvent(p, taskId, { actor: "model", type: "tool_result", summary: `scout report (${model}): ${report.slice(0, 200)}`, meta: { scout: true, report } });
+  else appendEvent(p, taskId, { actor: "system", type: "blocker", summary: "scout gave no report — continuing without one" });
+  return report;
 }
 
 async function leadPlan(ctx: LeadCtx, taskText: string, store: ReturnType<typeof openStore>): Promise<LeadPlan | null> {

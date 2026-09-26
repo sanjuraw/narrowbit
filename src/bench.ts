@@ -68,6 +68,10 @@ export interface BenchArm {
   testFirst?: boolean;
   /** runtime arm only: effort per tier, e.g. { explore: "low" } (see RuntimeOptions.effortByTier). */
   effortByTier?: { explore?: string; execute?: string; escalate?: string };
+  /** runtime arm only: context size that triggers compaction (see RuntimeOptions.compactThreshold). */
+  compactThreshold?: number;
+  /** runtime arm only: research in a separate conversation first (see RuntimeOptions.scout). */
+  scout?: { provider?: string; model: string; effort?: string; maxSteps?: number };
   /** runtime arm only: ask the provider for JSON-mode replies (see RuntimeOptions.jsonActions). */
   jsonActions?: boolean;
   /** runtime arm only: effort level passed to the model calls (low/medium/high/xhigh/max). */
@@ -295,7 +299,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             };
           } else if (arm.runtime) {
             log(`${tag}: running narrowbit's own loop…`);
-            const runOpts = { testFirst: arm.testFirst, effortByTier: arm.effortByTier, jsonActions: arm.jsonActions, effort: arm.effort, provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, router: arm.router ? { kind: arm.router, url: arm.routerUrl } : undefined, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss };
+            const runOpts = { scout: arm.scout as any, compactThreshold: arm.compactThreshold, testFirst: arm.testFirst, effortByTier: arm.effortByTier, jsonActions: arm.jsonActions, effort: arm.effort, provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, router: arm.router ? { kind: arm.router, url: arm.routerUrl } : undefined, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss };
             let result = await runTask(wp, t.prompt, runOpts);
             // A usage limit is not a wrong answer. Wait for the reset and continue the same task (same worktree, same log),
             // so a long unattended run survives a plan's 5-hour window instead of recording a string of bogus failures.
