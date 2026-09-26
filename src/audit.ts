@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { findSecrets } from "./redact.js";
 import { sh } from "./util.js";
+import { INSTRUCTION_FILES, scanText } from "./guard.js";
 
 /**
  * `narrowbit audit`: a deterministic security checkpoint that needs no model and sends nothing anywhere.
@@ -53,6 +54,13 @@ export function auditRepo(root: string, opts: { files?: string[]; history?: bool
     }
     const exposed = text.split("\n").findIndex((l) => BROWSER_PREFIX.test(l) && !l.includes("narrowbit-audit-ignore"));
     if (exposed >= 0) findings.push({ severity: "high", check: "secret exposed to the browser", file: f, detail: `Line ${exposed + 1} gives a secret-looking variable a browser-exposed prefix (NEXT_PUBLIC_, REACT_APP_, VITE_…). Everything with that prefix is shipped to every visitor.` });
+  }
+
+  // Files an agent reads as instructions: anything in them that orders the AI around deserves a human look.
+  for (const f of files.filter((x) => INSTRUCTION_FILES.includes(x) || /(^|\/)(SKILL|CLAUDE|AGENTS)\.md$/i.test(x) || /^\.(claude|codex|cursor)\/(skills|rules|commands|agents)\//.test(x))) {
+    const text = textOf(root, f);
+    if (text === null || text.includes("narrowbit-audit-ignore")) continue;
+    for (const g of scanText(text)) findings.push({ severity: g.severity, check: `instructions aimed at an AI: ${g.check}`, file: `${f}:${g.line}`, detail: `${g.detail}. If this file is yours and the wording is deliberate, add "narrowbit-audit-ignore" to it; otherwise read it before letting an agent work here.` });
   }
 
   if (isRepo && !opts.files) {

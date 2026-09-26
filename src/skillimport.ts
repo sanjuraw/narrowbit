@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { scanText, type GuardFinding } from "./guard.js";
 
 /**
  * Finding skills on GitHub: a link to a file (blob or raw), a folder, or a whole repository. Anything
@@ -12,6 +13,8 @@ export interface Candidate {
   name: string;
   description: string;
   body: string;
+  /** Wording aimed at the AI found in the text, from guard.ts (empty when nothing looks wrong). */
+  warnings: GuardFinding[];
 }
 
 const API = () => process.env.NARROWBIT_GITHUB_API ?? "https://api.github.com";
@@ -103,7 +106,7 @@ export function parseSkillFile(raw: string, path: string): Candidate | null {
   if (!body) return null;
   const fallback = path.split("/").slice(-2).join("/").replace(/(^|\/)SKILL\.md$/i, "").replace(/\.md$/i, "") || path;
   const pretty = (name || fallback.split("/").pop() || "skill").replace(/[-_]+/g, " ").replace(/^\w/, (c) => c.toUpperCase());
-  return { path, name: pretty, description, body };
+  return { path, name: pretty, description, body, warnings: scanText(`${description}\n${body}`) };
 }
 
 /** Everything that looks like a skill at that link. */

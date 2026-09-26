@@ -10,6 +10,7 @@ import { appendEvent, fold, readEvents, subscribe, type Event, type PlanStep } f
 import { indexRepo, openStore } from "./indexer.js";
 import { ensureIsolated } from "./isolate.js";
 import { chooseTier } from "./route.js";
+import { guardNote } from "./guard.js";
 import { callConnectorTool, listConnectorTools } from "./mcpClient.js";
 import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./memory.js";
 import { classifyModelError, isPermanentModelError } from "./errors.js";
@@ -937,7 +938,7 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       const end = d.end ?? lines;
       const raw = readLines(p.root, path, start, end);
       const capped = capSummary(raw);
-      const text = `read ${path}:${start}-${end}\n${capped}`;
+      const text = `read ${path}:${start}-${end}\n${capped}${guardNote(capped)}`;
       const handle = writeEvidence(p, taskId, "file", raw, capped, path);
       appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, evidenceRef: handle.id, meta: { path } });
       return text;
@@ -1118,7 +1119,7 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
         // (which wouldn't cover the text that re-enters the model's context or the visible event log).
         const cleaned = redact(r.text);
         const capped = capOutput(cleaned);
-        const text = `${serverName}.${toolName}${r.isError ? " (error)" : ""}:\n${capped}`;
+        const text = `${serverName}.${toolName}${r.isError ? " (error)" : ""}:\n${capped}${guardNote(capped)}`;
         const handle = writeEvidence(p, taskId, "other", cleaned, capped);
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, evidenceRef: handle.id, meta: { server: serverName, tool: toolName } });
         return text;

@@ -691,7 +691,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   }
   $("addSkillBtn").onclick = openSkillModal;
   var found = [];
-  function fillFromFound(i) { var c = found[i]; if (!c) return; $("skillName").value = c.name; $("skillDesc").value = c.description || ""; $("skillBody").value = c.body; }
+  function fillFromFound(i) { var c = found[i]; if (!c) return; var w = (c.warnings || []).map(function (x) { return "line " + x.line + ": " + x.check; }); if (w.length) { var n2 = $("skillImportNote"); n2.textContent = "⚠ " + c.name + " — wording aimed at the AI: " + w.join("; ") + ". Read it carefully before saving."; show(n2, true); n2.style.color = "var(--bad)"; } $("skillName").value = c.name; $("skillDesc").value = c.description || ""; $("skillBody").value = c.body; }
   $("findSkill").onclick = function () {
     var note = $("skillImportNote"), pick = $("skillPick");
     if (!$("skillUrl").value.trim()) { $("skillUrl").focus(); return; }
@@ -700,7 +700,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       found = r.skills; clear(pick);
       found.forEach(function (c, i) { pick.appendChild(el("option", { value: String(i), text: c.name + "  —  " + c.path })); });
       show(pick, found.length > 1); fillFromFound(0);
-      note.textContent = "Found " + found.length + ". These are someone else's instructions and will be given to the agent — read them below before you save.";
+      var warned = found.filter(function (c) { return c.warnings && c.warnings.length; });
+      note.textContent = "Found " + found.length + ". These are someone else's instructions and will be given to the agent — read them below before you save." + (warned.length ? " ⚠ " + warned.length + " contain wording aimed at the AI: " + warned.map(function (c) { return c.name + " (" + c.warnings.map(function (w) { return w.check; }).join(", ") + ")"; }).join("; ") : "");
+      note.style.color = warned.length ? "var(--bad)" : "var(--muted)";
     }).catch(function (e) { note.textContent = e.message; note.style.color = "var(--bad)"; });
   };
   $("skillPick").onchange = function () { fillFromFound(Number($("skillPick").value)); };

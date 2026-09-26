@@ -920,6 +920,12 @@ export async function main(argv: string[]): Promise<number> {
           const found = await findSkills(url);
           for (const c of found) {
             out(`\n=== ${c.name}${c.description ? ` — ${c.description}` : ""}   (${c.path})\n${c.body.slice(0, 1500)}${c.body.length > 1500 ? "\n…" : ""}`);
+            for (const w of c.warnings) out(`  ⚠ [${w.severity}] line ${w.line}: ${w.check} — ${w.detail}`);
+          }
+          const risky = found.filter((c) => c.warnings.some((w) => w.severity === "high"));
+          if (risky.length && !args.flags.force) {
+            out(`\n${risky.length} skill(s) contain wording aimed at the AI (marked ⚠). Not added. Read them; if you still want them, re-run with --yes --force.`);
+            return 1;
           }
           if (!args.flags.yes) {
             out(`\nThese are someone else's instructions and will be given to the agent. Read them above, then re-run with --yes to add ${found.length === 1 ? "it" : `all ${found.length}`}.`);
