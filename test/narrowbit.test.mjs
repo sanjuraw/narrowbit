@@ -1671,3 +1671,13 @@ test("Antigravity: the result event gives the answer, conversation id and token 
   assert.deepEqual(p.totals, { input: 100, output: 7, thinking: 3, cached: 0 });
   assert.equal(parseAgyStream('{"event":"result","result":{"status":"ERROR","error":"boom","usage":{}}}').isError, true);
 });
+
+test("GitHub remotes become a browser link; other hosts and odd URLs do not", async () => {
+  const { githubWebUrl } = await dist("git.js");
+  const want = { webUrl: "https://github.com/sanjuraw/narrowbit", repoName: "sanjuraw/narrowbit" };
+  assert.deepEqual(githubWebUrl("https://github.com/sanjuraw/narrowbit.git"), want);
+  assert.deepEqual(githubWebUrl("git@github.com:sanjuraw/narrowbit.git"), want);
+  assert.deepEqual(githubWebUrl("https://user:tok@github.com/sanjuraw/narrowbit"), want);
+  assert.deepEqual(githubWebUrl("https://gitlab.com/a/b.git"), {});
+  assert.deepEqual(githubWebUrl("/some/local/path"), {});
+});

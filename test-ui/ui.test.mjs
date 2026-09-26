@@ -155,6 +155,10 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.ok(st.providers.cloudflare.baseUrl.includes(id), "endpoint uses the saved id");
   });
 
+  test("the GitHub button beside the folder pill stays hidden when the repository has no GitHub remote", () => {
+    assert.ok(page.$("ghCrumb").classList.contains("hidden"));
+  });
+
   test("the sidebar can be hidden and shown with the menu button and Cmd/Ctrl+B", () => {
     const app = page.$("app");
     assert.ok(!app.classList.contains("side-hidden"));

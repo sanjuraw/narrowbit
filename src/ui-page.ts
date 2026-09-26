@@ -405,7 +405,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       </div>
     </div>
     <div class="composer-wrap">
-      <div class="crumb-wrap" id="crumbWrap"><button class="crumb" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button></div>
+      <div class="crumb-wrap" id="crumbWrap"><button class="crumb" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button> <button class="crumb hidden" id="ghCrumb" title="Open this repository on GitHub"><span class="ci">⎇</span><span id="ghName"></span></button></div>
       <div class="composer">
         <div id="banner" class="banner hidden"></div>
         <div id="attached" class="attached hidden"></div>
@@ -616,6 +616,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var hasRepo = !!(S && S.root);
     show($("crumbWrap"), true);
     $("crumb").classList.toggle("empty", !hasRepo);
+    var gh = hasRepo && S.remote && S.remote.webUrl;
+    show($("ghCrumb"), !!gh);
+    if (gh) { $("ghName").textContent = S.remote.repoName; $("ghCrumb").dataset.url = S.remote.webUrl; }
     $("crumbName").textContent = hasRepo ? S.name + (S.git && S.git.branch ? " · " + S.git.branch : "") : "Choose a folder to start";
     var t = $("treePill");
     if (S && S.git && S.git.isRepo) {
@@ -1727,6 +1730,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   }
   $("repoBtn").onclick = function () { openRepoPicker(true); };
   $("crumb").onclick = function () { openRepoPicker(true); };
+  $("ghCrumb").onclick = function () {
+    var u = $("ghCrumb").dataset.url;
+    if (u) { if (native) native.postMessage({ type: "openUrl", url: u }); else window.open(u, "_blank", "noopener"); }
+  };
   $("repoOverlay").onclick = function (e) { if (e.target === this) show(this, false); };
   document.addEventListener("keydown", function (e) { if (e.key === "Escape") { show($("repoOverlay"), false); show($("skillOverlay"), false); } });
   $("closeRepo").onclick = function () { show($("repoOverlay"), false); };

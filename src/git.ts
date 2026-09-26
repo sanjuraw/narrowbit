@@ -99,6 +99,9 @@ export function diffStat(root: string, base: string): string {
 }
 
 export interface RemoteInfo {
+  /** https://github.com/owner/repo when the first remote is on GitHub (so the app can link to it). */
+  webUrl?: string;
+  repoName?: string;
   hasRemote: boolean;
   upstream: string | null;
   /** Commits on this branch that aren't on the remote yet (or on any remote, when there's no upstream). */
@@ -108,13 +111,20 @@ export interface RemoteInfo {
 export function remoteInfo(root: string): RemoteInfo {
   const hasRemote = sh("git", ["remote"], root).stdout.trim().length > 0;
   if (!hasRemote) return { hasRemote: false, upstream: null, ahead: 0 };
+  const web = githubWebUrl(sh("git", ["remote", "get-url", sh("git", ["remote"], root).stdout.trim().split("\n")[0]!], root).stdout.trim());
   const up = sh("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], root);
   if (up.code === 0) {
     const n = sh("git", ["rev-list", "--count", "@{u}..HEAD"], root);
-    return { hasRemote, upstream: up.stdout.trim(), ahead: Number(n.stdout.trim()) || 0 };
+    return { hasRemote, upstream: up.stdout.trim(), ahead: Number(n.stdout.trim()) || 0, ...web };
   }
   const n = sh("git", ["rev-list", "--count", "HEAD", "--not", "--remotes"], root);
-  return { hasRemote, upstream: null, ahead: Number(n.stdout.trim()) || 0 };
+  return { hasRemote, upstream: null, ahead: Number(n.stdout.trim()) || 0, ...web };
+}
+
+/** Browser link for a GitHub remote (https or ssh form); nothing for other hosts. */
+export function githubWebUrl(remote: string): { webUrl: string; repoName: string } | {} {
+  const m = /^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(remote.trim());
+  return m ? { webUrl: `https://github.com/${m[1]}/${m[2]}`, repoName: `${m[1]}/${m[2]}` } : {};
 }
 
 /**
