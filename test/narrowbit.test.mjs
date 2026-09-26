@@ -1603,3 +1603,12 @@ describe("test-first gate (optional)", () => {
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); rmSync(fake2.dir, { recursive: true, force: true }); }
   });
 });
+
+test("the web reader refuses local, private and non-http addresses before any browser starts", () => {
+  const py = `import importlib.util,sys
+s=importlib.util.spec_from_file_location("m","scripts/crawl4ai_mcp.py");m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+for u in ["http://127.0.0.1/","http://localhost:8080/","http://169.254.169.254/latest/meta-data/","http://10.0.0.5/","http://192.168.1.1/","file:///etc/passwd","ftp://x.example/"]:
+    print(u, "=>", m.refuse_reason(u) or "ALLOWED")`;
+  const out = execFileSync("python3", ["-c", py], { cwd: join(here, ".."), encoding: "utf8" });
+  for (const line of out.trim().split("\n")) assert.ok(!line.endsWith("ALLOWED"), line);
+});
