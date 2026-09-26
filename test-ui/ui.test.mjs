@@ -158,6 +158,10 @@ describe("app page with no folder open (a brand-new user)", () => {
   test("the sidebar can be hidden and shown with the menu button and Cmd/Ctrl+B", () => {
     const app = page.$("app");
     assert.ok(!app.classList.contains("side-hidden"));
+    page.$("hideSideBtn").click();
+    assert.ok(app.classList.contains("side-hidden"));
+    page.$("menuBtn").click();
+    assert.ok(!app.classList.contains("side-hidden"), "the button in the top bar shows it again");
     page.$("menuBtn").click();
     assert.ok(app.classList.contains("side-hidden"));
     page.key("b");

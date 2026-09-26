@@ -89,6 +89,10 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .side-label .add-skill { border: 0; background: transparent; color: var(--faint); font-size: 14px; line-height: 1; padding: 2px 6px; border-radius: 5px; text-transform: none; letter-spacing: normal; }
 .side-label .add-skill:hover { background: var(--panel-2); color: var(--text); }
 .sessions { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+* { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
 .skills { flex: none; max-height: 160px; overflow-y: auto; padding: 0 8px 8px; }
 .skill-row { display: flex; align-items: center; gap: 2px; }
 .skill-row .skill { flex: 1; min-width: 0; text-align: left; border: 0; background: transparent; padding: 7px 10px; border-radius: 8px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -140,6 +144,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .crumb #crumbName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 2px 9px; border-radius: 99px; background: var(--panel-2); color: var(--muted); white-space: nowrap; border: 0; }
 .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); }
+#menuBtn { display: none; }
+.app.side-hidden #menuBtn { display: inline-block; }
 .app.side-hidden { grid-template-columns: minmax(0, 1fr); }
 .app.side-hidden aside { display: none; }
 .scroll { flex: 1; overflow-y: auto; min-height: 0; }
@@ -343,6 +349,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .app { grid-template-columns: 1fr; }
   aside { position: fixed; inset: 0 auto 0 0; width: 280px; z-index: 35; transform: translateX(-100%); transition: transform .2s; }
   .app.side-open aside { transform: none; box-shadow: 10px 0 40px rgba(0,0,0,.2); }
+  #menuBtn { display: inline-block; }
   .app.side-hidden { grid-template-columns: 1fr; }
   .app.side-hidden aside { display: flex; }
   .thread { padding: 8px 16px 24px; }
@@ -355,7 +362,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 <body>
 <div class="app" id="app">
   <aside>
-    <div class="side-top"><span class="brand"><svg class="mark" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="20" y="25" width="8" height="50"/><rect x="20" y="25" width="20" height="8"/><rect x="20" y="67" width="20" height="8"/><rect x="72" y="25" width="8" height="50"/><rect x="60" y="25" width="20" height="8"/><rect x="60" y="67" width="20" height="8"/><rect x="44" y="44" width="12" height="12"/></svg>Narrowbit</span></div>
+    <div class="side-top"><span class="brand"><svg class="mark" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="20" y="25" width="8" height="50"/><rect x="20" y="25" width="20" height="8"/><rect x="20" y="67" width="20" height="8"/><rect x="72" y="25" width="8" height="50"/><rect x="60" y="25" width="20" height="8"/><rect x="60" y="67" width="20" height="8"/><rect x="44" y="44" width="12" height="12"/></svg>Narrowbit</span><button class="ghost" id="hideSideBtn" title="Hide sidebar (Cmd/Ctrl+B)" aria-label="Hide sidebar">⇤</button></div>
     <button class="new-btn" id="newBtn"><span class="plus">+</span>New task <span style="margin-left:auto"><kbd>⌘</kbd> <kbd>K</kbd></span></button>
     <button class="repo-btn" id="repoBtn" title="Switch repository"><span class="rn" id="repoName">No repository</span><span class="rb" id="repoBranch"></span></button>
     <div class="side-label">Sessions</div>
@@ -374,7 +381,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   <main>
     <div class="upd hidden" id="updBar"></div>
     <div class="topbar" id="topbar">
-      <button class="ghost" id="menuBtn" aria-label="Show or hide the sidebar" title="Show or hide the sidebar (Cmd/Ctrl+B)">☰</button>
+      <button class="ghost" id="menuBtn" aria-label="Show sidebar" title="Show sidebar (Cmd/Ctrl+B)">⇥</button>
       <span class="title" id="title"></span>
       <button class="pill hidden" id="planMini"></button>
       <span class="pill hidden" id="treePill"></span>
@@ -1038,7 +1045,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     $("providerNote").textContent = notes.join(" "); show($("providerNote"), notes.length > 0);
     var t = S.selection.tiers, lbl = S.providers[S.selection.provider].label;
     var line = lbl + " · " + (t.explore || "?") + " / " + (t.execute || "?") + " / " + (t.escalate || "?");
-    $("settingsSub").textContent = line; $("modelChipText").textContent = line;
+    $("settingsSub").textContent = line;
+    // The composer chip is short (provider and the working model); the full three-slot line is its tooltip.
+    $("modelChipText").textContent = lbl.split(" (")[0] + " · " + (t.execute || "?");
+    $("modelChip").title = "Models & settings — " + line;
   }
   function swapToText(ph, val) {
     var row = $("slotrow-" + ph), old = $("slot-" + ph);
@@ -1738,6 +1748,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   }
   try { if (localStorage.getItem("nb-side-hidden") === "1") $("app").classList.add("side-hidden"); } catch (e) {}
   $("menuBtn").onclick = toggleSidebar;
+  $("hideSideBtn").onclick = toggleSidebar;
   document.addEventListener("keydown", function (e) {
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") { e.preventDefault(); toggleSidebar(); }
   });
