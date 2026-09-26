@@ -39,8 +39,9 @@ import type { ModelCallOptions, ModelCallResult } from "./claude-cli.js";
  * itself, so the model needs none of them — the Codex equivalent of Claude's `--tools ""`. Measured on codex-cli
  * 0.156 with gpt-6-luna: a one-word reply cost 13.5k input tokens by default, 6.8k with these off and Codex's base
  * instructions replaced by ours. Unknown feature names (older/newer CLIs) are ignored without --strict-config.
+ * Not `code_mode_host`: with it off, gpt-6 models end every real task with "Code Mode is unavailable… will fail closed".
  */
-const LEAN_OFF = ["apps", "browser_use", "browser_use_external", "computer_use", "goals", "image_generation", "multi_agent", "plugins", "remote_plugin", "shell_tool", "skill_search", "sleep_tool", "tool_suggest", "view_image", "unified_exec", "workspace_dependencies", "worktrees", "in_app_browser", "hooks", "code_mode_host", "skill_mcp_dependency_install"];
+const LEAN_OFF = ["apps", "browser_use", "browser_use_external", "computer_use", "goals", "image_generation", "multi_agent", "plugins", "remote_plugin", "shell_tool", "skill_search", "sleep_tool", "tool_suggest", "view_image", "unified_exec", "workspace_dependencies", "worktrees", "in_app_browser", "hooks", "skill_mcp_dependency_install"];
 
 /** Our instructions file per Codex thread, so resumed calls keep the same replacement for Codex's base instructions. */
 const instructionsFor = new Map<string, string>();
