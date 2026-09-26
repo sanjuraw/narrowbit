@@ -1414,3 +1414,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+test("Codex's usage-limit message is a limit with its reset time", async () => {
+  const { classifyModelError } = await dist("errors.js");
+  assert.deepEqual(classifyModelError("You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 4:06 PM."), { kind: "limit", resets: "4:06 PM" });
+});

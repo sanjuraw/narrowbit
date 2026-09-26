@@ -15,7 +15,8 @@ export interface ClassifiedError {
 export function classifyModelError(message: string | undefined | null): ClassifiedError {
   const m = String(message ?? "");
   if (/hit your .{0,20}limit|usage limit|session limit|weekly limit|rate.?limit|quota|too many requests|\b429\b|exceeded your/i.test(m)) {
-    const resets = /resets?\s+(?:at\s+|in\s+)?([^\n.]{2,40})/i.exec(m)?.[1]?.trim();
+    // Claude: "resets 1am (Asia/Calcutta)"; Codex: "…or try again at 4:06 PM."
+    const resets = (/resets?\s+(?:at\s+|in\s+)?([^\n.]{2,40})/i.exec(m) ?? /try again (?:at|in)\s+([0-9][^\n]{0,30}?(?:AM|PM|am|pm|minutes?|hours?))/.exec(m))?.[1]?.trim();
     return { kind: "limit", resets };
   }
   if (/not logged in|not authenticated|unauthori[sz]ed|\b401\b|\b403\b|invalid api key|authentication/i.test(m)) return { kind: "auth" };
