@@ -139,7 +139,10 @@ export const PROVIDER_INFO: Record<ProviderName, ProviderInfo> = {
 // for everyday work", Sol "latest frontier" — the same shape as Haiku / Sonnet / Opus. API and
 // local providers have no default: model catalogs there change constantly, so the user picks.
 export const DEFAULT_TIERS: Record<ProviderName, ModelTiers> = {
-  claude: { explore: "haiku", execute: "sonnet", escalate: "opus" },
+  // Sonnet for everything but the lead/escalation slot. Measured on the Hono tasks (27 finished): Sonnet alone passed 26/27 with
+  // 62k mean input and $0.12/task; Haiku 4.5 alone 23/27 at 181k; routing Haiku -> Sonnet -> Opus in one conversation cost
+  // more than Sonnet alone ($0.25) because each model switch rewrites the prompt cache and Haiku needed more turns.
+  claude: { explore: "sonnet", execute: "sonnet", escalate: "opus" },
   // gpt-6-luna is the "fast, easier tasks" model: fine for reading, but it passed only 4/10 Hono tasks alone (one action
   // per turn, never batches). gpt-6-sol ("workhorse for coding") batches and passed 2 of luna's 4 hardest failures.
   codex: { explore: "gpt-6-luna", execute: "gpt-6-sol", escalate: "gpt-6-sol" },
