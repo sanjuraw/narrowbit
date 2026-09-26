@@ -1715,3 +1715,24 @@ describe("scout: research in a separate conversation", () => {
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 });
+
+describe("lead and reviewer on their own models", () => {
+  test("the lead plans on its model, the worker never changes model, and a different reviewer reviews the diff", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([
+      JSON.stringify({ plan: ["change hello to hi in a.txt"], files: ["a.txt"] }),
+      JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "hi" }),
+      JSON.stringify({ action: "done", summary: "changed it" }),
+      JSON.stringify({ action: "done", summary: "changed it" }),
+      JSON.stringify({ verdict: "approve" }),
+    ]);
+    try {
+      const r = await runTask(p, "say hi in a.txt", { claudeBin: fake.bin, boss: true, maxSteps: 8, leadModel: { model: "opus" }, reviewer: { model: "haiku" }, models: { explore: "sonnet", execute: "sonnet", escalate: "sonnet" } });
+      assert.equal(r.outcome, "done");
+      const m = fake.models();
+      assert.equal(m[0], "opus", "the plan came from the lead's model");
+      assert.equal(m[m.length - 1], "haiku", "the review came from the reviewer's model");
+      assert.ok(m.slice(1, -1).length > 0 && m.slice(1, -1).every((x) => x === "sonnet"), "the worker stayed on one model");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});

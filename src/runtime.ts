@@ -344,6 +344,10 @@ export interface RuntimeOptions {
   /** Research in a separate conversation first: this model (from `provider`, default the main one) reads the repository and
    * returns a short report that goes to the worker. See scoutPhase. */
   scout?: { provider?: ProviderName; model: string; effort?: string; maxSteps?: number };
+  /** The lead's plan and review come from this model instead of the main provider's third slot (any provider), e.g. Opus leading Codex workers. */
+  leadModel?: { provider?: ProviderName; model: string; effort?: string };
+  /** Only the review comes from this model (any provider): a second opinion from a different model family. Falls back to the lead if unavailable. */
+  reviewer?: { provider?: ProviderName; model: string; effort?: string };
   /** Absolute paths of images/PDFs to show the model. Sent on the first call only; see attachments.ts. */
   attachments?: string[];
   /** Context size (input + cache-creation + cache-read tokens, from the most recent call) above
@@ -505,7 +509,20 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   let plan: LeadPlan | null = continuing ? planFromEvents(prior) : null;
   const firstEvent = continuing ? prior[0] : readEvents(p, taskId)[0];
   const preexisting = new Set<string>(Array.isArray(firstEvent?.meta?.untrackedAtStart) ? (firstEvent.meta.untrackedAtStart as string[]) : []);
-  const lead = { p, taskId, call, model: tiers.escalate, effort, role, preexisting };
+  // A lead or reviewer on another provider gets its own call function (and so its own conversation and cache).
+  const leadFor = (spec: { provider?: ProviderName; model: string; effort?: string } | undefined): LeadCtx | null => {
+    if (!spec) return null;
+    const sp = spec.provider ?? provider;
+    const why = unavailableReason({ provider: sp, tiers: { explore: spec.model, execute: spec.model, escalate: spec.model }, effort }, cfg.agent);
+    if (why) {
+      log(`[lead] ${sp} is unavailable (${why}) — using the main provider's lead`);
+      return null;
+    }
+    const f = callFor(sp);
+    return { p, taskId, call: (o) => f({ ...o, claudeBin: opts.claudeBin }), model: spec.model, effort: spec.effort ?? effort, role, preexisting };
+  };
+  const lead: LeadCtx = leadFor(opts.leadModel) ?? { p, taskId, call, model: tiers.escalate, effort, role, preexisting };
+  const reviewLead: LeadCtx = leadFor(opts.reviewer) ?? lead;
   if (boss && !continuing) {
     log(`[plan] (${tiers.escalate}) planning`);
     plan = await leadPlan(lead, taskText, store);
@@ -760,7 +777,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         if (boss && editsApplied > 0 && reviews < MAX_REVIEWS) {
           reviews++;
           log(`[${steps}] (${tiers.escalate}) lead review`);
-          const review = await leadReview(lead, goal, taskText !== goal ? taskText : null, plan, decision.summary ?? "");
+          const review = await leadReview(reviewLead, goal, taskText !== goal ? taskText : null, plan, decision.summary ?? "");
           if (review?.verdict === "revise") {
             log(`      → changes requested: ${review.feedback.slice(0, 100)}`);
             // A revision reopens the verify challenge: the fix must be checked again.
