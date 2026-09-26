@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { ModelCallOptions, ModelCallResult } from "./claude-cli.js";
 import { promptWithFiles } from "../attachments.js";
 
@@ -7,10 +9,44 @@ import { promptWithFiles } from "../attachments.js";
  * codex-cli.ts fills for ChatGPT. One call = one `agy -p` turn; Narrowbit's runtime executes every action.
  *
  * Measured on agy 1.2.11: it has no flag to switch its own tools off (~55 tool definitions cost ~12k input tokens
- * per call) and no system-prompt flag, so our instructions are prepended to the first prompt and `--mode plan` keeps
+ * per call; see LEAN_AGENT below for the way around that) and no system-prompt flag, so our instructions are prepended to the first prompt and `--mode plan` keeps
  * it from acting on its own; told to answer with JSON only, it did not use a tool. `--conversation <id>` resumes, and
  * the usage in a resumed call's result is the running total for the conversation, so per-call usage is the difference.
  */
+/**
+ * agy sends ~12k tokens of built-in tool definitions and its own system prompt on every call. A custom agent (a Markdown
+ * file in agy's documented global agents folder) replaces the system prompt and limits the tools to one tiny one; measured
+ * on a one-word call: 12,290 → 2,200 input tokens. Narrowbit runs every action itself, so the model needs none of them.
+ * NARROWBIT_AGY_LEAN=0 goes back to the default agent.
+ */
+const LEAN_AGENT = "narrowbit-lean";
+const LEAN_AGENT_FILE = `---
+name: ${LEAN_AGENT}
+description: Text-only assistant used by Narrowbit, which runs every action itself.
+tools:
+    - finish
+model: inherit
+---
+
+# Instructions
+
+You are a text-only assistant. Never call any function or tool, including finish: write your whole reply as plain text, in the format the user's message asks for. A JSON action is text you write, not a function call.
+`;
+
+function ensureLeanAgent(): boolean {
+  if (process.env.NARROWBIT_AGY_LEAN === "0") return false;
+  try {
+    const f = `${process.env.HOME ?? ""}/.gemini/config/agents/${LEAN_AGENT}.md`;
+    if (!existsSync(f) || readFileSync(f, "utf8") !== LEAN_AGENT_FILE) {
+      mkdirSync(dirname(f), { recursive: true });
+      writeFileSync(f, LEAN_AGENT_FILE);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const lastTotals = new Map<string, { input: number; output: number; thinking: number; cached: number }>();
 
 export function callAntigravity(opts: ModelCallOptions): Promise<ModelCallResult> {
@@ -18,6 +54,7 @@ export function callAntigravity(opts: ModelCallOptions): Promise<ModelCallResult
   // agy has no image flag (its stream-json input refuses a prompt argument, which -p requires), so images are not sent.
   const prompt = promptWithFiles(opts.prompt, opts.attachments, { images: false, pdfs: false });
   const args = ["-p", opts.resume && opts.sessionId ? prompt : opts.systemPrompt !== undefined ? `${opts.systemPrompt}\n\n${prompt}` : prompt, "--output-format", "stream-json", "--mode", "plan"];
+  if (ensureLeanAgent()) args.push("--agent", LEAN_AGENT);
   if (opts.resume && opts.sessionId) args.push("--conversation", opts.sessionId);
   if (opts.model) args.push("--model", opts.model);
   // Model ids already end in -low/-medium/-high for the Gemini family; --effort is for the ones that don't.
