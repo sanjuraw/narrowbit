@@ -1361,3 +1361,56 @@ describe("JSON-mode replies and the output split (experiment)", () => {
     } finally { srv.close(); rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("Codex adapter usage accounting", () => {
+  test("running thread totals from `codex exec resume` become per-call usage, and cached tokens are not counted twice", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nb-codex-"));
+    const bin = join(dir, "codex");
+    // Like codex-cli 0.156: each call reports the thread's cumulative usage; input_tokens include the cached ones.
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("fs"); const c = ${JSON.stringify(join(dir, "n"))};
+const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) + 1 : 1; fs.writeFileSync(c, String(n));
+fs.appendFileSync(${JSON.stringify(join(dir, "args.log"))}, JSON.stringify(process.argv.slice(2)) + "\\n");
+console.log(JSON.stringify({ type: "thread.started", thread_id: "th-1" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "ok" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 7000 * n, cached_input_tokens: 5000 * n, output_tokens: 10 * n, reasoning_output_tokens: 4 * n } }));
+`, { mode: 0o755 });
+    const { callCodex } = await dist("providers/codex-cli.js");
+    process.env.NARROWBIT_CODEX = bin;
+    try {
+      const a = await callCodex({ cwd: dir, prompt: "hi", systemPrompt: "RULES", model: "gpt-6-luna", role: "t" });
+      const b = await callCodex({ cwd: dir, prompt: "again", model: "gpt-6-luna", role: "t", sessionId: "th-1", resume: true });
+      assert.deepEqual(a.usage, { input: 2000, cacheCreate: 0, cacheRead: 5000, output: 10 });
+      assert.deepEqual(b.usage, { input: 2000, cacheCreate: 0, cacheRead: 5000, output: 10 }, "the second call is its own share, not the running total");
+      assert.equal(b.reasoningTokens, 4);
+      const calls = readFileSync(join(dir, "args.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      assert.ok(calls[0].includes("features.shell_tool=false"), "Codex's own tools are switched off");
+      assert.ok(calls[0].some((x) => x.startsWith("model_instructions_file=")), "our rules replace Codex's base instructions");
+      assert.ok(!calls[0].some((x) => x.includes("RULES")), "…instead of being pasted into the prompt");
+      assert.ok(calls[1].some((x) => x.startsWith("model_instructions_file=")), "and stay the same on resumed calls");
+    } finally { delete process.env.NARROWBIT_CODEX; rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("compaction ignores the provider's own per-call overhead", () => {
+  test("a CLI that adds 20k tokens of its own to every call doesn't make every step compact", async () => {
+    const { root, p } = tinyRepo();
+    const dir = mkdtempSync(join(tmpdir(), "nb-heavy-"));
+    const bin = join(dir, "claude");
+    // Every call reports ~20k of context the runtime never sent (like Codex's own instructions and tools), growing a little.
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("fs"); const c = ${JSON.stringify(join(dir, "n"))};
+const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) + 1 : 1; fs.writeFileSync(c, String(n));
+const replies = [${JSON.stringify(JSON.stringify({ action: "read", path: "a.txt" }))}, ${JSON.stringify(JSON.stringify({ action: "read", path: "a.txt" }))}, ${JSON.stringify(JSON.stringify({ action: "read", path: "a.txt" }))}, ${JSON.stringify(JSON.stringify({ action: "done", summary: "read it" }))}];
+const text = replies[Math.min(n - 1, replies.length - 1)];
+const usage = { input_tokens: 500, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 20000 + n * 300 };
+console.log(JSON.stringify({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
+`, { mode: 0o755 });
+    try {
+      const r = await runTask(p, "read a.txt", { claudeBin: bin, boss: false, maxSteps: 8, compactThreshold: 5000 });
+      assert.equal(r.outcome, "done");
+      assert.equal(r.compactions, 0, "20k of provider overhead alone must not trigger compaction at a 5k threshold");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
+  });
+});

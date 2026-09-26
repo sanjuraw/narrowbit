@@ -544,6 +544,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const recentActions: string[] = [];
   let lastResultHead = "";
   const asks = { n: 0 };
+  // Tokens the provider adds to every request on its own (its CLI's instructions and tool definitions), measured on the
+  // first call of each session. Compaction is about the size of *our* conversation, so this part doesn't count toward it.
+  let providerOverhead = 0;
 
   for (; steps < maxSteps; steps++) {
     if (opts.signal?.aborted) {
@@ -584,6 +587,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     if (steps === maxSteps - 3 && maxSteps >= 6) {
       callOpts.prompt += `\n\nOnly 3 steps remain in the budget. Stop exploring; finish now with a "done" action whose summary is your complete answer.`;
     }
+    const wasFresh = freshSessionPending;
+    const sentEstimate = nextParts.reduce((a, x) => a + x.tokens, 0);
     let res = await call(callOpts);
     // A non-fatal error (timeout, killed process, no result event) is presumed transient, not a
     // real problem with the request — retry the identical call before giving up on the task.
@@ -825,7 +830,10 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     // Compact on the context the model just processed, not a fixed turn count: a task with big
     // reads compacts sooner than one with small ones, and a cheap task may never compact at all.
     const contextTokens = res.usage.input + res.usage.cacheCreate + res.usage.cacheRead;
-    if (contextTokens >= compactThreshold) {
+    // Codex's CLI adds ~7-14k tokens of its own to every call; before this, it counted toward the 30k limit, so a Codex
+    // task compacted (lost its conversation) almost every step, re-read the same files and rarely reached an edit.
+    if (wasFresh) providerOverhead = Math.max(0, contextTokens - sentEstimate);
+    if (contextTokens - providerOverhead >= compactThreshold) {
       const previousSessionId = sessionId;
       sessionId = randomUUID();
       freshSessionPending = true;
