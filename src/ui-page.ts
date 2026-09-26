@@ -344,6 +344,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .cbar .mchip { max-width: 160px; }
 }
 </style>
+<script>try { var t = localStorage.getItem("nb-theme"); if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t); } catch (e) {}</script>
 </head>
 <body>
 <div class="app" id="app">
@@ -450,6 +451,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     </div>
     <div class="note hidden" id="connectorErr" style="color:var(--bad)"></div>
 
+    <h3>Appearance</h3>
+    <div class="field"><label for="themeSel">Theme</label><select id="themeSel"><option value="auto">Match my Mac</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
+
     <h3>About</h3>
     <div class="about" id="aboutInfo"></div>
   </div>
@@ -490,6 +494,17 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 </div>
 
 <script>
+(function () {
+  var sel = document.getElementById("themeSel");
+  var cur = "auto";
+  try { cur = localStorage.getItem("nb-theme") || "auto"; } catch (e) {}
+  sel.value = cur;
+  sel.addEventListener("change", function () {
+    try { localStorage.setItem("nb-theme", sel.value); } catch (e) {}
+    if (sel.value === "auto") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", sel.value);
+  });
+})();
 (function () {
   "use strict";
   var T = new URLSearchParams(location.search).get("t") || "";

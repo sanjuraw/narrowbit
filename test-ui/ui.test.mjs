@@ -155,6 +155,20 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.ok(st.providers.cloudflare.baseUrl.includes(id), "endpoint uses the saved id");
   });
 
+  test("the theme selector switches between light, dark and the Mac setting", () => {
+    const sel = page.$("themeSel");
+    const root = page.w.document.documentElement;
+    sel.value = "dark";
+    sel.dispatchEvent(new page.w.Event("change"));
+    assert.equal(root.getAttribute("data-theme"), "dark");
+    sel.value = "light";
+    sel.dispatchEvent(new page.w.Event("change"));
+    assert.equal(root.getAttribute("data-theme"), "light");
+    sel.value = "auto";
+    sel.dispatchEvent(new page.w.Event("change"));
+    assert.equal(root.getAttribute("data-theme"), null);
+  });
+
   test("the version is visible in the sidebar and in About", () => {
     assert.match(page.$("verLine").textContent, /^Narrowbit v\d+\.\d+\.\d+/);
     assert.match(page.$("aboutInfo").textContent, /Narrowbit v\d+\.\d+\.\d+/);
