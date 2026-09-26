@@ -53,6 +53,7 @@ export async function callOpenAICompat(ep: Endpoint, opts: ModelCallOptions): Pr
 
   const body: Record<string, unknown> = { model: opts.model, messages, max_tokens: 8192 };
   if (ep.provider === "openrouter") body.usage = { include: true };
+  if (opts.jsonObject) body.response_format = { type: "json_object" };
   // DeepSeek V4 thinks by default at "high" effort, and its reasoning counts as output tokens — the priciest kind
   // (74% of the bill in our Hono runs). Map Narrowbit's effort levels onto its two controls.
   if (ep.provider === "deepseek" && opts.effort) {
@@ -105,6 +106,7 @@ export async function callOpenAICompat(ep: Endpoint, opts: ModelCallOptions): Pr
   return {
     text,
     usage: { input: Math.max(0, prompt - cached), cacheCreate: 0, cacheRead: cached, output: Number(u.completion_tokens ?? 0) },
+    reasoningTokens: Number(u.completion_tokens_details?.reasoning_tokens ?? 0) || undefined,
     costUsd: session.costUsd,
     turns: 1,
     isError: false,

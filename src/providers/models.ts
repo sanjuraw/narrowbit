@@ -129,7 +129,9 @@ export const PROVIDER_INFO: Record<ProviderName, ProviderInfo> = {
 // local providers have no default: model catalogs there change constantly, so the user picks.
 export const DEFAULT_TIERS: Record<ProviderName, ModelTiers> = {
   claude: { explore: "haiku", execute: "sonnet", escalate: "opus" },
-  codex: { explore: "gpt-5.6-luna", execute: "gpt-5.6-terra", escalate: "gpt-5.6-sol" },
+  // gpt-6-luna is the "fast, easier tasks" model: fine for reading, but it passed only 4/10 Hono tasks alone (one action
+  // per turn, never batches). gpt-6-sol ("workhorse for coding") batches and passed 2 of luna's 4 hardest failures.
+  codex: { explore: "gpt-6-luna", execute: "gpt-6-sol", escalate: "gpt-6-sol" },
   freellmapi: { explore: "auto", execute: "auto", escalate: "auto" },
   ...(Object.fromEntries(PROVIDERS.filter((p) => p !== "claude" && p !== "codex" && p !== "freellmapi").map((p) => [p, { explore: "", execute: "", escalate: "" }])) as Record<
     Exclude<ProviderName, "claude" | "codex" | "freellmapi">,

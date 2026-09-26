@@ -195,6 +195,23 @@ interface Decision {
 /** Parses one turn's response into 1-MAX_BATCH_ACTIONS decisions: a bare action object, or a JSON
  * array of action objects (batching). Excess entries past the cap are dropped, not rejected —
  * a model that over-batches still gets the actions up to the limit rather than a wasted retry. */
+/** Where a reply's output tokens went: hidden reasoning (when reported), the JSON actions, and any prose around them. */
+function outputShape(res: ModelCallResult): { reasoning: number | null; textChars: number; proseChars: number } {
+  const text = res.text ?? "";
+  const t = text.trim();
+  let json = "";
+  for (const c of [t, ...balancedSlices(t)]) {
+    try {
+      JSON.parse(c);
+      json = c;
+      break;
+    } catch {
+      /* not this slice */
+    }
+  }
+  return { reasoning: res.reasoningTokens ?? null, textChars: text.length, proseChars: Math.max(0, t.length - json.length) };
+}
+
 /** Every balanced JSON-looking slice ([...] or {...}) in the text, respecting strings, in order of appearance. */
 function balancedSlices(text: string): string[] {
   const out: string[] = [];
@@ -255,7 +272,7 @@ export function parseDecisions(text: string): Decision[] | null {
     } catch {
       continue;
     }
-    const items = Array.isArray(parsed) ? parsed : [parsed];
+    const items: unknown[] = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" && Array.isArray((parsed as any).actions) ? (parsed as any).actions : [parsed];
     const decisions = items.filter((d): d is Decision => !!d && typeof d === "object" && typeof (d as any).action === "string");
     if (decisions.length) return decisions.slice(0, MAX_BATCH_ACTIONS);
   }
@@ -340,6 +357,9 @@ export interface RuntimeOptions {
    * escalation model when stuck. "decider": ask a local Jev-style decision model (`url`, see scripts/decider_server.py)
    * from compact metadata; falls back to the rules if it is unreachable or unsure. Experimental — see bench.ts. */
   router?: { kind: "rules" | "decider"; url?: string; minConfidence?: number };
+  /** Experimental, API providers only: ask for a pure JSON object reply ({"actions":[…]}) via the provider's JSON mode,
+   * instead of free text that should contain JSON. Removes prose/markup around the actions; measured in bench.ts. */
+  jsonActions?: boolean;
   /** Work in a throwaway git worktree instead of the folder itself (isolate.ts); nothing changes the folder until applied. */
   isolate?: boolean;
   /** Every event appended for this task, as it happens (the app renders these). */
@@ -433,7 +453,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // Some models (seen with Codex's GPT-6) answer with exactly one action per turn however many the rules allow,
   // and read for 20 steps without ever editing. Say it plainly for them; Claude already batches unprompted.
   const batchHint = provider === "claude" ? "" : `\n\nWorking style for this model: send a JSON ARRAY of up to ${MAX_BATCH_ACTIONS} actions whenever they are independent — for example [{"action":"read",...},{"action":"read",...},{"action":"grep",...}] to look at several files at once. One action per turn wastes the step budget. Read only what you need, then edit; a task rarely needs more than a handful of reads before the first edit.`;
-  const systemPrompt = SYSTEM_INSTRUCTIONS + connectorsBlock + batchHint;
+  const jsonMode = !!opts.jsonActions && provider !== "claude" && provider !== "codex";
+  const jsonHint = jsonMode ? `\n\nReply format for this model: always a single JSON object {"actions": [ ...1 to ${MAX_BATCH_ACTIONS} action objects... ]} and nothing else.` : "";
+  const systemPrompt = SYSTEM_INSTRUCTIONS + connectorsBlock + batchHint + jsonHint;
   let hasEdited = false;
   // "done" gate. First real-repo use (narrowbit agent on this repo): Haiku replied "done" on its
   // second call with a confident, detailed summary of changes it never made — no read, no edit,
@@ -555,6 +577,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       claudeBin: opts.claudeBin,
       sessionId,
       resume: !freshSessionPending,
+      jsonObject: jsonMode,
     };
     // Tell the model when the budget is nearly gone so it wraps up (a read-only task's answer is its
     // "done" summary) instead of spending the last steps on more probing and ending with nothing.
@@ -617,7 +640,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         outputTokens: res.usage.output,
         costUsd: callCost,
       },
-      meta: { sessionId, sessionCost: totalCost, provider, instr: INSTRUCTIONS_ID, context: { parts: nextParts, tokens: nextParts.reduce((a, x) => a + x.tokens, 0) } },
+      meta: { sessionId, sessionCost: totalCost, provider, instr: INSTRUCTIONS_ID, out: outputShape(res), context: { parts: nextParts, tokens: nextParts.reduce((a, x) => a + x.tokens, 0) } },
     });
     if (res.isError) {
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `model call failed: ${res.errorMessage ?? "unknown error"}` });

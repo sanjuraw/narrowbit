@@ -47,6 +47,8 @@ export interface BenchArm {
    * {input, cacheRead, output, turns, tools}). Provider key comes from `keyProvider` via keys.ts, passed as an
    * environment variable and never logged. Used to compare against other harnesses (e.g. DeepSeek Harness). */
   external?: { command: string[]; keyProvider?: string; keyEnv?: string; env?: Record<string, string> };
+  /** runtime arm only: ask the provider for JSON-mode replies (see RuntimeOptions.jsonActions). */
+  jsonActions?: boolean;
   /** runtime arm only: effort level passed to the model calls (low/medium/high/xhigh/max). */
   effort?: string;
   /** runtime arm only: which provider drives the model calls (default claude); see providers/models.ts. */
@@ -272,7 +274,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             };
           } else if (arm.runtime) {
             log(`${tag}: running narrowbit's own loop…`);
-            const result = await runTask(wp, t.prompt, { effort: arm.effort, provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, router: arm.router ? { kind: arm.router, url: arm.routerUrl } : undefined, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss });
+            const result = await runTask(wp, t.prompt, { jsonActions: arm.jsonActions, effort: arm.effort, provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, router: arm.router ? { kind: arm.router, url: arm.routerUrl } : undefined, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss });
             const ledger = fold(result.taskId, readEvents(wp, result.taskId)).ledgerByRole;
             const roles = Object.values(ledger);
             const sum = (k: "inputTokens" | "cacheCreationTokens" | "cacheReadTokens" | "outputTokens") => roles.reduce((a, x) => a + x[k], 0);

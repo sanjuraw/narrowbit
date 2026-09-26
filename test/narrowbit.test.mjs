@@ -697,7 +697,7 @@ describe("security audit (audit.ts — model-free checkpoint)", () => {
 describe("model selection (providers/models.ts)", () => {
   test("defaults per provider when nothing is saved or passed", () => {
     assert.deepEqual(resolveSelection(undefined), { provider: "claude", tiers: DEFAULT_TIERS.claude, effort: "medium" });
-    assert.deepEqual(resolveSelection(undefined, { provider: "codex" }).tiers, { explore: "gpt-5.6-luna", execute: "gpt-5.6-terra", escalate: "gpt-5.6-sol" });
+    assert.deepEqual(resolveSelection(undefined, { provider: "codex" }).tiers, { explore: "gpt-6-luna", execute: "gpt-6-sol", escalate: "gpt-6-sol" });
   });
 
   test("precedence: per-slot flag > --model > saved config > default", () => {
@@ -712,7 +712,7 @@ describe("model selection (providers/models.ts)", () => {
   test("saved models are per provider, and switching provider doesn't leak them", () => {
     const saved = { provider: "codex", models: { claude: { explore: "sonnet" } } };
     assert.equal(resolveSelection(saved).provider, "codex");
-    assert.equal(resolveSelection(saved).tiers.explore, "gpt-5.6-luna");
+    assert.equal(resolveSelection(saved).tiers.explore, "gpt-6-luna");
     assert.equal(resolveSelection(saved, { provider: "claude" }).tiers.explore, "sonnet");
   });
 
@@ -1329,5 +1329,35 @@ describe("DeepSeek effort mapping", () => {
     assert.equal((await bodyFor("medium")).thinking, undefined);
     assert.equal((await bodyFor("high")).reasoning_effort, "high");
     assert.equal((await bodyFor("max")).reasoning_effort, "max");
+  });
+});
+
+describe("JSON-mode replies and the output split (experiment)", () => {
+  test('an {"actions": [...]} object parses like a bare array', () => {
+    assert.deepEqual(parseDecisions('{"actions":[{"action":"read","path":"a.ts"},{"action":"verify"}]}')?.map((d) => d.action), ["read", "verify"]);
+  });
+  test("jsonActions asks the API for json_object and records reasoning tokens and prose per call", async () => {
+    const { root, p } = tinyRepo();
+    let seen = null;
+    const srv = createHttp((req, res) => {
+      let b = ""; req.on("data", (d) => (b += d));
+      req.on("end", () => {
+        seen = seen || JSON.parse(b);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ choices: [{ message: { content: 'Sure. {"actions":[{"action":"done","summary":"ok"}]}' } }], usage: { prompt_tokens: 10, completion_tokens: 50, completion_tokens_details: { reasoning_tokens: 40 } } }));
+      });
+    });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    try {
+      const cfg = loadConfig(p);
+      cfg.agent = { endpoints: { custom: { baseUrl: `http://127.0.0.1:${srv.address().port}/v1` } } };
+      (await dist("config.js")).saveConfig(p, cfg);
+      const r = await runTask(p, "say hi", { provider: "custom", models: { explore: "m", execute: "m", escalate: "m" }, boss: false, maxSteps: 4, jsonActions: true });
+      assert.deepEqual(seen.response_format, { type: "json_object" });
+      assert.match(seen.messages[0].content, /"actions": \[/);
+      const out = readEvents(p, r.taskId).find((e) => e.type === "model_call").meta.out;
+      assert.equal(out.reasoning, 40);
+      assert.equal(out.proseChars, "Sure. ".length, "the prose around the JSON is measured");
+    } finally { srv.close(); rmSync(root, { recursive: true, force: true }); }
   });
 });

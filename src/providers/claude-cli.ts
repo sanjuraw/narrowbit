@@ -35,6 +35,8 @@ import { extractText, parseStream } from "../streamjson.js";
  */
 export interface ModelCallOptions {
   cwd: string;
+  /** Ask an API provider for a pure JSON object reply (`response_format: json_object`). Ignored by the CLIs. */
+  jsonObject?: boolean;
   /** Full system prompt override. Required on the first call of a session; omit on `resume` calls
    * — it would be ignored anyway (see session-persistence note above) and just wastes an argument. */
   systemPrompt?: string;
@@ -57,6 +59,8 @@ export interface ModelCallOptions {
 export interface ModelCallResult {
   text: string;
   usage: { input: number; cacheCreate: number; cacheRead: number; output: number };
+  /** Of `usage.output`, the part spent on hidden reasoning, when the provider reports it (DeepSeek, OpenAI-style APIs). */
+  reasoningTokens?: number;
   costUsd: number | null;
   turns: number;
   isError: boolean;

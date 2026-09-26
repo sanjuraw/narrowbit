@@ -30,7 +30,7 @@ export interface NarrowbitConfig {
 export interface AgentConfig {
   provider?: string;
   effort?: string;
-  /** Per-provider model per phase, e.g. { claude: { explore: "haiku" }, codex: { escalate: "gpt-5.6-sol" } }. */
+  /** Per-provider model per phase, e.g. { claude: { explore: "haiku" }, codex: { escalate: "gpt-6-sol" } }. */
   models?: Record<string, { explore?: string; execute?: string; escalate?: string }>;
   /** Per-provider endpoint overrides for API/local providers, e.g. { custom: { baseUrl: "http://…/v1", keyEnv: "MY_KEY" } }. */
   endpoints?: Record<string, { baseUrl?: string; keyEnv?: string }>;
