@@ -1612,3 +1612,14 @@ for u in ["http://127.0.0.1/","http://localhost:8080/","http://169.254.169.254/l
   const out = execFileSync("python3", ["-c", py], { cwd: join(here, ".."), encoding: "utf8" });
   for (const line of out.trim().split("\n")) assert.ok(!line.endsWith("ALLOWED"), line);
 });
+
+test("secrets are scrubbed from memory notes before they are written to disk", () => {
+  const dir = mkdtempSync(join(tmpdir(), "nb-memsec-"));
+  const p = paths(dir); ensureDirs(p);
+  const m = new Memory(p);
+  const e = m.add({ type: "fact", text: "deploy key is sk_" + "live_51H8abcdefghijklmnopqrstuvwx", reason: "token ghp_abcdefghijklmnopqrstuvwxyz0123456789", attempt: "password=hunter2secret" }); // narrowbit-audit-ignore
+  assert.ok(!/sk_live_51H8abc|ghp_abcdef|hunter2secret/.test(JSON.stringify(e)), "the returned entry is clean");
+  assert.ok(!/sk_live_51H8abc|ghp_abcdef|hunter2secret/.test(readFileSync(e.file, "utf8")), "and so is the file on disk");
+  assert.match(e.text, /deploy key is/);
+  rmSync(dir, { recursive: true, force: true });
+});

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { loadConfig, type Paths } from "./config.js";
+import { redact } from "./redact.js";
 import { termsOf } from "./terms.js";
 import { now, shortId } from "./util.js";
 
@@ -207,7 +208,12 @@ export class Memory {
 
   add(e: Omit<MemoryEntry, "id" | "date" | "status"> & Partial<Pick<MemoryEntry, "status">>): MemoryEntry {
     if (!MEMORY_TYPES.includes(e.type)) throw new Error(`unknown memory type: ${e.type} (expected ${MEMORY_TYPES.join(", ")})`);
-    const entry: MemoryEntry = { id: `${e.type.slice(0, 3)}-${shortId()}`, date: now(), status: "active", ...e };
+    // Notes are plain Markdown that outlives the task (and may be synced or shared), so a secret must never reach them:
+    // scrubbed here, at the one place every note passes through (idea from Hindsight's "memory defense").
+    // Token-shaped secrets go through redact(); notes are prose, so also "password is X" / "api_key=X" style assignments.
+    const scrub = (x: string) => redact(x).replace(/\b(password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b(\s*(?:is|=|:)\s*)(['"]?)([^\s'",;]{6,})\3/gi, "$1$2$3[REDACTED]$3");
+    const clean = (x?: string) => (typeof x === "string" ? scrub(x) : x);
+    const entry: MemoryEntry = { id: `${e.type.slice(0, 3)}-${shortId()}`, date: now(), status: "active", ...e, text: scrub(e.text), reason: clean(e.reason), attempt: clean(e.attempt), result: clean(e.result) };
     entry.file = this.write(entry);
     return entry;
   }
