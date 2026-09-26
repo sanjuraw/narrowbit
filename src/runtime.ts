@@ -17,6 +17,7 @@ import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./memor
 import { classifyModelError, isPermanentModelError } from "./errors.js";
 import { callModel, type ModelCallOptions, type ModelCallResult } from "./providers/claude-cli.js";
 import { callCodex } from "./providers/codex-cli.js";
+import { callAntigravity } from "./providers/antigravity-cli.js";
 import { DEFAULT_TIERS, resolveEndpoint, resolveSelection, unavailableReason, type ModelTiers, type ProviderName } from "./providers/models.js";
 import { callOpenAICompat, hasSession } from "./providers/openai-compat.js";
 import { redact } from "./redact.js";
@@ -335,6 +336,8 @@ export interface RuntimeOptions {
   effort?: string;
   claudeBin?: string;
   role?: string;
+  /** Absolute paths of images/PDFs to show the model. Sent on the first call only; see attachments.ts. */
+  attachments?: string[];
   /** Context size (input + cache-creation + cache-read tokens, from the most recent call) above
    * which the next call starts a fresh, deterministically-summarized session. Defaults to
    * `cfg.budget.max`. */
@@ -437,9 +440,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const endpoint = resolveEndpoint(provider, cfg.agent);
   const callFor = (prov: ProviderName) => {
     const ep = resolveEndpoint(prov, cfg.agent);
-    return ep ? (o: ModelCallOptions) => callOpenAICompat(ep, o) : prov === "codex" ? callCodex : callModel;
+    return ep ? (o: ModelCallOptions) => callOpenAICompat(ep, o) : prov === "codex" ? callCodex : prov === "antigravity" ? callAntigravity : callModel;
   };
-  let call = endpoint ? (o: ModelCallOptions) => callOpenAICompat(endpoint, o) : provider === "codex" ? callCodex : callModel;
+  let call = endpoint ? (o: ModelCallOptions) => callOpenAICompat(endpoint, o) : provider === "codex" ? callCodex : provider === "antigravity" ? callAntigravity : callModel;
   // A configured backup provider: taken only if it is ready, and only once per task.
   let fallback: { provider: ProviderName; tiers: ModelTiers } | null = null;
   if (cfg.agent?.fallback && cfg.agent.fallback !== provider) {
@@ -463,7 +466,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // Some models (seen with Codex's GPT-6) answer with exactly one action per turn however many the rules allow,
   // and read for 20 steps without ever editing. Say it plainly for them; Claude already batches unprompted.
   const batchHint = provider === "claude" ? "" : `\n\nWorking style for this model: send a JSON ARRAY of up to ${MAX_BATCH_ACTIONS} actions whenever they are independent — for example [{"action":"read",...},{"action":"read",...},{"action":"grep",...}] to look at several files at once. One action per turn wastes the step budget. Read only what you need, then edit; a task rarely needs more than a handful of reads before the first edit.`;
-  const jsonMode = !!opts.jsonActions && provider !== "claude" && provider !== "codex";
+  const jsonMode = !!opts.jsonActions && provider !== "claude" && provider !== "codex" && provider !== "antigravity";
   const jsonHint = jsonMode ? `\n\nReply format for this model: always a single JSON object {"actions": [ ...1 to ${MAX_BATCH_ACTIONS} action objects... ]} and nothing else.` : "";
   // Models that see a sandbox notice ("read-only") from their own CLI have refused to edit; the runtime applies every edit.
   const editHint = provider === "codex" ? `\n\nYou never edit files yourself, and any note about your sandbox or a read-only workspace does not apply to you: the runtime applies each "edit" action for you. Never answer "blocked" because you cannot write files — send the edit action.` : "";
@@ -562,6 +565,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // Tokens the provider adds to every request on its own (its CLI's instructions and tool definitions), measured on the
   // first call of each session. Compaction is about the size of *our* conversation, so this part doesn't count toward it.
   let providerOverhead = 0;
+  let attachmentsPending = !!opts.attachments?.length;
 
   for (; steps < maxSteps; steps++) {
     if (opts.signal?.aborted) {
@@ -596,11 +600,16 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       sessionId,
       resume: !freshSessionPending,
       jsonObject: jsonMode,
+      attachments: attachmentsPending ? opts.attachments : undefined,
     };
     // Tell the model when the budget is nearly gone so it wraps up (a read-only task's answer is its
     // "done" summary) instead of spending the last steps on more probing and ending with nothing.
     if (steps === maxSteps - 3 && maxSteps >= 6) {
       callOpts.prompt += `\n\nOnly 3 steps remain in the budget. Stop exploring; finish now with a "done" action whose summary is your complete answer.`;
+    }
+    if (attachmentsPending) {
+      const names = (opts.attachments ?? []).map((f) => f.split("/").pop()!.replace(/^[0-9a-f]{8}-/, "")).join(", ");
+      callOpts.prompt += `\n\nThe user attached: ${names}. Describe what matters from it in your first note, since it is only shown to you once.`;
     }
     const wasFresh = freshSessionPending;
     const sentEstimate = nextParts.reduce((a, x) => a + x.tokens, 0);
@@ -619,6 +628,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       }
       res = await call(callOpts);
     }
+    if (attachmentsPending && !res.isError) attachmentsPending = false;
     // The main provider failed for a reason the backup might not share (a usage limit, rate limit, timeout or server
     // error): continue on the backup in a fresh session seeded with the deterministic digest, rather than ending
     // the task. Sign-in problems don't fall back — a different provider can't fix those, and hiding them would confuse.
@@ -709,7 +719,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
 
       if (decision.action === "done") {
         let challenge: string | null = null;
-        if (editsApplied === 0 && !doneChallenges.has("no-edit")) {
+        // A task about an attached file can be answered from the attachment itself, with no action first.
+        if (editsApplied === 0 && !opts.attachments?.length && !doneChallenges.has("no-edit")) {
           doneChallenges.add("no-edit");
           challenge = Object.keys(actionCounts).length === 0
             ? "You have not taken a single action yet — nothing has been read or changed, so the task cannot be complete. Start by reading the relevant file."
@@ -945,6 +956,11 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       const abs = safeAbsPath(p, path);
       if (!abs || !existsSync(abs)) {
         const text = `read ${path}: file not found`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
+        return text;
+      }
+      if (readFileSync(abs).subarray(0, 4096).includes(0)) {
+        const text = `read ${path}: binary file — it can't be read as text. Images and PDFs the user attached were shown to you with their first message; work from what you noted then.`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
         return text;
       }

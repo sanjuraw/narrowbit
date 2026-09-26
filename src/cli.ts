@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { join, relative, resolve } from "node:path";
+import { attachmentKind } from "./attachments.js";
 import { benchmarkReport, benchmarkTemplate, runBenchmark } from "./bench.js";
 import { hookPrompt, installClaude, launchClaude } from "./claude.js";
 import { runCommand } from "./compress.js";
@@ -57,7 +58,7 @@ function parseArgs(argv: string[]): Args {
 
 const VALUE_FLAGS = new Set([
   "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip",
-  "max-steps", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description", "env",
+  "max-steps", "attach", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description", "env",
 ]);
 
 const HELP = `narrowbit — minimum sufficient context for coding agents
@@ -84,6 +85,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
       [--provider <name>] [--model X | --explore X --execute X --escalate X]
       [--effort low|medium|high|xhigh|max] [--max-steps N] [--force] [--dry-run]
       [--allow-commands]   run shell commands without asking (default: ask before each one)
+      [--attach a.png,b.pdf] show the model images or PDFs (sent on the first call only)
       [--test-first]       refuse the first source edit until a check has failed (or a test was edited)
       [--isolate]          work in a separate git worktree; your folder changes only when you run: narrowbit apply <task>
       [--no-boss] [--continue <task-id>]   lead mode (default): model 3 plans first and reviews the
@@ -495,7 +497,10 @@ export async function main(argv: string[]): Promise<number> {
         const n = Number(a);
         return options.length && Number.isInteger(n) && n >= 1 && n <= options.length ? options[n - 1] : a || null;
       };
+      const attachments = (strFlag(args, "attach") ?? "").split(",").map((f) => f.trim()).filter(Boolean).map((f) => resolve(f));
+      for (const f of attachments) if (!attachmentKind(f) || !existsSync(f)) throw new Error(`--attach: ${f} is not an existing image (png, jpg, gif, webp) or PDF`);
       const result = await runTask(p, text, {
+        attachments,
         approve,
         ask,
         isolate: !!args.flags.isolate,

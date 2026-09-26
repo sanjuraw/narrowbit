@@ -1,5 +1,6 @@
 import type { ModelCallOptions, ModelCallResult } from "./claude-cli.js";
 import { PROVIDER_INFO, type Endpoint } from "./models.js";
+import { promptWithFiles, readAttachment } from "../attachments.js";
 
 /**
  * Model adapter for every API and local provider (OpenRouter, Groq, Gemini, OpenAI, DeepSeek,
@@ -14,7 +15,7 @@ import { PROVIDER_INFO, type Endpoint } from "./models.js";
  * OpenRouter reports a real per-call cost; elsewhere it stays 0 — local models are free, and
  * direct APIs bill on their own dashboards, so tokens are the comparable number there.
  */
-type Message = { role: "system" | "user" | "assistant"; content: string };
+type Message = { role: "system" | "user" | "assistant"; content: string | unknown[] };
 
 const sessions = new Map<string, { messages: Message[]; costUsd: number }>();
 
@@ -49,7 +50,12 @@ export async function callOpenAICompat(ep: Endpoint, opts: ModelCallOptions): Pr
     session = { messages: opts.systemPrompt ? [{ role: "system", content: opts.systemPrompt }] : [], costUsd: 0 };
     if (id) sessions.set(id, session);
   }
-  const messages = [...session.messages, { role: "user" as const, content: opts.prompt }];
+  // Images go as image_url parts on this turn's message; PDFs are turned into text. Later turns resend the conversation
+  // with the image replaced by a short marker, so it is paid for once.
+  const shown = promptWithFiles(opts.prompt, opts.attachments, { images: true, pdfs: false });
+  const imgs = (opts.attachments ?? []).map(readAttachment).filter((f): f is NonNullable<ReturnType<typeof readAttachment>> => !!f && f.kind === "image");
+  const userContent: string | unknown[] = imgs.length ? [{ type: "text", text: shown }, ...imgs.map((f) => ({ type: "image_url", image_url: { url: `data:${f.mime};base64,${f.base64}` } }))] : shown;
+  const messages = [...session.messages, { role: "user" as const, content: userContent }];
 
   const body: Record<string, unknown> = { model: opts.model, messages, max_tokens: 8192 };
   if (ep.provider === "openrouter") body.usage = { include: true };
@@ -101,7 +107,7 @@ export async function callOpenAICompat(ep: Endpoint, opts: ModelCallOptions): Pr
   const u = d.usage ?? {};
   const cached = Number(u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? 0);
   const prompt = Number(u.prompt_tokens ?? 0);
-  session.messages = [...messages, { role: "assistant", content: text }];
+  session.messages = [...messages.slice(0, -1), { role: "user", content: imgs.length ? `${shown}\n[${imgs.length} image(s) were attached to this message]` : shown }, { role: "assistant", content: text }];
   session.costUsd += Number(u.cost ?? 0) || 0;
   return {
     text,

@@ -155,6 +155,17 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.ok(st.providers.cloudflare.baseUrl.includes(id), "endpoint uses the saved id");
   });
 
+  test("the sidebar can be hidden and shown with the menu button and Cmd/Ctrl+B", () => {
+    const app = page.$("app");
+    assert.ok(!app.classList.contains("side-hidden"));
+    page.$("menuBtn").click();
+    assert.ok(app.classList.contains("side-hidden"));
+    page.key("b");
+    assert.ok(app.classList.contains("side-hidden"), "plain b does nothing");
+    page.w.document.dispatchEvent(new page.w.KeyboardEvent("keydown", { key: "b", metaKey: true, bubbles: true }));
+    assert.ok(!app.classList.contains("side-hidden"));
+  });
+
   test("the theme selector switches between light, dark and the Mac setting", () => {
     const sel = page.$("themeSel");
     const root = page.w.document.documentElement;
@@ -237,6 +248,22 @@ describe("app page with a folder open", () => {
     app?.stop();
     rmSync(home, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
+  });
+
+  test("attaching an image shows a chip that can be removed, and other file types are refused", async () => {
+    const w = page.w;
+    const input = page.$("attachInput");
+    const png = new w.File([Uint8Array.from([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+    Object.defineProperty(input, "files", { value: [png], configurable: true });
+    input.dispatchEvent(new w.Event("change"));
+    await page.until(() => page.$("attached").textContent.includes("shot.png"), "the attachment chip");
+    assert.ok(!page.$("attached").classList.contains("hidden"));
+    page.$("attached").querySelector("button").click();
+    assert.ok(page.$("attached").classList.contains("hidden"));
+    const exe = new w.File(["x"], "run.sh", { type: "text/x-sh" });
+    Object.defineProperty(input, "files", { value: [exe], configurable: true });
+    input.dispatchEvent(new w.Event("change"));
+    assert.match(page.$("banner").textContent, /Only images/);
   });
 
   test("boots without script errors, and the pill shows the repo and branch", () => {

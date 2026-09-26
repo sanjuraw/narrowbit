@@ -1623,3 +1623,51 @@ test("secrets are scrubbed from memory notes before they are written to disk", (
   assert.match(e.text, /deploy key is/);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("attachments: only images and PDFs are stored, and providers that can't see an image are told so", async () => {
+  const { saveAttachment, promptWithFiles, attachmentKind } = await dist("attachments.js");
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "nb-att-")));
+  assert.throws(() => saveAttachment(root, "run.sh", Buffer.from("x")), /only images/);
+  assert.throws(() => saveAttachment(root, "big.png", Buffer.alloc(13 * 1024 * 1024)), /limit/);
+  const f = saveAttachment(root, "shot.png", Buffer.from("png"));
+  assert.equal(attachmentKind(f), "image");
+  assert.match(f, /\.narrowbit\/attachments\/[0-9a-f]{8}-shot\.png$/);
+  assert.match(promptWithFiles("look", [f], { images: false, pdfs: false }), /cannot view images/);
+  assert.equal(promptWithFiles("look", [f], { images: true, pdfs: false }), "look");
+});
+
+test("attachments: Claude gets the image as a content block on stdin, not as prompt text", async () => {
+  const { callModel } = await dist("providers/claude-cli.js");
+  const { saveAttachment } = await dist("attachments.js");
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "nb-att-")));
+  const img = saveAttachment(root, "shot.png", Buffer.from("PNGDATA"));
+  const bin = join(root, "claude");
+  writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("fs"); let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => {
+  fs.writeFileSync(${JSON.stringify(join(root, "seen.json"))}, JSON.stringify({ args: process.argv.slice(2), stdin: s }));
+  const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+  console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok", usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
+});
+`, { mode: 0o755 });
+  const r = await callModel({ cwd: root, prompt: "what is this?", model: "haiku", role: "test", claudeBin: bin, attachments: [img] });
+  assert.equal(r.isError, false);
+  const seen = JSON.parse(readFileSync(join(root, "seen.json"), "utf8"));
+  assert.ok(seen.args.includes("--input-format") && !seen.args.includes("what is this?"));
+  const msg = JSON.parse(seen.stdin.trim());
+  assert.equal(msg.message.content[0].type, "image");
+  assert.equal(msg.message.content[0].source.data, Buffer.from("PNGDATA").toString("base64"));
+  assert.equal(msg.message.content[1].text, "what is this?");
+});
+
+test("Antigravity: the result event gives the answer, conversation id and token totals", async () => {
+  const { parseAgyStream } = await dist("providers/antigravity-cli.js");
+  const raw = [
+    '{"event":"init","conversation_id":"c1","init":{"tools":[]}}',
+    '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"{\\"action\\":\\"done\\"}\\n","usage":{"input_tokens":100,"output_tokens":7,"thinking_tokens":3,"cache_read_tokens":0}}}',
+  ].join("\n");
+  const p = parseAgyStream(raw);
+  assert.equal(p.sessionId, "c1");
+  assert.equal(p.text, '{"action":"done"}');
+  assert.deepEqual(p.totals, { input: 100, output: 7, thinking: 3, cached: 0 });
+  assert.equal(parseAgyStream('{"event":"result","result":{"status":"ERROR","error":"boom","usage":{}}}').isError, true);
+});

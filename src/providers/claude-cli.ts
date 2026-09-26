@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readAttachment } from "../attachments.js";
 import { recordClaudeLimits } from "../limits.js";
 import { isPermanentModelError } from "../errors.js";
 import { extractText, parseStream } from "../streamjson.js";
@@ -54,6 +55,8 @@ export interface ModelCallOptions {
    * `resume: true` on later calls in the same task to continue it. */
   sessionId?: string;
   resume?: boolean;
+  /** Absolute paths of attached images/PDFs, sent with this call only (the runtime passes them on the first call). */
+  attachments?: string[];
 }
 
 export interface ModelCallResult {
@@ -93,11 +96,22 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
     "--strict-mcp-config",
     "--mcp-config",
     JSON.stringify({ mcpServers: {} }),
-    "--",
-    opts.prompt,
   );
+  // Attachments go as content blocks in a stream-json user message on stdin (a plain prompt argument is text only).
+  const files = (opts.attachments ?? []).map(readAttachment).filter((f): f is NonNullable<ReturnType<typeof readAttachment>> => !!f);
+  let stdinMessage: string | undefined;
+  if (files.length) {
+    args.push("--input-format", "stream-json");
+    const content = [
+      ...files.map((f) => ({ type: f.kind === "pdf" ? "document" : "image", source: { type: "base64", media_type: f.mime, data: f.base64 } })),
+      { type: "text", text: opts.prompt },
+    ];
+    stdinMessage = JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n";
+  } else args.push("--", opts.prompt);
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { cwd: opts.cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(bin, args, { cwd: opts.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+    child.stdin.on("error", () => {});
+    child.stdin.end(stdinMessage);
     const chunks: Buffer[] = [];
     let stderr = "";
     child.stdout.on("data", (d) => chunks.push(d));

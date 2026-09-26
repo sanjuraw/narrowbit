@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelCallOptions, ModelCallResult } from "./claude-cli.js";
+import { attachmentKind, promptWithFiles } from "../attachments.js";
 
 /**
  * Model adapter for the owned runtime, backed by the `codex` CLI under the user's ChatGPT
@@ -69,21 +70,25 @@ export function callCodex(opts: ModelCallOptions): Promise<ModelCallResult> {
     modelFlags.push("-c", "web_search=\"disabled\"", "-c", "skills.bundled.enabled=false");
   }
 
+  // Images go through `-i`; PDFs become text in the prompt (Codex takes no PDFs).
+  const prompt = promptWithFiles(opts.prompt, opts.attachments, { images: true, pdfs: false });
+  // `-i` takes any number of files, so a `--` must end the list or the prompt would be read as another file.
+  const imageFlags = (opts.attachments ?? []).filter((f) => attachmentKind(f) === "image").flatMap((f) => ["-i", f]);
   let args: string[];
   let instr: string | undefined;
   if (opts.sessionId && opts.resume) {
     instr = instructionsFor.get(opts.sessionId);
     if (lean && instr) modelFlags.push("-c", `model_instructions_file=${JSON.stringify(instr)}`);
-    args = ["exec", "resume", opts.sessionId, opts.prompt, "--json", "--skip-git-repo-check", ...modelFlags];
+    args = ["exec", "resume", opts.sessionId, "--json", "--skip-git-repo-check", ...modelFlags, ...imageFlags, ...(imageFlags.length ? ["--"] : []), prompt];
   } else if (lean && opts.systemPrompt !== undefined) {
     instr = instructionsFile(opts.systemPrompt);
     // Lean mode has Codex's own shell and file tools switched off, so its sandbox grants it nothing — but the model reads
     // the sandbox policy and, told "read-only", refused to make the edit (7 of 40 Hono tasks ended "blocked: the workspace
     // is mounted read-only"). Narrowbit applies every edit itself; say the workspace is writable so the model plans edits.
-    args = ["exec", "--json", "--skip-git-repo-check", "-s", "workspace-write", ...modelFlags, "-c", `model_instructions_file=${JSON.stringify(instr)}`, opts.prompt];
+    args = ["exec", "--json", "--skip-git-repo-check", "-s", "workspace-write", ...modelFlags, "-c", `model_instructions_file=${JSON.stringify(instr)}`, ...imageFlags, ...(imageFlags.length ? ["--"] : []), prompt];
   } else {
-    const promptText = opts.systemPrompt !== undefined ? `${opts.systemPrompt}\n\n${opts.prompt}` : opts.prompt;
-    args = ["exec", "--json", "--skip-git-repo-check", "-s", "read-only", ...modelFlags, promptText];
+    const promptText = opts.systemPrompt !== undefined ? `${opts.systemPrompt}\n\n${prompt}` : prompt;
+    args = ["exec", "--json", "--skip-git-repo-check", "-s", "read-only", ...modelFlags, ...imageFlags, ...(imageFlags.length ? ["--"] : []), promptText];
   }
 
   return new Promise((resolve) => {

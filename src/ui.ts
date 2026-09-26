@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unl
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { attachmentDir, attachmentKind, saveAttachment } from "./attachments.js";
 import { ensureDirs, loadConfig, paths, saveConfig, type AgentConfig, type Paths } from "./config.js";
 import { getConnector, listConnectors, publicConnector, removeConnector, saveConnector } from "./connectors.js";
 import { completeSignIn, signOut, startSignIn } from "./oauth.js";
@@ -97,13 +98,13 @@ function repoRootOf(dir: string): string {
   return g.code === 0 && g.stdout.trim() ? g.stdout.trim() : dir;
 }
 
-function readBody(req: IncomingMessage): Promise<any> {
+function readBody(req: IncomingMessage, limit = 1_000_000): Promise<any> {
   return new Promise((res, rej) => {
     const chunks: Buffer[] = [];
     let size = 0;
     req.on("data", (c: Buffer) => {
       size += c.length;
-      if (size > 1_000_000) {
+      if (size > limit) {
         rej(new Error("request body too large"));
         req.destroy();
       } else chunks.push(c);
@@ -345,7 +346,7 @@ export function startUi(opts: UiOptions) {
     };
   };
 
-  const startRun = (task: string, maxSteps: number, askBeforeCommands: boolean, continueTask: string | null, isolate = false): { status: number; body: unknown } => {
+  const startRun = (task: string, maxSteps: number, askBeforeCommands: boolean, continueTask: string | null, isolate = false, attachments: string[] = []): { status: number; body: unknown } => {
     if (!root) return { status: 400, body: { error: "open a repository first" } };
     if (run?.running) return { status: 409, body: { error: "a task is already running" } };
     const p = paths(root);
@@ -378,6 +379,7 @@ export function startUi(opts: UiOptions) {
       maxSteps,
       boss: lead,
       continueTask: continueTask ?? undefined,
+      attachments,
       isolate: isolate || !!(continueTask && readIsolated(p, continueTask)),
       onEvent: (event) => {
         thisRun.taskId = event.taskId;
@@ -540,7 +542,7 @@ export function startUi(opts: UiOptions) {
       }
 
       if (req.method !== "POST") return json(res, 404, { error: "not found" });
-      const body = await readBody(req);
+      const body = await readBody(req, url.pathname === "/api/attach" ? 20_000_000 : 1_000_000);
 
       switch (url.pathname) {
         case "/api/repo": {
@@ -776,8 +778,25 @@ export function startUi(opts: UiOptions) {
             if (changed.length) return json(res, 409, { error: "dirty", files: changed });
           }
           const maxSteps = Math.min(100, Math.max(1, Number(body.maxSteps) || 20));
-          const r = startRun(task, maxSteps, body.askBeforeCommands !== false, continueTask, body.isolate === true);
+          // Attachments are named by the id /api/attach returned; anything else is ignored, so a page can't point the agent at other files.
+          const attachments = (Array.isArray(body.attachments) ? body.attachments : [])
+            .filter((a: unknown): a is string => typeof a === "string" && /^[0-9a-f]{8}-[\w.\- ]+$/.test(a))
+            .map((a: string) => join(attachmentDir(root!), a))
+            .filter((f: string) => existsSync(f))
+            .slice(0, 6);
+          const r = startRun(task, maxSteps, body.askBeforeCommands !== false, continueTask, body.isolate === true, attachments);
           return json(res, r.status, r.body);
+        }
+        case "/api/attach": {
+          if (!root) return json(res, 400, { error: "open a repository first" });
+          try {
+            const data = Buffer.from(String(body.data ?? ""), "base64");
+            if (!data.length) return json(res, 400, { error: "empty file" });
+            const f = saveAttachment(root, String(body.name ?? "file"), data);
+            return json(res, 200, { id: basename(f), name: basename(f).replace(/^[0-9a-f]{8}-/, ""), kind: attachmentKind(f) });
+          } catch (e: any) {
+            return json(res, 400, { error: e.message });
+          }
         }
         case "/api/approve": {
           const decision = body.decision === "task" ? "task" : body.decision === "once" ? "once" : "deny";

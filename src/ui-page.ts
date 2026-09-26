@@ -140,7 +140,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .crumb #crumbName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 2px 9px; border-radius: 99px; background: var(--panel-2); color: var(--muted); white-space: nowrap; border: 0; }
 .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); }
-#menuBtn { display: none; }
+.app.side-hidden { grid-template-columns: minmax(0, 1fr); }
+.app.side-hidden aside { display: none; }
 .scroll { flex: 1; overflow-y: auto; min-height: 0; }
 .thread { max-width: 780px; margin: 0 auto; padding: 8px 24px 32px; }
 
@@ -264,6 +265,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .cbar .mchip { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; padding: 4px 8px; border-radius: 8px; font-size: 12.5px; color: var(--muted); max-width: 320px; }
 .cbar .mchip:hover { background: var(--panel-2); color: var(--text); }
 .cbar .mchip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.attached { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px 0; }
+.attached .att { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 4px 3px 8px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); max-width: 220px; }
+.attached .att span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attached .att button { padding: 0 6px; border: 0; background: transparent; color: var(--muted); }
 .tog { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--muted); padding: 4px 8px; border-radius: 8px; cursor: pointer; user-select: none; }
 .tog:hover { background: var(--panel-2); }
 .tog input { accent-color: var(--accent); margin: 0; }
@@ -338,7 +343,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .app { grid-template-columns: 1fr; }
   aside { position: fixed; inset: 0 auto 0 0; width: 280px; z-index: 35; transform: translateX(-100%); transition: transform .2s; }
   .app.side-open aside { transform: none; box-shadow: 10px 0 40px rgba(0,0,0,.2); }
-  #menuBtn { display: inline-block; }
+  .app.side-hidden { grid-template-columns: 1fr; }
+  .app.side-hidden aside { display: flex; }
   .thread { padding: 8px 16px 24px; }
   .composer-wrap { padding: 0 12px 12px; }
   .cbar .mchip { max-width: 160px; }
@@ -368,7 +374,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   <main>
     <div class="upd hidden" id="updBar"></div>
     <div class="topbar" id="topbar">
-      <button class="ghost" id="menuBtn" aria-label="Menu">☰</button>
+      <button class="ghost" id="menuBtn" aria-label="Show or hide the sidebar" title="Show or hide the sidebar (Cmd/Ctrl+B)">☰</button>
       <span class="title" id="title"></span>
       <button class="pill hidden" id="planMini"></button>
       <span class="pill hidden" id="treePill"></span>
@@ -395,8 +401,11 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <div class="crumb-wrap" id="crumbWrap"><button class="crumb" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button></div>
       <div class="composer">
         <div id="banner" class="banner hidden"></div>
+        <div id="attached" class="attached hidden"></div>
         <textarea id="input" rows="1" placeholder="Describe a task…"></textarea>
         <div class="cbar">
+          <button class="ghost" id="attachBtn" title="Attach an image or PDF (or paste or drop one)">📎</button>
+          <input type="file" id="attachInput" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf" multiple class="hidden">
           <button class="mchip" id="modelChip" title="Models &amp; settings"><span id="modelChipText"></span>▾</button>
           <label class="tog" title="Model 3 plans the task first and reviews the diff before it's done"><input type="checkbox" id="leadTog"> Lead</label>
           <label class="tog" title="Work in a separate copy of the folder; nothing changes your files until you press Apply"><input type="checkbox" id="isoTog"> Isolate</label>
@@ -1108,6 +1117,42 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     input.placeholder = view && view.taskId ? "Ask for a follow-up or a change…" : "Describe a task…";
     $("hint").textContent = !S || !S.root ? "Choose a folder above to get started" : busy && !viewingRun() ? "Another task is running — open it from the sidebar to watch or stop it." : P && P.unavailable ? P.unavailable : "Enter to send · Shift+Enter for a new line";
   }
+  var attached = [];
+  function renderAttached() {
+    var box = $("attached"); clear(box); show(box, attached.length > 0);
+    attached.forEach(function (a, i) {
+      var chip = el("div", { cls: "att" });
+      chip.appendChild(el("span", { text: (a.kind === "pdf" ? "PDF · " : "Image · ") + a.name }));
+      chip.appendChild(el("button", { text: "×", title: "Remove", onclick: function () { attached.splice(i, 1); renderAttached(); } }));
+      box.appendChild(chip);
+    });
+  }
+  function attachFiles(files) {
+    Array.prototype.forEach.call(files, function (f) {
+      if (attached.length >= 6) { banner("warn", "You can attach up to 6 files."); return; }
+      if (!/^(image\/(png|jpeg|gif|webp)|application\/pdf)$/.test(f.type)) { banner("warn", "Only images (png, jpg, gif, webp) and PDFs can be attached."); return; }
+      var r = new FileReader();
+      r.onload = function () {
+        var data = String(r.result).split(",")[1] || "";
+        api("/api/attach", { name: f.name || "pasted-image.png", data: data })
+          .then(function (a) { attached.push(a); renderAttached(); })
+          .catch(function (e) { banner("warn", (e && e.data && e.data.error) || "Couldn't attach that file."); });
+      };
+      r.readAsDataURL(f);
+    });
+  }
+  $("attachBtn").addEventListener("click", function () { $("attachInput").click(); });
+  $("attachInput").addEventListener("change", function () { attachFiles($("attachInput").files); $("attachInput").value = ""; });
+  input.addEventListener("paste", function (e) {
+    var files = e.clipboardData && e.clipboardData.files;
+    if (files && files.length) { e.preventDefault(); attachFiles(files); }
+  });
+  ["dragover", "drop"].forEach(function (t) {
+    document.querySelector(".composer").addEventListener(t, function (e) {
+      e.preventDefault();
+      if (t === "drop" && e.dataTransfer && e.dataTransfer.files.length) attachFiles(e.dataTransfer.files);
+    });
+  });
   function send(force) {
     var text = input.value.trim();
     if (!text || $("sendBtn").disabled) return;
@@ -1116,8 +1161,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     // The server logs the task's first event before this request returns, so the view must already
     // be waiting for it.
     if (!cont) { resetView(null); view.pendingNew = true; show($("welcome"), false); }
-    api("/api/run", { task: text, force: !!force, continueTask: cont, maxSteps: Number($("maxSteps").value) || 20, askBeforeCommands: askOn(), isolate: $("isoTog").checked })
+    api("/api/run", { task: text, force: !!force, continueTask: cont, maxSteps: Number($("maxSteps").value) || 20, askBeforeCommands: askOn(), isolate: $("isoTog").checked, attachments: attached.map(function (a) { return a.id; }) })
       .then(function () {
+        attached = []; renderAttached();
         input.value = ""; autosize();
         clearChanges();
         run.active = true; run.taskId = cont;
@@ -1682,7 +1728,18 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     api("/api/init", {}).then(function (st) { apply(st); resetView(null); }).catch(function (e) { banner("bad", e.message); }).then(function () { b.disabled = false; b.textContent = "Set up Narrowbit here"; });
   };
   function closeSide() { $("app").classList.remove("side-open"); }
-  $("menuBtn").onclick = function () { $("app").classList.toggle("side-open"); };
+  // Phones and narrow windows slide the sidebar over the page; wider windows hide it and give the space to the chat.
+  function toggleSidebar() {
+    var app = $("app");
+    if (window.matchMedia("(max-width: 820px)").matches) { app.classList.toggle("side-open"); return; }
+    var hidden = app.classList.toggle("side-hidden");
+    try { localStorage.setItem("nb-side-hidden", hidden ? "1" : "0"); } catch (e) {}
+  }
+  try { if (localStorage.getItem("nb-side-hidden") === "1") $("app").classList.add("side-hidden"); } catch (e) {}
+  $("menuBtn").onclick = toggleSidebar;
+  document.addEventListener("keydown", function (e) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") { e.preventDefault(); toggleSidebar(); }
+  });
 
   // ---------- examples ----------
   ["Fix the failing test in …", "Add input validation to …", "Rename … and update every caller", "Why does … return the wrong value? Fix it."].forEach(function (x) {

@@ -13,7 +13,7 @@ import { getKey } from "../keys.js";
  * OpenAI-compatible chat API, so one adapter (providers/openai-compat.ts) serves all of them.
  */
 export const PROVIDERS = [
-  "claude", "codex",
+  "claude", "codex", "antigravity",
   "openrouter", "nvidia", "cloudflare", "groq", "gemini", "cerebras", "mistral", "github", "huggingface", "sambanova",
   "openai", "deepseek", "together", "fireworks", "xai",
   "ollama", "ollamacloud", "lmstudio", "freellmapi", "custom",
@@ -44,6 +44,7 @@ export interface ProviderInfo {
 export const PROVIDER_INFO: Record<ProviderName, ProviderInfo> = {
   claude: { label: "Claude", kind: "subscription", pricing: "your Claude plan" },
   codex: { label: "Codex (GPT)", kind: "subscription", pricing: "your ChatGPT plan" },
+  antigravity: { label: "Antigravity (Gemini, Claude)", kind: "subscription", pricing: "your Antigravity plan" },
   openrouter: {
     label: "OpenRouter",
     kind: "api",
@@ -142,9 +143,10 @@ export const DEFAULT_TIERS: Record<ProviderName, ModelTiers> = {
   // gpt-6-luna is the "fast, easier tasks" model: fine for reading, but it passed only 4/10 Hono tasks alone (one action
   // per turn, never batches). gpt-6-sol ("workhorse for coding") batches and passed 2 of luna's 4 hardest failures.
   codex: { explore: "gpt-6-luna", execute: "gpt-6-sol", escalate: "gpt-6-sol" },
+  antigravity: { explore: "gemini-3.8-flash-low", execute: "gemini-3.8-flash-high", escalate: "gemini-3.1-pro-high" },
   freellmapi: { explore: "auto", execute: "auto", escalate: "auto" },
-  ...(Object.fromEntries(PROVIDERS.filter((p) => p !== "claude" && p !== "codex" && p !== "freellmapi").map((p) => [p, { explore: "", execute: "", escalate: "" }])) as Record<
-    Exclude<ProviderName, "claude" | "codex" | "freellmapi">,
+  ...(Object.fromEntries(PROVIDERS.filter((p) => p !== "claude" && p !== "codex" && p !== "antigravity" && p !== "freellmapi").map((p) => [p, { explore: "", execute: "", escalate: "" }])) as Record<
+    Exclude<ProviderName, "claude" | "codex" | "antigravity" | "freellmapi">,
     ModelTiers
   >),
 };
@@ -262,6 +264,13 @@ export async function availableModels(provider: ProviderName, agent?: AgentConfi
     } catch {
       return { models: [], free: [], labels: {}, note: "`codex debug models` unavailable — is the Codex CLI installed?" };
     }
+  }
+  if (provider === "antigravity") {
+    const bin = process.env.NARROWBIT_AGY ?? `${process.env.HOME ?? ""}/.local/bin/agy`;
+    const r = sh(bin, ["models"], process.cwd());
+    const rows = r.stdout.split("\n").map((l) => l.split("\t")).filter((c) => c.length >= 2 && /^[\w.-]+$/.test(c[0]!));
+    if (!rows.length) return { models: [], free: [], labels: {}, note: "`agy models` gave no list — is the Antigravity CLI installed and signed in?" };
+    return { models: rows.map((c) => c[0]!), free: [], labels: Object.fromEntries(rows.map((c) => [c[0]!, c[1]!.trim()])), note: "from `agy models` (your Antigravity plan)" };
   }
   const ep = resolveEndpoint(provider, agent)!;
   const label = PROVIDER_INFO[provider].label;
