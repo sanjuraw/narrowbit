@@ -227,6 +227,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .approval pre { margin: 8px 0 10px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; white-space: pre-wrap; word-break: break-all; font: 12.5px var(--mono); }
 .approval .btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .approval.resolved { box-shadow: none; opacity: .75; padding: 8px 12px; }
+.sug-row { display: flex; gap: 8px; align-items: baseline; margin: 6px 0; flex-wrap: wrap; }
+.sug-row .sug-text { flex: 1; min-width: 200px; }
 .approval .qt { margin: 6px 0 10px; }
 .approval input[type=text] { flex: 1; min-width: 180px; }
 .approval.resolved pre { margin: 4px 0 0; }
@@ -660,6 +662,29 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         el("button", { cls: "skill", title: sk.description || sk.name, onclick: function () { useSkill(sk); } }, sk.name),
         sk.builtin ? el("span") : el("button", { cls: "skill-del", title: "Remove skill", onclick: function (e) { e.stopPropagation(); deleteSkill(sk.name); } }, "×")));
     });
+  }
+  // Notes proposed at the end of a task: nothing is saved (or ever injected) until the user approves one here.
+  function renderSuggested(e, list) {
+    var box = el("div", { cls: "approval suggested" }, el("div", { cls: "ah", text: "Worth remembering? Save these to project memory:" }));
+    view.sugRows = view.sugRows || {};
+    list.forEach(function (n, i) {
+      var row = el("div", { cls: "sug-row" }, el("span", { cls: "chip", text: n.type }), el("span", { cls: "sug-text", text: n.text }));
+      var btns = el("span", { cls: "btns" },
+        el("button", { cls: "primary", text: "Save", onclick: function () { decide(i, true); } }),
+        el("button", { text: "Dismiss", onclick: function () { decide(i, false); } }));
+      row.appendChild(btns);
+      view.sugRows[i] = { row: row, btns: btns };
+      box.appendChild(row);
+    });
+    function decide(i, approve) {
+      Array.prototype.forEach.call(view.sugRows[i].btns.querySelectorAll("button"), function (b) { b.disabled = true; });
+      api("/api/memory/suggested", { task: view.taskId, index: i, approve: approve }).then(apply).catch(function (er) { banner("bad", er.message); });
+    }
+    add(box);
+  }
+  function markSuggested(i, saved, text) {
+    var r = view && view.sugRows && view.sugRows[i]; if (!r) return;
+    r.btns.replaceWith(el("span", { cls: "muted", text: saved ? "✓ saved" : "dismissed" }));
   }
   function renderMemory() {
     var box = clear($("memList")), list = (S && S.memory) || [];
@@ -1408,6 +1433,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       collapseWork(m.outcome === "done", new Date(e.at).getTime());
       return;
     }
+    if (e.type === "decision" && Array.isArray(m.suggested)) { renderSuggested(e, m.suggested); return; }
+    if (e.type === "decision" && typeof m.suggestedDone === "number") { markSuggested(m.suggestedDone, m.saved, e.summary); return; }
     if (e.type === "handoff") { add(el("div", { cls: "divider", text: m.manual ? e.summary : "context compacted — continuing in a fresh session" })); return; }
     if (e.type === "blocker") {
       var sm = e.summary;

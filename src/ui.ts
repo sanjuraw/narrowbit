@@ -627,6 +627,29 @@ export function startUi(opts: UiOptions) {
           }
           return json(res, 200, state());
         }
+        case "/api/memory/suggested": {
+          // Approve or dismiss one of the notes proposed at the end of a task. Only approval writes to project memory.
+          if (!root) return json(res, 400, { error: "no repository open" });
+          const id = String(body.task ?? "");
+          const idx = Number(body.index);
+          if (!/^rt-[\w-]+$/.test(id) || !Number.isInteger(idx) || idx < 0) return json(res, 400, { error: "bad request" });
+          const p = paths(root);
+          const evs = readEvents(p, id);
+          const sug = [...evs].reverse().find((e) => Array.isArray(e.meta?.suggested))?.meta?.suggested as { type: string; text: string; reason?: string; files?: string[] }[] | undefined;
+          const n = sug?.[idx];
+          if (!n) return json(res, 404, { error: "no such suggestion" });
+          if (evs.some((e) => e.meta?.suggestedDone === idx)) return json(res, 409, { error: "already handled" });
+          const approve = body.approve === true;
+          if (approve) {
+            try {
+              openMemory(p).add({ type: n.type as any, text: n.text, reason: n.reason, files: n.files, source: id, confidence: "medium" });
+            } catch (e: any) {
+              return json(res, 400, { error: e.message });
+            }
+          }
+          appendEvent(p, id, { actor: "user", type: "decision", summary: approve ? `saved to project memory: ${n.text.slice(0, 100)}` : `dismissed suggestion: ${n.text.slice(0, 100)}`, meta: { suggestedDone: idx, saved: approve } });
+          return json(res, 200, state());
+        }
         case "/api/memory/remove": {
           if (!root) return json(res, 400, { error: "no repository open" });
           // Marked resolved, not deleted: the note stays on disk (and in the vault) but is never recalled again.

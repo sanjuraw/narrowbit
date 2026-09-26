@@ -11,6 +11,7 @@ import { indexRepo, openStore } from "./indexer.js";
 import { ensureIsolated } from "./isolate.js";
 import { chooseTier } from "./route.js";
 import { guardNote } from "./guard.js";
+import { suggestNotes } from "./memory-suggest.js";
 import { callConnectorTool, listConnectorTools } from "./mcpClient.js";
 import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./memory.js";
 import { classifyModelError, isPermanentModelError } from "./errors.js";
@@ -364,6 +365,9 @@ export interface RuntimeOptions {
   /** Effort per tier, overriding `effort` for that tier's calls (e.g. { explore: "low" }: the cheap reading phase thinks less).
    * Claude's hidden thinking is ~2/3 of its output tokens; measured in bench.ts before it is used anywhere by default. */
   effortByTier?: Partial<Record<"explore" | "execute" | "escalate", string>>;
+  /** Test-first gate (idea from ECC's TDD hook): the first edit to a non-test file is refused until a check has been run and
+   * has failed (a red test), or a test file has been edited first. Off by default; measured in bench.ts. */
+  testFirst?: boolean;
   /** Polled before each model call's follow-up: return true to compact now (the app's "Compact now" button). */
   compactNow?: () => boolean;
   /** Work in a throwaway git worktree instead of the folder itself (isolate.ts); nothing changes the folder until applied. */
@@ -554,6 +558,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const recentActions: string[] = [];
   let lastResultHead = "";
   const asks = { n: 0 };
+  const gate = { testFirst: !!opts.testFirst, sawRed: false };
   // Tokens the provider adds to every request on its own (its CLI's instructions and tool definitions), measured on the
   // first call of each session. Compaction is about the size of *our* conversation, so this part doesn't count toward it.
   let providerOverhead = 0;
@@ -766,7 +771,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       });
       let resultText: string;
       try {
-        resultText = await executeAction(p, taskId, decision, opts.approve, opts.ask, asks);
+        resultText = await executeAction(p, taskId, decision, opts.approve, opts.ask, asks, gate);
       } catch (e: any) {
         resultText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
@@ -793,6 +798,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       // compress.ts's "$ cmd  (exit N; …)" head line.
       const checkFailed =
         (decision.action === "verify" && resultText.startsWith("VERIFICATION FAILED")) || (decision.action === "run" && /^\$ .*\(exit [1-9]/.test(resultText));
+      if (checkFailed) gate.sawRed = true;
+      if (decision.action === "edit" && /(\.test\.|\.spec\.|__tests__\/|(^|\/)tests?\/|_test\.)/.test(String(decision.path ?? "")) && resultText.startsWith("edited ")) gate.sawRed = true;
       if (decision.action === "edit") checksSinceEdit = 0;
       else if (checkFailed) checksSinceEdit++;
       lastCheckFailed = checkFailed;
@@ -866,6 +873,14 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     }
   }
 
+  if (outcome === "done") {
+    try {
+      const suggested = suggestNotes(readEvents(p, taskId), openMemory(p).load().filter((e) => e.status === "active"));
+      if (suggested.length) appendEvent(p, taskId, { actor: "system", type: "decision", summary: `suggested ${suggested.length} note${suggested.length === 1 ? "" : "s"} for project memory (nothing saved until you approve)`, meta: { suggested } });
+    } catch {
+      /* suggestions are a convenience; never fail a finished task over them */
+    }
+  }
   if (outcome === "max_steps") log(`[${steps}] hit the step budget (${maxSteps}) without finishing`);
   const failure = outcome === "error" ? classifyModelError(summary) : null;
   appendEvent(p, taskId, { actor: "system", type: "decision", summary: `outcome: ${outcome}`, meta: { outcome, summary, steps, ...(failure ? { errorKind: failure.kind, resets: failure.resets } : {}) } });
@@ -903,7 +918,7 @@ function checkFailedLabel(d: Decision, result: string): string {
 }
 
 /** Executes one action and returns the (capped) result text to feed back as the next turn's prompt. */
-async function executeAction(p: Paths, taskId: string, d: Decision, approve?: RuntimeOptions["approve"], ask?: RuntimeOptions["ask"], asks?: { n: number }): Promise<string> {
+async function executeAction(p: Paths, taskId: string, d: Decision, approve?: RuntimeOptions["approve"], ask?: RuntimeOptions["ask"], asks?: { n: number }, gate?: { testFirst: boolean; sawRed: boolean }): Promise<string> {
   switch (d.action) {
     case "ask": {
       const question = String(d.question ?? "").trim();
@@ -968,6 +983,12 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       const abs = safeAbsPath(p, path);
       const oldText = d.old ?? "";
       const newText = d.new ?? "";
+      const isTestPath = /(\.test\.|\.spec\.|__tests__\/|(^|\/)tests?\/|_test\.)/.test(path);
+      if (gate?.testFirst && !gate.sawRed && !isTestPath) {
+        const text = `edit ${path}: refused (test-first mode) — no check has failed yet. Run "verify" (or the failing test) first and confirm it fails, or write the failing test, then make this edit.`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path, testFirst: true } });
+        return text;
+      }
       if (/^\.narrowbit(ignore$|\/)/.test(relative(p.root, abs ?? ""))) {
         const text = `edit ${path}: refused — that's Narrowbit's own file, not part of the task`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });

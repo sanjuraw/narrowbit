@@ -1545,3 +1545,61 @@ test("an imported skill that gives the agent orders is flagged before it can be 
   assert.ok(evil.warnings.some((w) => w.severity === "high" && w.check === "download and run"));
   assert.deepEqual(parseSkillFile("Review the diff carefully and list risks.\n", "a.md").warnings, []);
 });
+
+const { suggestNotes } = await dist("memory-suggest.js");
+describe("memory suggestions at the end of a task (approve to save)", () => {
+  const ev = (type, summary, meta = {}) => ({ id: Math.random().toString(36), at: new Date().toISOString(), taskId: "t", actor: "system", type, summary, meta });
+  test("a check that failed and then passed after edits becomes a bug note; one-off things do not", () => {
+    const events = [
+      ev("verify", "VERIFICATION FAILED\nAssertionError: expected 1 received 2", { ok: false }),
+      ev("edit", "edited src/a.ts", { path: "src/a.ts" }),
+      ev("verify", "ok", { ok: true }),
+    ];
+    const s = suggestNotes(events);
+    assert.equal(s.length, 1);
+    assert.equal(s[0].type, "bug"); assert.match(s[0].text, /expected 1 received 2/); assert.match(s[0].text, /src\/a\.ts/); assert.ok(s[0].confidence >= 0.6);
+    assert.deepEqual(suggestNotes([ev("verify", "ok", { ok: true })]), [], "nothing to learn from a clean run");
+  });
+  test("a command that worked twice is proposed, and notes already in memory are not proposed again", () => {
+    const run = () => ev("command", "$ npm test (exit 0)", { command: "npm test --silent", exit: 0 });
+    const s = suggestNotes([run(), run()]);
+    assert.equal(s[0].type, "command");
+    assert.deepEqual(suggestNotes([run(), run()], [{ text: s[0].text }]), []);
+  });
+  test("the runtime records the proposals, and saving one writes it to memory (dismissing writes nothing)", async () => {
+    const { root, p } = tinyRepo(); writeFileSync(join(root, "b.txt"), "x\n");
+    const fake = fakeClaude([
+      JSON.stringify({ action: "edit", path: "b.txt", old: "x", new: "y" }),
+      JSON.stringify({ action: "done", summary: "changed" }),
+    ]);
+    try {
+      const r = await runTask(p, "change x to y", { claudeBin: fake.bin, boss: false, maxSteps: 6 });
+      // No failed-then-passed check happened, so nothing is proposed and nothing is saved.
+      assert.ok(!readEvents(p, r.taskId).some((e) => Array.isArray(e.meta?.suggested)));
+      assert.equal(new Memory(p).load().filter((e) => e.status === "active").length, 0);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("test-first gate (optional)", () => {
+  test("the first source edit is refused until a check has failed; test files are always editable; off by default", async () => {
+    const { root, p } = tinyRepo(); writeFileSync(join(root, "b.txt"), "x\n");
+    mkdirSync(join(root, "tests"), { recursive: true }); writeFileSync(join(root, "tests", "t.test.js"), "old\n");
+    const replies = () => fakeClaude([
+      JSON.stringify({ action: "edit", path: "b.txt", old: "x", new: "y" }),
+      JSON.stringify({ action: "edit", path: "tests/t.test.js", old: "old", new: "new" }),
+      JSON.stringify({ action: "edit", path: "b.txt", old: "x", new: "y" }),
+      JSON.stringify({ action: "done", summary: "ok" }),
+    ]);
+    const fake = replies(), fake2 = replies();
+    try {
+      const r = await runTask(p, "change b", { claudeBin: fake.bin, boss: false, maxSteps: 8, testFirst: true });
+      const results = readEvents(p, r.taskId).filter((e) => e.type === "tool_result" || e.type === "edit").map((e) => e.summary);
+      assert.ok(results.some((t) => /refused \(test-first mode\)/.test(t)), "the source edit was refused at first");
+      assert.ok(results.some((t) => /edited tests\/t\.test\.js/.test(t)), "editing the test is allowed");
+      assert.ok(results.some((t) => /edited b\.txt/.test(t)), "and after that the source edit goes through");
+      const r2 = await runTask(p, "change b", { claudeBin: fake2.bin, boss: false, maxSteps: 8 });
+      assert.ok(!readEvents(p, r2.taskId).some((e) => /test-first/.test(e.summary)), "without the option nothing is gated");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); rmSync(fake2.dir, { recursive: true, force: true }); }
+  });
+});

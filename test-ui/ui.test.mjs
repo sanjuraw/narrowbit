@@ -207,6 +207,10 @@ describe("app page with a folder open", () => {
     appendEvent(p, "rt-work-test", { actor: "system", type: "tool_result", summary: "read a.txt:1-1 hi" });
     appendEvent(p, "rt-work-test", { actor: "model", type: "decision", summary: "done: It contains the word hi.", meta: {} });
     appendEvent(p, "rt-work-test", { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: "It contains the word hi.", steps: 1 } });
+    appendEvent(p, "rt-sug-test", { actor: "user", type: "decision", summary: "task received", meta: { goal: "fix the parser" } });
+    appendEvent(p, "rt-sug-test", { actor: "system", type: "decision", summary: "done: fixed", meta: {} });
+    appendEvent(p, "rt-sug-test", { actor: "system", type: "decision", summary: "suggested 2 notes for project memory (nothing saved until you approve)", meta: { suggested: [{ type: "bug", text: "Verification failed with an off-by-one; fixed by editing src/parse.ts.", files: ["src/parse.ts"], confidence: 0.8 }, { type: "command", text: "A working check for this repo: `npm test --silent`", confidence: 0.65 }] } });
+    appendEvent(p, "rt-sug-test", { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: "fixed", steps: 2 } });
     const { openMemory } = await import(join(ROOT, "dist", "memory.js"));
     openMemory(p).add({ type: "decision", text: "Use pnpm, not npm, in this repo", reason: "lockfile is pnpm-lock.yaml" });
 
@@ -382,6 +386,31 @@ describe("app page with a folder open", () => {
     const t = await (await fetch(`${app.base}/api/task/rt-work-test`, { headers: H })).json();
     const h = t.events.find((e) => e.type === "handoff");
     assert.ok(h && h.meta.manual && h.actor === "user", "the compaction is in the chat's log, as the user's action");
+  });
+
+  test("suggested notes appear after a task; Save writes one to project memory, Dismiss writes nothing", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const sess = await page.until(() => [...page.w.document.querySelectorAll("#sessions .sess")].find((x) => /fix the parser/.test(x.textContent)), "the session with suggestions");
+    sess.click();
+    const card = await page.until(() => page.w.document.querySelector(".suggested"), "the suggestions card");
+    assert.match(card.textContent, /off-by-one/); assert.match(card.textContent, /npm test/);
+    const buttons = [...card.querySelectorAll("button")].map((b) => b.textContent);
+    assert.deepEqual(buttons, ["Save", "Dismiss", "Save", "Dismiss"]);
+    const before = (await (await fetch(`${app.base}/api/state`, { headers: H })).json()).memory.length;
+    card.querySelectorAll("button")[0].click(); // save the first
+    await page.until(async () => true, "click handled");
+    let st;
+    for (let i = 0; i < 40; i++) { st = await (await fetch(`${app.base}/api/state`, { headers: H })).json(); if (st.memory.length > before) break; await new Promise((r) => setTimeout(r, 100)); }
+    assert.equal(st.memory.length, before + 1, "the approved note is in project memory");
+    assert.ok(st.memory.some((m) => /off-by-one/.test(m.text)));
+    const dis = await fetch(`${app.base}/api/memory/suggested`, { method: "POST", headers: H, body: JSON.stringify({ task: "rt-sug-test", index: 1, approve: false }) });
+    assert.equal(dis.status, 200);
+    st = await dis.json();
+    assert.equal(st.memory.length, before + 1, "dismissing saves nothing");
+    const again = await fetch(`${app.base}/api/memory/suggested`, { method: "POST", headers: H, body: JSON.stringify({ task: "rt-sug-test", index: 1, approve: true }) });
+    assert.equal(again.status, 409, "a handled suggestion can't be applied twice");
+    // tidy up so later tests see an empty memory
+    for (const m of st.memory) await fetch(`${app.base}/api/memory/remove`, { method: "POST", headers: H, body: JSON.stringify({ id: m.id }) });
   });
 
   test("every project lists the built-in skills, without a delete button; user skills get one", async () => {

@@ -84,6 +84,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
       [--provider <name>] [--model X | --explore X --execute X --escalate X]
       [--effort low|medium|high|xhigh|max] [--max-steps N] [--force] [--dry-run]
       [--allow-commands]   run shell commands without asking (default: ask before each one)
+      [--test-first]       refuse the first source edit until a check has failed (or a test was edited)
       [--isolate]          work in a separate git worktree; your folder changes only when you run: narrowbit apply <task>
       [--no-boss] [--continue <task-id>]   lead mode (default): model 3 plans first and reviews the
       diff before "done"; --continue sends a follow-up to an earlier task
@@ -498,6 +499,7 @@ export async function main(argv: string[]): Promise<number> {
         approve,
         ask,
         isolate: !!args.flags.isolate,
+        testFirst: !!args.flags["test-first"],
         maxSteps,
         boss: args.flags["no-boss"] ? false : (cfg.agent?.boss ?? true),
         continueTask: strFlag(args, "continue"),

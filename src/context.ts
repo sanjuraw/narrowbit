@@ -18,7 +18,8 @@ function render(state: FoldedState): string {
   if (state.filesTouched.length) lines.push(`FILES TOUCHED: ${state.filesTouched.join(", ")}`);
   if (state.remembered.length) {
     lines.push("SAVED TO PROJECT MEMORY IN THIS TASK (already stored; search with recall, don't re-save):");
-    for (const n of state.remembered) lines.push(`  - [${n.id}] (${n.type}) ${n.text}`);
+    // Capped like every automatic inclusion: at most 12 notes, 200 characters each (idea from ECC's session-start cap).
+    for (const n of state.remembered.slice(-12)) lines.push(`  - [${n.id}] (${n.type}) ${n.text.slice(0, 200)}`);
   }
   if (state.recent.length) {
     lines.push("RECENT:");
