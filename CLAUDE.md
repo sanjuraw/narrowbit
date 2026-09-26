@@ -4,7 +4,37 @@ Local, context-managed coding-agent runtime: **task + repository + durable evide
 
 Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens. If quality drops, Narrowbit has failed.
 
-## Handoff (2026-09-22, strategy update)
+## Handoff (2026-09-26, current) — read this first
+
+**State.** `main` = `6b6d25f`, pushed, and the shared install `/Users/Shared/NarrowbitApp` is at the same commit. Tests: `npm test` 81, `npm run test:ui` 37 (jsdom, separate package), all passing. No uncommitted work except two untracked files the user owns: `.github/workflows/ci.yml` (written, **cannot be pushed until the user runs `gh auth refresh -h github.com -s workflow`**) and `vibe-coding-security-prompts.pdf`.
+
+**What Narrowbit is now.** A provider-independent coding-agent runtime with a native Mac app (`narrowbit ui`, SwiftPM shell in `mac/`) and a CLI (`narrowbit agent`). Owned loop (`runtime.ts`): JSON actions batched up to 5 per turn, done-gate, stall guard, deterministic compaction, lead mode (plan+review, default on), model routing by rules, `ask` (question to the user), isolated runs in a git worktree (`--isolate`, Apply/Discard), fallback provider, connectors (local stdio + remote HTTP MCP with OAuth), skills (built-in, GitHub import, save-from-chat), memory (on-demand `recall`/`remember`, sidebar list), push button, GitHub identity, update banner. Providers: Claude CLI, Codex CLI, and every OpenAI-compatible API (OpenRouter, NVIDIA, Cloudflare, Groq, Gemini, DeepSeek, FreeLLMAPI, Ollama, custom…). The detailed history is in Status below; the newest entries are at the bottom of that section.
+
+**Evidence to cite (never claim more).** Hono, 40 real bug-fix tasks, one run per task, lead mode off, success = the task's own tests:
+- Claude routing (Haiku/Sonnet/Opus), batched runtime: 39/40, mean 47k input, $3.94 notional (subscription value). vs `mcpOnly` baseline 474k / $9.05 / 40/40 → ~90% fewer tokens, 56% lower cost.
+- **DeepSeek V4.1 Flash direct: 39/40**, mean 87k input, 90% cached, est. **$0.22 for all 40** (list prices; output tokens are ~74% of cost). Default thinking (high) beats reasoning-low (19/20) and thinking-off (18/20) on 20 tasks, so the default is left alone.
+- DeepSeek Harness (`dsh`) with the same model: 38/40, 260k input (3.0× ours), 17.7 vs 11.5 turns, ~3.5× slower, est. $0.0064 vs $0.0056 per task.
+- Codex: `gpt-6-luna` 4/10 (small "easier tasks" model; one action per turn, ignores batching hints); `gpt-6-sol` passed 2 of luna's 4 hardest failures, batches 2-3/turn, still several times Claude's tokens. Codex cost is not reported by its CLI.
+- Cloudflare Llama 70B and NVIDIA free tier failed/timed out on the one task tried. Free tiers are unreliable.
+- Caveats that apply to all of the above: n=1 per task, Hono is public code (possible training-data contamination), non-Claude costs are estimates, Claude's is subscription-notional.
+
+**Open items, in priority order.**
+1. Decide Codex defaults: built-ins are still the older gpt-5.6 names in `providers/models.ts`; only `gpt-6-luna` (explore) + `gpt-6-sol` (execute/lead) have evidence, and `gpt-6-sol` was not run on the six easier Hono tasks, so no full 10-task Sol score exists.
+2. Set DeepSeek as the **fallback provider** for Claude limits (Models & settings → Backup) and try a real task on it. Privacy: direct DeepSeek sends code to servers in China; fine for public repos, the user should decide for private ones (IndicSaga).
+3. Trim Narrowbit's output tokens (~45% more than DSH: prose and long `note`s around the JSON). Output is the priciest token type.
+4. Push the CI workflow (needs the user's `gh` scope refresh) and add CONTRIBUTING-mentioned checks.
+5. Prove a second repo/language; the whole record is Hono/TypeScript.
+6. Router experiment (rules vs local Decider-2b) is **inconclusive**: 5 of 24 runs finished. `route.ts`/`BenchArm.router` exist; the decider server (`scripts/decider_server.py`, venv `~/bench-repos/laya-env`, port 8722) must be started by hand.
+7. Remote MCP/OAuth is tested only against a mock server. FreeLLMAPI on the user's VPS (`187.127.110.84:3001`) was unreachable (firewall or loopback binding); untested.
+8. Ideas not built: learning per-repo output filters from repeated command noise (OmniRoute `rtk/learn.ts`), quota/rate-limit headers for API providers, a Codex-specific adapter tune (Codex CLI re-sends ~25k tokens of its own context per call).
+
+**Environment on this Mac (the second account).** Keys live in `~/.narrowbit/keys.json` (0600) for the providers benchmarked. Codex CLI 0.156.1 (npm global, shared by both profiles; login is per profile). Benchmark scratch: `~/bench-repos/hono` (repo + results in `.narrowbit/benchmarks/`), task files `~/bench-hono.json`, `bench-multimodel.json`, `bench-router.json`; `~/bench-repos/dsh` (DeepSeek Harness venv, removable); runtime event logs per benchmark run are kept in `.narrowbit/benchmarks/runs/<id>/<task>-<arm>-<n>-runtime/`. Run benchmarks with `node bin/narrowbit.js benchmark run <file> --only <ids> --arms <names>` from the Hono checkout. The Mac shell app (`/Applications/Narrowbit.app`) only changes when rebuilt: `cd /Users/Shared/NarrowbitApp && scripts/build-mac-app.sh --install` (needed for the Copy fallback and the connector sign-in browser hook; the user reported installing it).
+
+**Working rules that came out of this session.** (a) Measure before changing a default; cite the numbers with their caveats. (b) Do not install or run third-party software without the user's explicit OK — the OmniRoute trial install was a misread of "do the comparison" (they meant a feature comparison); it was removed. (c) Never enter API keys, passwords or subscription credentials into other tools (the OmniRoute dashboard steps and DSH key handling were done so the key only lives in a subprocess env, never printed). (d) Real use finds bugs benchmarks don't (false completion, stale sessions, blocked-as-question, tiny model dropdowns); keep dogfooding on IndicSaga. (e) Commit trailer: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`; repo-local git identity only.
+
+**Gotchas.** `ui-page.ts` holds the page JS inside a TS template string: **backticks in it break the build**, the compiler does not check that JS, so add a `test-ui/` case for every UI change. zsh: no `timeout`, `$VAR` does not word-split, each Bash call resets cwd. Sessions are stamped with `INSTRUCTIONS_ID`; changing `SYSTEM_INSTRUCTIONS` makes old chats start fresh on follow-up (intended). Non-Claude providers get an extra batching hint and read-only nudge (`runtime.ts`); Claude's prompt is unchanged.
+
+## Prior handoff (2026-09-22, strategy update — direction still valid)
 
 **Read all three benchmark records in Status before changing code.** The previous product predicted a context package and injected it into another coding agent. That mechanism failed twice because every fresh session paid the full, uncached injection cost. The on-demand-only MCP arm reached 20.2%, but it is a single noisy run, not a validated product claim.
 
@@ -171,7 +201,8 @@ Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens
 ```bash
 npm install
 npm run build          # tsc → dist/
-npm test               # build + node --test test/*.test.mjs (35 tests)
+npm test               # build + node --test test/*.test.mjs (81 tests, no model calls)
+npm run test:ui        # jsdom checks of the app page + app-level flows with a stand-in model (37 tests)
 scripts/build-mac-app.sh [--install]   # Narrowbit.app via SwiftPM (Command Line Tools suffice)
 npm run typecheck
 node bin/narrowbit.js help
@@ -215,6 +246,12 @@ Requires Node ≥ 22.13 (uses `node:sqlite`). Only runtime dependency: `typescri
 | `ui.ts` / `ui-page.ts` | `narrowbit ui`: local app server + its single page; `mac/` wraps it natively |
 | `project.ts` | `initProject()`, shared by `narrowbit init` and the app |
 | `runtime.ts` | `narrowbit agent`'s loop: read/grep/search/edit/run/verify/recall/remember, one JSON action per model turn |
+| `route.ts` | Experimental decider-based tier routing (off by default) |
+| `isolate.ts` | Isolated runs: worktree seeded from the folder, patch, apply, discard |
+| `mcpClient.ts` / `mcpHttp.ts` / `oauth.ts` / `connectors.ts` | MCP client (stdio + remote HTTP), OAuth sign-in, connector store |
+| `skills.ts` / `builtin-skills.ts` / `skillimport.ts` | Skills: built-in, user, import from GitHub |
+| `errors.ts` / `readiness.ts` / `update.ts` / `audit.ts` | Error classification, setup checks, self-update, secret audit |
+| `providers/codex-cli.ts` | Codex CLI adapter (`codex exec`, own thread ids) |
 | `streamjson.ts` | Shared `claude -p --output-format stream-json` parser (usage/turns/cost/tool calls), used by `bench.ts` and `providers/claude-cli.ts` |
 
 State lives in `.narrowbit/` in the target repo (self-gitignored, files `0600`): `index.db`, `config.json`, `memory/`, `tasks/`, `logs/`, `benchmarks/`, `sessions/`.
