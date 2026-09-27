@@ -98,14 +98,15 @@ export function createProjectFromDraft(taskId: string, targetPath: string): { ro
   const git = (...args: string[]) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
   const init = git("init", "-q", "-b", "main");
   if (init.status !== 0) throw new Error(`git init failed: ${(init.stderr ?? "").trim() || "unknown error"}`);
-  const commit = git("commit", "-q", "--allow-empty", "-m", "Initial commit");
-  if (commit.status !== 0) {
-    const err = (commit.stderr ?? "").trim();
-    if (/please tell me who you are|user\.name|user\.email/i.test(err)) {
-      throw new Error(`git needs your name and email before it can commit — run this once in a terminal, then try again:\n  git config --global user.name "Your Name"\n  git config --global user.email "you@example.com"`);
-    }
-    throw new Error(`git commit failed: ${err || "unknown error"}`);
+  let commit = git("commit", "-q", "--allow-empty", "-m", "Initial commit");
+  if (commit.status !== 0 && /please tell me who you are|user\.name|user\.email/i.test((commit.stderr ?? "").trim())) {
+    // This first commit is empty scaffolding, not authored work — a real project shouldn't need your git
+    // identity configured before you can even start talking to it, any more than Claude Code would. Fall
+    // back to a placeholder identity for just this one bootstrap commit, same as isolate.ts's own internal
+    // snapshots; real commits you make later still use whatever identity git is actually configured with.
+    commit = spawnSync("git", ["-c", "user.name=narrowbit", "-c", "user.email=narrowbit@localhost", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "Initial commit"], { cwd: root, encoding: "utf8" });
   }
+  if (commit.status !== 0) throw new Error(`git commit failed: ${(commit.stderr ?? "").trim() || "unknown error"}`);
   initProject(paths(root), { index: false });
   const digest = draftDigest(taskId);
   const seedTask = digest ? `Based on our discussion:\n\n${digest}\n\nSet this project up accordingly.` : "";

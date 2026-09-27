@@ -322,10 +322,9 @@ const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens:
 console.log(JSON.stringify({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }));
 console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
 `, { mode: 0o755 });
-    // A fresh HOME has no global git identity — Create Project's own commit needs one, same as any real
-    // machine would (the app tells the user to set this up rather than guessing an identity for them).
-    execFileSync("git", ["config", "--global", "user.email", "t@t.t"], { env: { ...process.env, HOME: home } });
-    execFileSync("git", ["config", "--global", "user.name", "t"], { env: { ...process.env, HOME: home } });
+    // Deliberately no global git identity in this fresh HOME — Create Project's bootstrap commit must not
+    // need one (a brand-new project shouldn't require git setup before you can even start, any more than
+    // Claude Code would); it falls back to a placeholder identity for just that one empty commit.
     app = await startApp({ cwd: home, home, env: { NARROWBIT_CLAUDE: join(fakeDir, "claude") } });
     page = await openPage(app.url);
     await page.until(() => page.$("crumbName").textContent, "the folder pill to render");
