@@ -86,6 +86,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
       [--effort low|medium|high|xhigh|max] [--max-steps N] [--force] [--dry-run]
       [--allow-commands]   run shell commands without asking (default: ask before each one)
       [--scout provider:model|none] research first on this model (default: the saved setting)
+      [--review-only]         skip the plan call, still review the diff before "done" (cheaper than full lead mode)
       [--attach a.png,b.pdf] show the model images or PDFs (sent on the first call only)
       [--test-first]       refuse the first source edit until a check has failed (or a test was edited)
       [--isolate]          work in a separate git worktree; your folder changes only when you run: narrowbit apply <task>
@@ -516,6 +517,7 @@ export async function main(argv: string[]): Promise<number> {
         testFirst: !!args.flags["test-first"],
         maxSteps,
         boss: args.flags["no-boss"] ? false : (cfg.agent?.boss ?? true),
+        reviewOnly: !!args.flags["review-only"],
         continueTask: strFlag(args, "continue"),
         provider: sel.provider,
         models: sel.tiers,

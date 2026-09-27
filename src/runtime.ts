@@ -367,6 +367,9 @@ export interface RuntimeOptions {
   signal?: AbortSignal;
   /** Lead mode: the escalate model plans up front and reviews the diff before "done". Default true. */
   boss?: boolean;
+  /** Skip the up-front plan call but still run the diff review before "done" (see the `boss` doc above). Useful with
+   * `reviewer` set to a different model/provider: a cheap second opinion without the plan call's extra cost. */
+  reviewOnly?: boolean;
   /** Continue an earlier task with `taskText` as a follow-up request, in the same event log —
    * resuming its model session when it still exists, else from a deterministic digest. */
   continueTask?: string;
@@ -523,7 +526,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   };
   const lead: LeadCtx = leadFor(opts.leadModel) ?? { p, taskId, call, model: tiers.escalate, effort, role, preexisting };
   const reviewLead: LeadCtx = leadFor(opts.reviewer) ?? lead;
-  if (boss && !continuing) {
+  if (boss && !opts.reviewOnly && !continuing) {
     log(`[plan] (${tiers.escalate}) planning`);
     plan = await leadPlan(lead, taskText, store);
     if (plan) log(`      → ${plan.steps.length} steps`);
@@ -774,7 +777,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
           rejectedPart = part("gate", "completion check (done was refused)", doneRejected);
           break;
         }
-        if (boss && editsApplied > 0 && reviews < MAX_REVIEWS) {
+        if ((boss || opts.reviewOnly) && editsApplied > 0 && reviews < MAX_REVIEWS) {
           reviews++;
           log(`[${steps}] (${tiers.escalate}) lead review`);
           const review = await leadReview(reviewLead, goal, taskText !== goal ? taskText : null, plan, decision.summary ?? "");

@@ -307,7 +307,7 @@ export function startUi(opts: UiOptions) {
       const ga = globalAgent();
       let selection;
       try { selection = resolveSelection(ga); } catch { selection = resolveSelection(undefined); }
-      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? true, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: [] };
+      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? true, reviewOnly: !!ga?.reviewOnly, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: [] };
     }
     const p = paths(root);
     const initialized = existsSync(p.db);
@@ -341,6 +341,7 @@ export function startUi(opts: UiOptions) {
       lead: effAgent(cfg)?.boss ?? true,
       fallback: effAgent(cfg)?.fallback ?? "",
       scout: effAgent(cfg)?.scout ?? "",
+      reviewOnly: !!effAgent(cfg)?.reviewOnly,
       history: initialized ? taskHistory(p) : [],
       skills: listSkills(p),
       memory: openMemory(p).load().filter((e) => e.status === "active" && !e.external).map((e) => ({ id: e.id, type: e.type, text: e.text, reason: e.reason ?? "", date: e.date })),
@@ -360,6 +361,7 @@ export function startUi(opts: UiOptions) {
     if (unavailable) return { status: 400, body: { error: unavailable } };
     if (continueTask && !readEvents(p, continueTask).length) return { status: 404, body: { error: `no task ${continueTask}` } };
     const lead = effAgent(cfg)?.boss ?? true;
+    const reviewOnly = !!effAgent(cfg)?.reviewOnly;
     const thisRun: Run = {
       root,
       taskId: continueTask,
@@ -381,6 +383,7 @@ export function startUi(opts: UiOptions) {
       scout: parseScout(effAgent(cfg)?.scout) ?? undefined,
       maxSteps,
       boss: lead,
+      reviewOnly,
       continueTask: continueTask ?? undefined,
       attachments,
       isolate: isolate || !!(continueTask && readIsolated(p, continueTask)),
@@ -580,7 +583,7 @@ export function startUi(opts: UiOptions) {
             if (m) slots[phase] = m;
           }
           models[provider as ProviderName] = slots;
-          const next = { ...base, provider, effort, models, ...(typeof body.lead === "boolean" ? { boss: body.lead } : {}) } as AgentConfig;
+          const next = { ...base, provider, effort, models, ...(typeof body.lead === "boolean" ? { boss: body.lead } : {}), ...(typeof body.reviewOnly === "boolean" ? { reviewOnly: body.reviewOnly } : {}) } as AgentConfig;
           if (typeof body.fallback === "string") {
             if (body.fallback && isProvider(body.fallback) && body.fallback !== provider) next.fallback = body.fallback;
             else delete next.fallback;
@@ -596,7 +599,7 @@ export function startUi(opts: UiOptions) {
           }
           // Also remembered globally so the next repo (or the next launch with no folder) starts here.
           mkdirSync(join(homedir(), ".narrowbit"), { recursive: true, mode: 0o700 });
-          writeFileSync(GLOBAL_AGENT, JSON.stringify({ provider, effort, models, boss: next.boss, fallback: next.fallback, scout: next.scout }, null, 2) + "\n", { mode: 0o600 });
+          writeFileSync(GLOBAL_AGENT, JSON.stringify({ provider, effort, models, boss: next.boss, reviewOnly: next.reviewOnly, fallback: next.fallback, scout: next.scout }, null, 2) + "\n", { mode: 0o600 });
           return json(res, 200, state());
         }
         case "/api/skills": {

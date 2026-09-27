@@ -1743,3 +1743,20 @@ test("scout setting: provider:model parses (model ids may contain colons) and re
   assert.deepEqual(parseScout("ollamacloud:gpt-oss:120b"), { provider: "ollamacloud", model: "gpt-oss:120b" });
   for (const bad of ["", undefined, "gpt-6-sol", "nope:x", "codex:"]) assert.equal(parseScout(bad), null);
 });
+
+test("review-only: no plan call, but the diff still gets reviewed before done", async () => {
+  const { root, p } = tinyRepo();
+  const fake = fakeClaude([
+    JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "hi" }),
+    JSON.stringify({ action: "verify" }),
+    JSON.stringify({ action: "done", summary: "changed it" }),
+    JSON.stringify({ verdict: "approve" }),
+  ]);
+  try {
+    const r = await runTask(p, "say hi in a.txt", { claudeBin: fake.bin, boss: false, reviewOnly: true, maxSteps: 8, approve: async () => true });
+    assert.equal(r.outcome, "done");
+    const ev = readEvents(p, r.taskId);
+    assert.ok(!ev.some((e) => e.type === "plan"), "no plan step ran");
+    assert.ok(ev.some((e) => e.type === "model_call" && e.tokens?.role === "review"), "the review call happened");
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+});

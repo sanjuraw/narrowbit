@@ -42,6 +42,8 @@ export interface AgentConfig {
   scout?: string;
   /** Lead mode: model 3 plans the task up front and reviews the diff before "done". Default on. */
   boss?: boolean;
+  /** Skip the plan call, still review the diff (a cheaper alternative to full lead mode). Ignored when `boss` is on. */
+  reviewOnly?: boolean;
 }
 
 export const DEFAULT_CONFIG: NarrowbitConfig = {

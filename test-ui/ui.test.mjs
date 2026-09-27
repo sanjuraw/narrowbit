@@ -185,6 +185,17 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.equal((await bad.json()).scout, "", "a malformed value turns the scout off");
   });
 
+  test("Review only pairs with a different reviewer, and is disabled while Lead mode is on", async () => {
+    page.$("settingsBtn").click();
+    await page.until(() => !page.$("drawer").classList.contains("hidden"), "the drawer to open");
+    assert.equal(page.$("reviewOnlyChk").disabled, page.$("leadChk").checked, "review-only is only usable while lead mode is off");
+    if (page.$("leadChk").checked) { page.$("leadChk").click(); await page.until(() => !page.$("reviewOnlyChk").disabled, "review-only to unlock"); }
+    page.$("reviewOnlyChk").click();
+    await page.until(() => page.$("reviewOnlyChk").checked, "review-only to stay checked after saving");
+    page.$("leadChk").click();
+    await page.until(() => page.$("reviewOnlyChk").disabled, "review-only to disable once lead mode is back on");
+  });
+
   test("the GitHub button beside the folder pill stays hidden when the repository has no GitHub remote", () => {
     assert.ok(page.$("ghCrumb").classList.contains("hidden"));
   });
