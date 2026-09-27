@@ -4,4 +4,11 @@ useDefault = true
 
 [allowlist]
 description = "fake fixtures in the redaction test"
-regexes = ['''AKIAABCDEFGHIJKLMNOP''', '''abcd1234efgh5678''']
+regexes = [
+  '''AKIAABCDEFGHIJKLMNOP''',
+  '''abcd1234efgh5678''',
+  '''sk_live_51H8abc''',
+  '''sk_live_b{24}''',
+  '''ghp_abcdefghijklmnopqrstuvwxyz0123456789''',
+  '''ghp_a{36}''',
+]
