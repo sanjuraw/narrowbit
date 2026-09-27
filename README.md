@@ -34,7 +34,7 @@ Then in any project folder: `narrowbit init`, and either `narrowbit ui` (browser
 **Built-in skills** (in every project's Skills list; click one to drop it into the message box, or `narrowbit agent --skill "bug fix" "<what's wrong>"`): *Bug fix* (root cause, reproduce, smallest fix, verify), *Code review* (correctness, security, tests; changes nothing), *Write tests*, *Refactor* (pin behaviour first, small verified steps), *Explain this code* (read-only walkthrough) and *Security review*. Save a skill with the same name to override one; add your own with the **+** next to Skills.
 
 ```bash
-narrowbit agent "<task>" [--provider claude|codex|openrouter|...] [--skill "<name>"] [--no-boss] [--max-steps N]
+narrowbit agent "<task>" [--provider claude|codex|openrouter|...] [--skill "<name>"] [--boss] [--max-steps N]
 narrowbit models choose                # pick provider + the three model slots (saved per repo)
 narrowbit keys set <provider>          # API key, stored in ~/.narrowbit/keys.json (0600)
 narrowbit skills add "Bug Fix" "Reproduce with a failing test, fix the code not the test, verify."
