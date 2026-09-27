@@ -451,6 +451,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <label class="check"><input type="checkbox" id="leadChk"><span>Lead mode<small>Model 3 writes a plan before work starts and reviews the diff before it's reported done. Two extra calls to your strongest model per task.</small></span></label>
     <label class="check"><input type="checkbox" id="askChk"><span>Ask before running commands<small>Reads, edits and verify run freely; shell commands wait for you.</small></span></label>
     <div class="field" style="margin-top:10px"><label for="fallbackSel">Backup — if this provider hits a limit or fails, continue on</label><select id="fallbackSel"></select></div>
+    <div class="field" style="margin-top:10px"><label for="scoutSel">Scout — a cheaper model reads the code first and hands the worker a short report</label><select id="scoutSel"></select></div>
     <div class="note hidden" id="providerNote"></div>
     <div class="saved" id="savedMsg"></div>
 
@@ -1072,6 +1073,22 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       var o = el("option", { value: prov, text: Q.label }); if (prov === S.fallback) o.selected = true; fb.appendChild(o);
     });
     fb.onchange = function () { saveModels(null, { fallback: fb.value }); };
+    // Scout choices: every model saved in a ready provider's three slots ("provider:model"), so nothing needs typing.
+    var sc = clear($("scoutSel"));
+    sc.appendChild(el("option", { value: "", text: "Off — the worker reads the code itself" }));
+    var seen = {};
+    Object.keys(S.providers).forEach(function (prov) {
+      var Q = S.providers[prov];
+      if (Q.unavailable || (R && R.ready && R.ready.indexOf(prov) < 0)) return;
+      ["explore", "execute", "escalate"].forEach(function (ph) {
+        var m = Q.tiers && Q.tiers[ph];
+        if (!m || seen[prov + ":" + m]) return;
+        seen[prov + ":" + m] = true;
+        var o = el("option", { value: prov + ":" + m, text: Q.label.split(" (")[0] + " · " + m }); if (prov + ":" + m === S.scout) o.selected = true; sc.appendChild(o);
+      });
+    });
+    if (S.scout && !seen[S.scout]) { var cur = el("option", { value: S.scout, text: S.scout.replace(":", " · ") }); cur.selected = true; sc.appendChild(cur); }
+    sc.onchange = function () { saveModels(null, { scout: sc.value }); };
     var eff = clear($("effort"));
     S.efforts.forEach(function (l) { var o = el("option", { value: l, text: l }); if (l === draft.effort) o.selected = true; eff.appendChild(o); });
     $("leadChk").checked = S.lead;

@@ -132,7 +132,7 @@ describe("app page with no folder open (a brand-new user)", () => {
   test("models are selectable before a folder is chosen (the providers list is never empty)", () => {
     assert.ok(page.$("providerSel").options.length >= 15, "provider list");
     const models = [...page.w.document.querySelectorAll("#slots [id^=slot-]")].map((i) => i.value);
-    assert.deepEqual(models, ["haiku", "sonnet", "opus"]);
+    assert.deepEqual(models, ["sonnet", "sonnet", "opus"]);
   });
 
   test("Claude's models are picked from a dropdown, and switching to Codex changes the models too (no folder open)", async () => {
@@ -172,6 +172,17 @@ describe("app page with no folder open (a brand-new user)", () => {
     } finally {
       p2.close();
     }
+  });
+
+  test("the scout dropdown offers Off plus the models of ready providers, and saving one is remembered for the repository", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const sel = page.$("scoutSel");
+    assert.ok(sel, "the dropdown exists");
+    assert.equal(sel.options[0].value, "", "Off is the first choice");
+    const r = await fetch(`${app.base}/api/models`, { method: "POST", headers: H, body: JSON.stringify({ provider: "claude", effort: "medium", tiers: { explore: "sonnet", execute: "sonnet", escalate: "opus" }, scout: "codex:gpt-6-sol" }) });
+    assert.equal((await r.json()).scout, "codex:gpt-6-sol");
+    const bad = await fetch(`${app.base}/api/models`, { method: "POST", headers: H, body: JSON.stringify({ provider: "claude", effort: "medium", tiers: { explore: "sonnet", execute: "sonnet", escalate: "opus" }, scout: "not-a-scout" }) });
+    assert.equal((await bad.json()).scout, "", "a malformed value turns the scout off");
   });
 
   test("the GitHub button beside the folder pill stays hidden when the repository has no GitHub remote", () => {

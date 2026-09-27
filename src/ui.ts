@@ -32,6 +32,7 @@ import {
   unavailableReason,
   type ModelList,
   type ProviderName,
+  parseScout,
 } from "./providers/models.js";
 import { runTask, safeAbsPath } from "./runtime.js";
 import { acknowledgeUpdateNotes, applyUpdate, checkUpdate, pendingUpdateNotes, readVersion } from "./update.js";
@@ -306,7 +307,7 @@ export function startUi(opts: UiOptions) {
       const ga = globalAgent();
       let selection;
       try { selection = resolveSelection(ga); } catch { selection = resolveSelection(undefined); }
-      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? true, fallback: ga?.fallback ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: [] };
+      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? true, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: [] };
     }
     const p = paths(root);
     const initialized = existsSync(p.db);
@@ -339,6 +340,7 @@ export function startUi(opts: UiOptions) {
       runningTask: run?.running && run.root === root ? run.taskId : null,
       lead: effAgent(cfg)?.boss ?? true,
       fallback: effAgent(cfg)?.fallback ?? "",
+      scout: effAgent(cfg)?.scout ?? "",
       history: initialized ? taskHistory(p) : [],
       skills: listSkills(p),
       memory: openMemory(p).load().filter((e) => e.status === "active" && !e.external).map((e) => ({ id: e.id, type: e.type, text: e.text, reason: e.reason ?? "", date: e.date })),
@@ -376,6 +378,7 @@ export function startUi(opts: UiOptions) {
     let questionSeq = 0;
     emit({ type: "start", task, continueTask, lead, selection: `${sel.tiers.explore} → ${sel.tiers.execute} → ${sel.tiers.escalate} · effort ${sel.effort}` });
     runTask(p, task, {
+      scout: parseScout(effAgent(cfg)?.scout) ?? undefined,
       maxSteps,
       boss: lead,
       continueTask: continueTask ?? undefined,
@@ -582,6 +585,10 @@ export function startUi(opts: UiOptions) {
             if (body.fallback && isProvider(body.fallback) && body.fallback !== provider) next.fallback = body.fallback;
             else delete next.fallback;
           }
+          if (typeof body.scout === "string") {
+            if (parseScout(body.scout)) next.scout = body.scout;
+            else delete next.scout;
+          }
           if (p) {
             (cfg as any).agent = next;
             ensureDirs(p);
@@ -589,7 +596,7 @@ export function startUi(opts: UiOptions) {
           }
           // Also remembered globally so the next repo (or the next launch with no folder) starts here.
           mkdirSync(join(homedir(), ".narrowbit"), { recursive: true, mode: 0o700 });
-          writeFileSync(GLOBAL_AGENT, JSON.stringify({ provider, effort, models, boss: next.boss, fallback: next.fallback }, null, 2) + "\n", { mode: 0o600 });
+          writeFileSync(GLOBAL_AGENT, JSON.stringify({ provider, effort, models, boss: next.boss, fallback: next.fallback, scout: next.scout }, null, 2) + "\n", { mode: 0o600 });
           return json(res, 200, state());
         }
         case "/api/skills": {

@@ -1736,3 +1736,10 @@ describe("lead and reviewer on their own models", () => {
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 });
+
+test("scout setting: provider:model parses (model ids may contain colons) and rejects anything else", async () => {
+  const { parseScout } = await dist("providers/models.js");
+  assert.deepEqual(parseScout("codex:gpt-6-sol"), { provider: "codex", model: "gpt-6-sol" });
+  assert.deepEqual(parseScout("ollamacloud:gpt-oss:120b"), { provider: "ollamacloud", model: "gpt-oss:120b" });
+  for (const bad of ["", undefined, "gpt-6-sol", "nope:x", "codex:"]) assert.equal(parseScout(bad), null);
+});

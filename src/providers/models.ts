@@ -177,6 +177,15 @@ export interface Selection {
   effort: string;
 }
 
+/** "codex:gpt-6-sol" -> { provider, model }. The provider is everything before the first colon (model ids can contain colons). */
+export function parseScout(spec: string | undefined | null): { provider: ProviderName; model: string } | null {
+  const i = (spec ?? "").indexOf(":");
+  if (i < 1) return null;
+  const provider = spec!.slice(0, i);
+  const model = spec!.slice(i + 1).trim();
+  return isProvider(provider) && model ? { provider, model } : null;
+}
+
 export function resolveSelection(agent: AgentConfig | undefined, flags: SelectionFlags = {}): Selection {
   const provider = flags.provider ?? agent?.provider ?? "claude";
   if (!isProvider(provider)) throw new Error(`unknown provider "${provider}" (expected one of ${PROVIDERS.join(", ")})`);

@@ -18,7 +18,7 @@ import { Memory, openMemory, MEMORY_TYPES, renderMemory, type MemoryType } from 
 import { buildPackage } from "./package.js";
 import { initProject } from "./project.js";
 import { expandTask, grepText, outlineText, refsText, searchText, symbolText, testsText } from "./query.js";
-import { availableModels, DEFAULT_TIERS, EFFORT_LEVELS, isProvider, PHASES, PROVIDER_INFO, PROVIDERS, resolveSelection, unavailableReason, type Phase, type ProviderName, type Selection } from "./providers/models.js";
+import { availableModels, DEFAULT_TIERS, EFFORT_LEVELS, isProvider, parseScout, PHASES, PROVIDER_INFO, PROVIDERS, resolveSelection, unavailableReason, type Phase, type ProviderName, type Selection } from "./providers/models.js";
 import { keySource, setKey } from "./keys.js";
 import { fmtLimits, readLimits, refreshClaude, refreshCodex } from "./limits.js";
 import { checkReadiness, formatReadiness } from "./readiness.js";
@@ -58,7 +58,7 @@ function parseArgs(argv: string[]): Args {
 
 const VALUE_FLAGS = new Set([
   "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip",
-  "max-steps", "attach", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description", "env",
+  "max-steps", "attach", "scout", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description", "env",
 ]);
 
 const HELP = `narrowbit — minimum sufficient context for coding agents
@@ -85,6 +85,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
       [--provider <name>] [--model X | --explore X --execute X --escalate X]
       [--effort low|medium|high|xhigh|max] [--max-steps N] [--force] [--dry-run]
       [--allow-commands]   run shell commands without asking (default: ask before each one)
+      [--scout provider:model|none] research first on this model (default: the saved setting)
       [--attach a.png,b.pdf] show the model images or PDFs (sent on the first call only)
       [--test-first]       refuse the first source edit until a check has failed (or a test was edited)
       [--isolate]          work in a separate git worktree; your folder changes only when you run: narrowbit apply <task>
@@ -97,6 +98,7 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit models                    providers, numbered available models, and this repo's selection
   narrowbit models choose             pick provider, model 1 (explore), 2 (execute), 3 (escalate) and effort from numbered menus
   narrowbit models set <explore|execute|escalate|all> <model name or number> [--provider <name>]
+  narrowbit models set scout <provider:model|none>  research first on another model, e.g. codex:gpt-6-sol; the worker gets only its short report
   narrowbit models set fallback <provider|none>   a backup provider that takes over mid-task if the main one hits a limit or fails
   narrowbit models set provider <claude|codex>     narrowbit models set effort <level>
   narrowbit models reset [--provider <name>]   back to the built-in defaults
@@ -499,7 +501,14 @@ export async function main(argv: string[]): Promise<number> {
       };
       const attachments = (strFlag(args, "attach") ?? "").split(",").map((f) => f.trim()).filter(Boolean).map((f) => resolve(f));
       for (const f of attachments) if (!attachmentKind(f) || !existsSync(f)) throw new Error(`--attach: ${f} is not an existing image (png, jpg, gif, webp) or PDF`);
+      const scoutFlag = strFlag(args, "scout");
+      const scoutSpec = scoutFlag === "none" || scoutFlag === "off" ? undefined : (scoutFlag ?? cfg.agent?.scout);
+      if (scoutFlag && scoutFlag !== "none" && scoutFlag !== "off" && !parseScout(scoutFlag)) {
+        process.stderr.write("narrowbit: --scout must look like provider:model, for example codex:gpt-6-sol (or none)\n");
+        return 2;
+      }
       const result = await runTask(p, text, {
+        scout: parseScout(scoutSpec) ?? undefined,
         attachments,
         approve,
         ask,
@@ -746,7 +755,7 @@ export async function main(argv: string[]): Promise<number> {
       }
       const [key, value] = [pos[1], pos[2]];
       if (!key || !value) {
-        process.stderr.write("usage: narrowbit models set <explore|execute|escalate|all|provider|effort|fallback> <value> [--provider <name>]\n");
+        process.stderr.write("usage: narrowbit models set <explore|execute|escalate|all|provider|effort|fallback|scout> <value> [--provider <name>]\n");
         return 2;
       }
       if (key === "provider") {
@@ -761,6 +770,12 @@ export async function main(argv: string[]): Promise<number> {
           process.stderr.write(`narrowbit: unknown provider "${value}" (expected one of ${PROVIDERS.join(", ")}, or none)\n`);
           return 2;
         } else agent.fallback = value;
+      } else if (key === "scout") {
+        if (value === "none" || value === "off") delete agent.scout;
+        else if (!parseScout(value)) {
+          process.stderr.write(`narrowbit: scout must look like provider:model, for example codex:gpt-6-sol (or none)\n`);
+          return 2;
+        } else agent.scout = value;
       } else if (key === "effort") {
         agent.effort = value;
       } else if (key === "all" || (PHASES as readonly string[]).includes(key)) {

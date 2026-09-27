@@ -37,6 +37,9 @@ export interface AgentConfig {
   /** Backup provider (its saved models are used) that takes over mid-task if the main one fails with a limit, timeout or
    * server error — instead of ending the task. Idea from OmniRoute's fallback chain. Off unless set. */
   fallback?: string;
+  /** Research first on another model, as "provider:model" (e.g. "codex:gpt-6-sol"): it reads the repository in its own
+   * conversation and hands the worker a short report. Off unless set. See runtime.ts scoutPhase. */
+  scout?: string;
   /** Lead mode: model 3 plans the task up front and reviews the diff before "done". Default on. */
   boss?: boolean;
 }
