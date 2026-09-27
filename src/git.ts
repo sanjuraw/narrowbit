@@ -128,6 +128,28 @@ export function githubWebUrl(remote: string): { webUrl: string; repoName: string
 }
 
 /**
+ * Creates a new GitHub repository from this local one and adds it as `origin` — the "step 2, once you're
+ * ready to publish" half of starting a project; step 1 (a local folder + git init) never touches GitHub at
+ * all. Requires the `gh` CLI, signed in. Doesn't push — that's still the ordinary Push button, right after.
+ */
+export function createGithubRepo(root: string, name: string, opts: { private: boolean }): { ok: boolean; message: string } {
+  const gh = spawnSync("gh", ["auth", "status", "--hostname", "github.com"], { cwd: root, encoding: "utf8", timeout: 6000 });
+  if (gh.error && (gh.error as any).code === "ENOENT") return { ok: false, message: "The GitHub CLI (`gh`) isn't installed. Install it (brew install gh), run `gh auth login`, then try again." };
+  if (gh.status !== 0) return { ok: false, message: "Not signed in to GitHub. Run `gh auth login` in a terminal, then try again." };
+  const r = spawnSync("gh", ["repo", "create", name, opts.private ? "--private" : "--public", "--source=.", "--remote=origin"], {
+    cwd: root, encoding: "utf8", timeout: 30_000,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  });
+  const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`.trim();
+  if (r.status !== 0) {
+    if (/already exists/i.test(out)) return { ok: false, message: `A repository named "${name}" already exists on your account. Pick a different name.` };
+    return { ok: false, message: out.split("\n").slice(-4).join("\n") || "Creating the GitHub repository failed." };
+  }
+  const url = /(https:\/\/github\.com\/\S+)/.exec(out)?.[1] ?? null;
+  return { ok: true, message: url ? `Created ${url} and added it as origin.` : "Created the GitHub repository and added it as origin." };
+}
+
+/**
  * Push the current branch. Never forces, and never waits for a password: with no stored credentials git
  * fails at once and we say how to fix it, instead of hanging on a prompt nobody can see.
  */
@@ -135,7 +157,7 @@ export function pushBranch(root: string): { ok: boolean; message: string } {
   const branch = sh("git", ["rev-parse", "--abbrev-ref", "HEAD"], root).stdout.trim();
   if (!branch || branch === "HEAD") return { ok: false, message: "You're not on a branch (detached HEAD), so there's nothing to push to." };
   const info = remoteInfo(root);
-  if (!info.hasRemote) return { ok: false, message: "This repository has no remote. Add one with: git remote add origin <url>" };
+  if (!info.hasRemote) return { ok: false, message: "no-remote" };
   const args = info.upstream ? ["push"] : ["push", "-u", "origin", branch];
   const r = spawnSync("git", args, {
     cwd: root, encoding: "utf8", timeout: 90_000,

@@ -10,9 +10,10 @@ import { getConnector, listConnectors, publicConnector, removeConnector, saveCon
 import { completeSignIn, signOut, startSignIn } from "./oauth.js";
 import { applyIsolated, discardIsolated, readIsolated } from "./isolate.js";
 import { listCheckpoints, restoreCheckpoint } from "./checkpoints.js";
+import { createProjectFromDraft, draftsPaths, planningReply } from "./planning.js";
 import { findSkills } from "./skillimport.js";
 import { appendEvent, fold, readEvents, type Event } from "./events.js";
-import { changedSince, githubIdentity, gitState, pushBranch, remoteInfo } from "./git.js";
+import { changedSince, createGithubRepo, githubIdentity, gitState, pushBranch, remoteInfo } from "./git.js";
 import { listConnectorTools } from "./mcpClient.js";
 import { initProject } from "./project.js";
 import { keySource, setKey } from "./keys.js";
@@ -36,7 +37,7 @@ import {
   type ProviderName,
   parseScout,
 } from "./providers/models.js";
-import { runTask, safeAbsPath } from "./runtime.js";
+import { providerCallFor, runTask, safeAbsPath } from "./runtime.js";
 import { acknowledgeUpdateNotes, applyUpdate, checkUpdate, pendingUpdateNotes, readVersion } from "./update.js";
 import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
@@ -309,7 +310,7 @@ export function startUi(opts: UiOptions) {
       const ga = globalAgent();
       let selection;
       try { selection = resolveSelection(ga); } catch { selection = resolveSelection(undefined); }
-      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? false, reviewOnly: !!ga?.reviewOnly, planApproval: !!ga?.planApproval, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: [] };
+      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? false, reviewOnly: !!ga?.reviewOnly, planApproval: !!ga?.planApproval, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: taskHistory(draftsPaths()) };
     }
     const p = paths(root);
     const initialized = existsSync(p.db);
@@ -557,6 +558,15 @@ export function startUi(opts: UiOptions) {
         return json(res, 200, { id, events: readEvents(paths(root), id), running: !!run?.running && run.taskId === id });
       }
 
+      // Planning drafts: conversations before any project exists (planning.ts). Work with no repository
+      // open at all — that's the whole point — so these never gate on `root`.
+      if (route === "GET /api/plan") return json(res, 200, { drafts: taskHistory(draftsPaths()) });
+      if (req.method === "GET" && url.pathname.startsWith("/api/plan/")) {
+        const id = url.pathname.slice("/api/plan/".length);
+        if (!/^pl-[\w-]+$/.test(id)) return json(res, 400, { error: "bad draft id" });
+        return json(res, 200, { id, events: readEvents(draftsPaths(), id) });
+      }
+
       if (req.method !== "POST") return json(res, 404, { error: "not found" });
       const body = await readBody(req, url.pathname === "/api/attach" ? 20_000_000 : 1_000_000);
 
@@ -572,6 +582,42 @@ export function startUi(opts: UiOptions) {
           run = null;
           saveRecent(r);
           return json(res, 200, state());
+        }
+        case "/api/plan": {
+          // Discuss a project before it exists: no repo, no files, just the model replying. Always uses the
+          // global model choice (there's no per-repo config yet — there's no repo).
+          const task = String(body.task ?? "").trim();
+          if (!task) return json(res, 400, { error: "say something first" });
+          const continueTask = typeof body.continueTask === "string" && /^pl-[\w-]+$/.test(body.continueTask) ? body.continueTask : undefined;
+          const ga = globalAgent();
+          let sel;
+          try {
+            sel = resolveSelection(ga);
+          } catch (e: any) {
+            return json(res, 400, { error: e.message });
+          }
+          const unavailable = unavailableReason(sel, ga);
+          if (unavailable) return json(res, 400, { error: unavailable });
+          const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.execute, sel.effort);
+          if (r.isError) return json(res, 400, { error: r.errorMessage ?? "the model call failed", taskId: r.taskId });
+          return json(res, 200, { taskId: r.taskId, reply: r.text });
+        }
+        case "/api/plan/create": {
+          if (run?.running) return json(res, 409, { error: "stop the running task before switching repositories" });
+          const id = String(body.taskId ?? "");
+          if (!/^pl-[\w-]+$/.test(id)) return json(res, 400, { error: "bad draft id" });
+          const dir = resolve(String(body.path ?? "").replace(/^~(?=$|\/)/, homedir()));
+          if (dir === homedir()) return json(res, 400, { error: "refusing to use your home folder as a project" });
+          let created: { root: string; seedTask: string };
+          try {
+            created = createProjectFromDraft(id, dir);
+          } catch (e: any) {
+            return json(res, 400, { error: e.message });
+          }
+          root = created.root;
+          run = null;
+          saveRecent(created.root);
+          return json(res, 200, { ...state(), seedTask: created.seedTask });
         }
         case "/api/init": {
           if (!root) return json(res, 400, { error: "no repository open" });
@@ -629,6 +675,22 @@ export function startUi(opts: UiOptions) {
           if (!root) return json(res, 400, { error: "no repository open" });
           if (run?.running) return json(res, 409, { error: "wait for the task to finish" });
           const r = pushBranch(root);
+          if (!r.ok) {
+            // A brand-new local project has no remote yet: offer to create one on GitHub (a separate, explicit
+            // step) instead of a dead-end error telling the user to run git by hand.
+            if (r.message === "no-remote") return json(res, 409, { error: "no-remote", suggestedName: basename(root) });
+            return json(res, 400, { error: r.message });
+          }
+          return json(res, 200, { message: r.message, state: state() });
+        }
+        case "/api/github/create-repo": {
+          // Publishing is a separate, explicit action from creating the project — never automatic (see
+          // planning.ts's createProjectFromDraft, which only ever does a local git init).
+          if (!root) return json(res, 400, { error: "no repository open" });
+          if (run?.running) return json(res, 409, { error: "wait for the task to finish" });
+          const name = String(body.name ?? "").trim();
+          if (!/^[\w.-]+$/.test(name)) return json(res, 400, { error: "give this repo a name using only letters, numbers, - . and _" });
+          const r = createGithubRepo(root, name, { private: body.private !== false });
           if (!r.ok) return json(res, 400, { error: r.message });
           return json(res, 200, { message: r.message, state: state() });
         }

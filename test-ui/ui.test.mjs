@@ -294,9 +294,69 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.match(card.textContent, /claude auth login|isn't installed/);
   });
 
-  test("the composer can't send with no folder, and says why", () => {
+  test("with no folder and no provider signed in, the composer stays disabled and says why", () => {
+    // No longer gated on "choose a folder" specifically — planning a project needs no folder at all (see
+    // the describe block below); what actually blocks sending here is that nothing is signed in yet.
     assert.equal(page.$("sendBtn").disabled, true);
-    assert.match(page.$("hint").textContent, /Choose a folder/);
+    assert.match(page.$("hint").textContent, /isn't logged in|not signed in|isn't installed|needs an API key/);
+  });
+});
+
+describe("planning a project before any folder exists (stand-in model, no network)", () => {
+  let home, fakeDir, app, page;
+  before(async () => {
+    home = fresh("home"); fakeDir = fresh("fake");
+    writeFileSync(join(fakeDir, "replies.json"), JSON.stringify([
+      "Sounds good — a small CLI tool. What language do you want to use?",
+      "Got it, Python it is. I'd suggest argparse for the CLI and a src/ layout.",
+    ]));
+    writeFileSync(join(fakeDir, "claude"), `#!/usr/bin/env node
+// The app's own readiness check calls "claude auth status" on page load, on the same binary — answer that
+// without touching the reply counter below, or it races the test's own send and steals a reply by chance.
+if (process.argv[2] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
+const fs = require("fs"); const d = ${JSON.stringify(fakeDir)};
+const c = d + "/count"; const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
+const r = JSON.parse(fs.readFileSync(d + "/replies.json", "utf8")); const text = r[Math.min(n, r.length - 1)];
+const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+console.log(JSON.stringify({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
+`, { mode: 0o755 });
+    // A fresh HOME has no global git identity — Create Project's own commit needs one, same as any real
+    // machine would (the app tells the user to set this up rather than guessing an identity for them).
+    execFileSync("git", ["config", "--global", "user.email", "t@t.t"], { env: { ...process.env, HOME: home } });
+    execFileSync("git", ["config", "--global", "user.name", "t"], { env: { ...process.env, HOME: home } });
+    app = await startApp({ cwd: home, home, env: { NARROWBIT_CLAUDE: join(fakeDir, "claude") } });
+    page = await openPage(app.url);
+    await page.until(() => page.$("crumbName").textContent, "the folder pill to render");
+  });
+  after(() => { page?.close(); app?.stop(); for (const d of [home, fakeDir]) rmSync(d, { recursive: true, force: true }); });
+
+  test("the composer works with no folder open, and the reply renders like an ordinary message", async () => {
+    assert.equal(page.$("sendBtn").disabled, false, "sending doesn't need a folder");
+    page.$("input").value = "I want to build a small CLI tool";
+    page.$("sendBtn").click();
+    await page.until(() => page.w.document.querySelector(".final"), "the model's reply");
+    assert.match(page.w.document.querySelector(".final").textContent, /small CLI tool|language/);
+    assert.ok(!page.$("createProjectBar").classList.contains("hidden"), "Create project appears once there's a reply");
+  });
+
+  test("the draft is listed in the sidebar and can be reopened", async () => {
+    const sess = await page.until(() => [...page.w.document.querySelectorAll("#sessions .sess")].find((s) => /CLI tool/.test(s.textContent)), "the draft in the sidebar");
+    page.$("newBtn").click();
+    assert.equal(page.w.document.querySelector(".final"), null, "a fresh draft starts blank");
+    sess.click();
+    await page.until(() => page.w.document.querySelector(".final"), "the reopened draft's reply");
+  });
+
+  test("Create project turns the draft into a real local git repo — no GitHub involved — and seeds the first task", async () => {
+    const target = join(home, "Projects", "cli-tool-test");
+    page.$("cpbarOpen").click();
+    page.$("cpbarName").value = target;
+    page.$("cpbarCreate").click();
+    await page.until(() => page.$("crumbName") && page.$("crumbName").textContent.indexOf("cli-tool-test") === 0, "the app to switch into the new project");
+    assert.ok(existsSync(join(target, ".git")), "a real git repo was created");
+    assert.equal(execFileSync("git", ["remote"], { cwd: target }).toString().trim(), "", "no GitHub remote — creating one is a separate, later step");
+    assert.match(page.$("input").value, /CLI tool|language|Python/i, "the discussion was seeded into the composer, not auto-sent");
   });
 });
 

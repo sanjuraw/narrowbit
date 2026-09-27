@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { loadConfig, type Paths } from "./config.js";
+import { loadConfig, type AgentConfig, type Paths } from "./config.js";
 import { parseMentions, renderMentions, resolveMentions } from "./mentions.js";
 import { checkpointNow } from "./checkpoints.js";
 import { capOutput, runCommand } from "./compress.js";
@@ -431,6 +431,14 @@ async function discoverConnectors(): Promise<string> {
   return `\n\nConnected external tools:\n${lines.join("\n")}`;
 }
 
+/** Which adapter a call to `provider` actually goes through — an endpoint-configured API/local server if
+ * one's set for it, else the provider's own CLI adapter. The one place this branch is written, reused by
+ * the main loop and by planning.ts's rootless chat, which needs a model call but not the rest of the loop. */
+export function providerCallFor(prov: ProviderName, agent?: AgentConfig): (o: ModelCallOptions) => Promise<ModelCallResult> {
+  const ep = resolveEndpoint(prov, agent);
+  return ep ? (o: ModelCallOptions) => callOpenAICompat(ep, o) : prov === "codex" ? callCodex : prov === "antigravity" ? callAntigravity : callModel;
+}
+
 const MAX_PARSE_RETRIES = 3;
 /** Consecutive run/verify actions without an intervening edit before the loop nudges instead of letting it spin. */
 const STALL_THRESHOLD = 4;
@@ -460,11 +468,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const unavailable = unavailableReason({ provider, tiers, effort }, cfg.agent);
   if (unavailable) throw new Error(unavailable);
   const endpoint = resolveEndpoint(provider, cfg.agent);
-  const callFor = (prov: ProviderName) => {
-    const ep = resolveEndpoint(prov, cfg.agent);
-    return ep ? (o: ModelCallOptions) => callOpenAICompat(ep, o) : prov === "codex" ? callCodex : prov === "antigravity" ? callAntigravity : callModel;
-  };
-  let call = endpoint ? (o: ModelCallOptions) => callOpenAICompat(endpoint, o) : provider === "codex" ? callCodex : provider === "antigravity" ? callAntigravity : callModel;
+  const callFor = (prov: ProviderName) => providerCallFor(prov, cfg.agent);
+  let call = callFor(provider);
   // A configured backup provider: taken only if it is ready, and only once per task.
   let fallback: { provider: ProviderName; tiers: ModelTiers } | null = null;
   if (cfg.agent?.fallback && cfg.agent.fallback !== provider) {

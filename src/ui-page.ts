@@ -147,6 +147,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .topbar { height: 48px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid transparent; }
 .topbar.scrolled { border-bottom-color: var(--line); }
 .topbar .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.cpbar { max-width: 780px; margin: 0 auto 8px; background: var(--accent-soft); border-radius: 12px; padding: 10px 14px; }
+.cpbar-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.cpbar-row input { flex: 1; min-width: 0; font-size: 13px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
 .crumb-wrap { max-width: 780px; margin: 0 auto 8px; }
 .crumb { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--panel-2); border: 1px solid var(--line); text-align: left; }
 .crumb:hover { background: var(--line); }
@@ -465,6 +468,18 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       </div>
     </div>
     <div class="composer-wrap">
+      <div class="cpbar hidden" id="createProjectBar">
+        <div class="cpbar-row" id="cpbarAsk">
+          <span>Ready to start building this for real?</span>
+          <button class="primary" id="cpbarOpen">Create project</button>
+        </div>
+        <div class="cpbar-row hidden" id="cpbarForm">
+          <input type="text" id="cpbarName" placeholder="Project name (e.g. my-app)" class="mono">
+          <button class="primary" id="cpbarCreate">Create</button>
+          <button class="link" id="cpbarCancel">Cancel</button>
+        </div>
+        <div class="note hidden" id="cpbarErr" style="color:var(--bad)"></div>
+      </div>
       <div class="crumb-wrap" id="crumbWrap"><button class="crumb" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button> <button class="crumb hidden" id="ghCrumb" title="Open this repository on GitHub"><span class="ci">⎇</span><span id="ghName"></span></button></div>
       <div class="composer">
         <div id="banner" class="banner hidden"></div>
@@ -685,7 +700,14 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     renderRepo();
     renderVersion();
     show($("repoOverlay"), false);
-    if (!S.root) { show($("welcome"), true); show($("setupCard"), false); if (S.providers) { draft = { root: null, provider: S.selection.provider, effort: S.selection.effort }; renderSettings(); renderConnectors(); renderGetStarted(); } renderComposer(); return; }
+    if (!S.root) {
+      show($("welcome"), !view || !view.taskId);
+      show($("setupCard"), false);
+      if (S.providers) { draft = { root: null, provider: S.selection.provider, effort: S.selection.effort }; renderSettings(); renderConnectors(); renderGetStarted(); }
+      renderSessions(); renderComposer();
+      if (first) newTask();
+      return;
+    }
     if (!draft || draft.root !== S.root) draft = { root: S.root, provider: S.selection.provider, effort: S.selection.effort };
     run.active = S.running; if (S.running) run.taskId = S.runningTask;
     renderSessions(); renderSettings(); renderComposer(); renderSkills(); renderMemory(); renderConnectors(); renderGetStarted();
@@ -739,14 +761,15 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function showToast(text) { var n = el("div", { cls: "notice", text: text }); add(n); }
   function renderSessions() {
     var box = clear($("sessions"));
-    if (!S || !S.history || !S.history.length) { box.appendChild(el("div", { cls: "muted", style: "font-size:12.5px;padding:6px 10px", text: "No sessions yet." })); return; }
+    var drafting = !(S && S.root);
+    if (!S || !S.history || !S.history.length) { box.appendChild(el("div", { cls: "muted", style: "font-size:12.5px;padding:6px 10px", text: drafting ? "No conversations yet — describe what you want to build." : "No sessions yet." })); return; }
     S.history.forEach(function (r) {
       var live = run.active && run.taskId === r.id;
-      var b = el("button", { cls: "sess" + (view && view.taskId === r.id ? " on" : ""), title: r.goal, onclick: function () { openSession(r.id); closeSide(); } },
+      var b = el("button", { cls: "sess" + (view && view.taskId === r.id ? " on" : ""), title: r.goal, onclick: function () { if (drafting) openDraft(r.id); else openSession(r.id); closeSide(); } },
         el("div", { cls: "st" }, el("span", { cls: "dot o-" + (live ? "running" : r.outcome) }), el("span", { text: r.goal })),
         el("div", { cls: "sm", text: (live ? "running" : ago(r.last)) + (r.turns > 1 ? " · " + r.turns + " messages" : "") + " · " + fmt(r.tokens) + " tok" }));
       var row = el("div", { cls: "sess-row" }, b);
-      if (!live) {
+      if (!live && !drafting) {
         row.appendChild(el("div", { cls: "sess-acts" },
           el("button", { title: "Rename", "aria-label": "Rename", onclick: function (e) { e.stopPropagation(); renameSession(r, row, b); } }, "✎"),
           el("button", { cls: "danger", title: "Delete", "aria-label": "Delete", onclick: function (e) { e.stopPropagation(); confirmDelete(r, row, b); } }, "🗑")));
@@ -1325,10 +1348,11 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     show($("compactBtn"), !!(view && view.taskId));
     show($("stopBtn"), viewingRun());
     show($("sendBtn"), !viewingRun());
-    $("sendBtn").disabled = !S || !S.root || !S.initialized || busy || !!(P && P.unavailable);
+    $("sendBtn").disabled = !S || (!!S.root && !S.initialized) || busy || !!(P && P.unavailable);
     $("leadTog").checked = !!(S && S.lead);
-    input.placeholder = view && view.taskId ? "Ask for a follow-up or a change…" : "Describe a task…";
-    $("hint").textContent = !S || !S.root ? "Choose a folder above to get started" : busy && !viewingRun() ? "Another task is running — open it from the sidebar to watch or stop it." : P && P.unavailable ? P.unavailable : "Enter to send · Shift+Enter for a new line";
+    input.placeholder = view && view.taskId ? "Ask for a follow-up or a change…" : S && S.root ? "Describe a task…" : "What do you want to build? Let's talk it through…";
+    $("hint").textContent = !S ? "" : busy && !viewingRun() ? "Another task is running — open it from the sidebar to watch or stop it." : P && P.unavailable ? P.unavailable : !S.root ? "Enter to send · No folder needed yet — we'll create one when you're ready" : "Enter to send · Shift+Enter for a new line";
+    if (S && S.root) show($("createProjectBar"), false);
   }
   var attached = [];
   function renderAttached() {
@@ -1366,9 +1390,33 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (t === "drop" && e.dataTransfer && e.dataTransfer.files.length) attachFiles(e.dataTransfer.files);
     });
   });
+  function sendDraft(text) {
+    banner("", null);
+    var cont = view && view.taskId ? view.taskId : null;
+    input.value = ""; autosize();
+    var wasNew = !cont;
+    if (wasNew) resetView(null);
+    add(el("div", { cls: "msg-user" }, el("div", { cls: "bubble" }, rich(text))), true);
+    var thinking = add(el("div", { cls: "working" }, el("span", { cls: "spark" }), el("span", { cls: "shimmer", text: "Thinking…" })), true);
+    $("sendBtn").disabled = true;
+    api("/api/plan", { task: text, continueTask: cont }).then(function (r) {
+      thinking.remove();
+      $("sendBtn").disabled = false;
+      if (!view || (cont && view.taskId !== cont)) return;
+      if (wasNew) { view.taskId = r.taskId; show($("welcome"), false); }
+      add(el("div", { cls: "final-wrap" }, el("div", { cls: "final" }, rich(r.reply))));
+      show($("createProjectBar"), true);
+      load();
+    }).catch(function (e) {
+      thinking.remove();
+      $("sendBtn").disabled = false;
+      banner("bad", e.message);
+    });
+  }
   function send(force) {
     var text = input.value.trim();
     if (!text || $("sendBtn").disabled) return;
+    if (S && !S.root) { sendDraft(text); return; }
     banner("", null);
     var cont = view && view.taskId ? view.taskId : null;
     // The server logs the task's first event before this request returns, so the view must already
@@ -1428,7 +1476,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     updateUsage();
     renderComposer();
   }
-  function newTask() { resetView(null); renderSessions(); input.focus(); closeSide(); }
+  function newTask() { resetView(null); show($("createProjectBar"), false); renderSessions(); input.focus(); closeSide(); }
   $("newBtn").onclick = newTask;
   document.addEventListener("keydown", function (e) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); newTask(); }
@@ -1450,6 +1498,21 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (d.running) setWorking("Working…"); else loadChanges();
       scroller.scrollTop = scroller.scrollHeight;
       renderComposer();
+    }).catch(function (e) { banner("bad", e.message); });
+  }
+  // Planning drafts (planning.ts): a conversation before any project exists. Reuses the same event shape
+  // a pure-answer task already produces (a plain "done: " reply, no tool calls), so renderEvent() and the
+  // rest of the thread view work unchanged — this only has its own send()/open() plumbing, not its own UI.
+  function openDraft(id) {
+    resetView(id);
+    renderSessions();
+    show($("createProjectBar"), false);
+    api("/api/plan/" + encodeURIComponent(id)).then(function (d) {
+      if (!view || view.taskId !== id) return;
+      d.events.forEach(function (e) { renderEvent(e, true); });
+      scroller.scrollTop = scroller.scrollHeight;
+      renderComposer();
+      show($("createProjectBar"), d.events.some(function (e) { return e.type === "decision" && e.actor === "model" && e.summary.indexOf("done: ") === 0; }));
     }).catch(function (e) { banner("bad", e.message); });
   }
 
@@ -1624,6 +1687,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       var t = e.tokens.inputTokens + e.tokens.cacheCreationTokens + e.tokens.cacheReadTokens + e.tokens.outputTokens;
       view.tokens += t; view.cost += e.tokens.costUsd; view.segTokens += t; view.segCost += e.tokens.costUsd;
       updateUsage();
+      // Planning drafts (planning.ts) have no separate "done: " decision event — the reply lives on this
+      // event's own summary — so replaying a draft must render it here, unlike a normal task's model_call.
+      if (e.actor === "model" && e.summary.indexOf("done: ") === 0) {
+        var draftAnswer = e.summary.slice(6);
+        add(el("div", { cls: "final-wrap" }, el("div", { cls: "final" }, rich(draftAnswer))));
+      }
       return;
     }
     if (e.type === "decision" && e.actor === "user") {
@@ -2003,6 +2072,31 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       banner("bad", e.message);
     });
   }
+  // Turning a planning draft into a real project: local only (git init, one commit) — publishing to
+  // GitHub is a separate, later step from the Push flow, not part of this.
+  $("cpbarOpen").onclick = function () { show($("cpbarAsk"), false); show($("cpbarForm"), true); $("cpbarName").focus(); };
+  $("cpbarCancel").onclick = function () { show($("cpbarForm"), false); show($("cpbarAsk"), true); show($("cpbarErr"), false); };
+  function createProject() {
+    var v = $("cpbarName").value.trim();
+    if (!v) { $("cpbarName").focus(); return; }
+    var path = /^[~/]/.test(v) ? v : "~/Projects/" + v;
+    $("cpbarCreate").disabled = true;
+    api("/api/plan/create", { taskId: view.taskId, path: path }).then(function (st) {
+      if (es) { es.close(); es = null; }
+      draft = null; S = null; modelLists = {};
+      var seed = st.seedTask;
+      delete st.seedTask;
+      apply(st);
+      resetView(null);
+      if (seed) { input.value = seed; autosize(); }
+      showToast("Project created at " + path + " — review the message below, then send it to start building.");
+    }).catch(function (e) {
+      $("cpbarCreate").disabled = false;
+      var n = $("cpbarErr"); n.textContent = e.message; show(n, true);
+    });
+  }
+  $("cpbarCreate").onclick = createProject;
+  $("cpbarName").addEventListener("keydown", function (e) { if (e.key === "Enter") createProject(); });
   $("repoBtn").onclick = function () { openRepoPicker(true); };
   $("crumb").onclick = function () { openRepoPicker(true); };
   $("ghCrumb").onclick = function () {
