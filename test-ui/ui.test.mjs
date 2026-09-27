@@ -239,6 +239,22 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.equal(root.getAttribute("data-theme"), null);
   });
 
+  test("the top-right theme button cycles auto → light → dark → auto, in sync with the settings dropdown", () => {
+    const btn = page.$("themeBtn");
+    const sel = page.$("themeSel");
+    const root = page.w.document.documentElement;
+    sel.value = "auto"; sel.dispatchEvent(new page.w.Event("change"));
+    btn.click();
+    assert.equal(root.getAttribute("data-theme"), "light");
+    assert.equal(sel.value, "light", "the dropdown reflects the button's change");
+    btn.click();
+    assert.equal(root.getAttribute("data-theme"), "dark");
+    assert.equal(sel.value, "dark");
+    btn.click();
+    assert.equal(root.getAttribute("data-theme"), null, "back to auto");
+    assert.equal(sel.value, "auto");
+  });
+
   test("the version is visible in the sidebar and in About", () => {
     assert.match(page.$("verLine").textContent, /^Narrowbit v\d+\.\d+\.\d+/);
     assert.match(page.$("aboutInfo").textContent, /Narrowbit v\d+\.\d+\.\d+/);

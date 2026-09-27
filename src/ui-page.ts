@@ -60,6 +60,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.07); }
 button.ghost { border-color: transparent; background: transparent; }
 button.ghost:hover:not(:disabled) { background: var(--panel-2); }
+#themeBtn { width: 32px; height: 32px; padding: 0; display: grid; place-items: center; font-size: 15px; border-radius: 8px; flex: none; }
 button.danger { color: var(--bad); }
 button.danger.armed { background: var(--bad); border-color: var(--bad); color: #fff; }
 button.link { border: 0; background: none; padding: 0; color: var(--accent); }
@@ -359,6 +360,31 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .check { display: flex; gap: 9px; align-items: flex-start; margin: 8px 0; font-size: 13px; }
 .check input { margin-top: 3px; accent-color: var(--accent); }
 .check small { display: block; color: var(--muted); font-size: 12px; }
+.sgroup { border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); padding: 0 12px; margin: 8px 0; }
+.sindent { margin: 0 0 4px 16px; padding-left: 12px; border-left: 2px solid var(--line); }
+.trow { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 11px 0; font-size: 13px; cursor: pointer; }
+.trow + .trow, .sgroup .sindent { border-top: 1px solid var(--line); }
+.trow.sub { padding: 8px 0; font-size: 12.5px; }
+.trow.dim { cursor: default; }
+.trow.dim .tt { opacity: .45; }
+.trow.sub + .trow.sub { border-top: 1px solid var(--line); }
+.trow .tt { flex: 1; min-width: 0; }
+.trow .tt strong { font-weight: 600; }
+.trow small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; line-height: 1.4; }
+.switch { position: relative; flex: none; width: 34px; height: 20px; margin-top: 1px; }
+.switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.switch i { position: absolute; inset: 0; background: var(--line-2); border-radius: 999px; transition: background .15s; pointer-events: none; }
+.switch i::before { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: #fff; border-radius: 50%; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+.switch input:checked + i { background: var(--accent); }
+.switch input:checked + i::before { transform: translateX(14px); }
+.switch input:disabled + i { opacity: .4; }
+.switch input:disabled ~ * { cursor: default; }
+.switch input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px; }
+.frow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 0; font-size: 13px; }
+.frow + .frow { border-top: 1px solid var(--line); }
+.frow label { font-weight: 600; }
+.frow small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; margin-top: 2px; line-height: 1.4; }
+.frow select { flex: none; width: 160px; min-width: 0; }
 .note { font-size: 12px; color: var(--warn); margin-top: 6px; }
 .saved { font-size: 12px; color: var(--ok); min-height: 16px; }
 .overlay { position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 70%, transparent); backdrop-filter: blur(6px); display: grid; place-items: center; z-index: 40; padding: 16px; }
@@ -412,6 +438,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <button class="pill hidden" id="planMini"></button>
       <span class="pill hidden" id="treePill"></span>
       <button class="pill warn hidden" id="pushPill" title="Push your commits to the remote"></button>
+      <button class="ghost" id="themeBtn" aria-label="Theme"></button>
     </div>
     <div class="scroll" id="scroll">
       <div class="thread" id="thread">
@@ -473,12 +500,22 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <div class="field"><label for="maxSteps">Max steps</label><input type="number" id="maxSteps" min="1" max="100" value="20"></div>
     </div>
     <h3>Behaviour</h3>
-    <label class="check"><input type="checkbox" id="leadChk"><span>Lead mode<small>Model 3 writes a plan before work starts and reviews the diff before it's reported done. Two extra calls to your strongest model per task.</small></span></label>
-    <label class="check"><input type="checkbox" id="reviewOnlyChk"><span>Review only<small>Skip the plan call; still review the diff before "done" — pair with a Scout for a cheaper second opinion. Off while Lead mode is on.</small></span></label>
-    <label class="check"><input type="checkbox" id="planApprovalChk"><span>Approve plan first<small>With Lead mode, show you the plan before work starts — approve it, or ask for changes (one round). Needs Lead mode on.</small></span></label>
-    <label class="check"><input type="checkbox" id="askChk"><span>Ask before running commands<small>Reads, edits and verify run freely; shell commands wait for you.</small></span></label>
-    <div class="field" style="margin-top:10px"><label for="fallbackSel">Backup — if this provider hits a limit or fails, continue on</label><select id="fallbackSel"></select></div>
-    <div class="field" style="margin-top:10px"><label for="scoutSel">Scout — a cheaper model reads the code first and hands the worker a short report</label><select id="scoutSel"></select></div>
+    <div class="sgroup">
+      <label class="trow"><span class="tt"><strong>Lead mode</strong><small>Model 3 writes a plan before work starts and reviews the diff before it's reported done. Two extra calls to your strongest model per task.</small></span><span class="switch"><input type="checkbox" id="leadChk"><i></i></span></label>
+      <div class="sindent">
+        <label class="trow sub"><span class="tt">Approve plan first<small>Show you the plan before work starts — approve it, or ask for changes (one round). Needs Lead mode on.</small></span><span class="switch"><input type="checkbox" id="planApprovalChk"><i></i></span></label>
+        <label class="trow sub"><span class="tt">Review only<small>Skip the plan call; still review the diff before "done" — pair with a Scout for a cheaper second opinion. Off while Lead mode is on.</small></span><span class="switch"><input type="checkbox" id="reviewOnlyChk"><i></i></span></label>
+      </div>
+    </div>
+    <div class="sgroup">
+      <label class="trow"><span class="tt">Ask before running commands<small>Reads, edits and verify run freely; shell commands wait for you.</small></span><span class="switch"><input type="checkbox" id="askChk"><i></i></span></label>
+    </div>
+
+    <h3>Routing</h3>
+    <div class="sgroup">
+      <div class="frow"><label for="fallbackSel">Backup<small>If this provider hits a limit or fails, continue on</small></label><select id="fallbackSel"></select></div>
+      <div class="frow"><label for="scoutSel">Scout<small>A cheaper model reads the code first and hands the worker a short report</small></label><select id="scoutSel"></select></div>
+    </div>
     <div class="note hidden" id="providerNote"></div>
     <div class="saved" id="savedMsg"></div>
 
@@ -548,14 +585,28 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 <script>
 (function () {
   var sel = document.getElementById("themeSel");
-  var cur = "auto";
-  try { cur = localStorage.getItem("nb-theme") || "auto"; } catch (e) {}
-  sel.value = cur;
-  sel.addEventListener("change", function () {
-    try { localStorage.setItem("nb-theme", sel.value); } catch (e) {}
-    if (sel.value === "auto") document.documentElement.removeAttribute("data-theme");
-    else document.documentElement.setAttribute("data-theme", sel.value);
-  });
+  var btn = document.getElementById("themeBtn");
+  var mq = window.matchMedia("(prefers-color-scheme: dark)");
+  function get() { try { return localStorage.getItem("nb-theme") || "auto"; } catch (e) { return "auto"; } }
+  function resolved(v) { return v === "auto" ? (mq.matches ? "dark" : "light") : v; }
+  function render() {
+    var v = get();
+    var r = resolved(v);
+    btn.textContent = r === "dark" ? "☾" : "☀";
+    btn.title = "Theme: " + (v === "auto" ? "Match my Mac (currently " + r + ")" : v[0].toUpperCase() + v.slice(1)) + " — click to change";
+    if (sel.value !== v) sel.value = v;
+  }
+  function apply(v) {
+    try { localStorage.setItem("nb-theme", v); } catch (e) {}
+    if (v === "auto") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", v);
+    render();
+  }
+  sel.value = get();
+  sel.addEventListener("change", function () { apply(sel.value); });
+  btn.addEventListener("click", function () { apply({ auto: "light", light: "dark", dark: "auto" }[get()]); });
+  mq.addEventListener("change", render);
+  render();
 })();
 (function () {
   "use strict";
@@ -1120,8 +1171,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     $("leadChk").checked = S.lead;
     $("reviewOnlyChk").checked = !!S.reviewOnly;
     $("reviewOnlyChk").disabled = S.lead;
+    $("reviewOnlyChk").closest(".trow").classList.toggle("dim", S.lead);
     $("planApprovalChk").checked = !!S.planApproval;
     $("planApprovalChk").disabled = !S.lead;
+    $("planApprovalChk").closest(".trow").classList.toggle("dim", !S.lead);
     var notes = [];
     if (P.unavailable) notes.push(P.unavailable);
     if (list && !list.models.length) notes.push(list.note);
