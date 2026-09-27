@@ -234,6 +234,8 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.ok(box, "the callout exists");
     assert.match(box.textContent, /75-90%/);
     assert.match(box.textContent, /native Claude Code/);
+    assert.match(box.textContent, /63%/);
+    assert.match(box.textContent, /native Codex/);
     assert.match(box.textContent, /ranked against\s*Solo/);
   });
 

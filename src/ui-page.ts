@@ -507,7 +507,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <div class="field"><label for="maxSteps">Max steps</label><input type="number" id="maxSteps" min="1" max="100" value="20"></div>
     </div>
     <h3>Behaviour<span class="chip" id="modeLabel"></span></h3>
-    <div class="callout">Solo (nothing below turned on) already used <strong>~75-90% fewer tokens</strong> than a native Claude Code session, in our tests (Hono, 15-40 tasks, equal or better success — see the README). <strong>Everything below is ranked against Solo</strong>, not against the native app: saves some, then no change, then costs more.</div>
+    <div class="callout">Solo (nothing below turned on) already used <strong>~75-90% fewer tokens than native Claude Code</strong> and <strong>~63% fewer than native Codex</strong>, in our tests (Hono, 10-40 tasks, equal success — see the README). <strong>Everything below is ranked against Solo</strong>, not against the native app: saves some, then no change, then costs more.</div>
     <div class="sgroup">
       <div class="frow"><label for="scoutSel">Scout<span class="impact save">saves ~25-30%</span><small>A cheaper model reads the code first and hands the worker a short report. Spends a different provider's usage to save this one's.</small></label><select id="scoutSel"></select></div>
     </div>

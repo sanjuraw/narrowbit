@@ -51,6 +51,7 @@ Measured on `honojs/hono`: 40 tasks mined from real commits (start at the parent
 - **Vs. Claude Code + Narrowbit's own MCP tools** (n=40, Claude): 39/40 (baseline 40/40), ~90% fewer input tokens, ~56% lower notional cost.
 - **Vs. plain native Claude Code** (n=15 subset, earlier loop version): 15/15 both, ~75% fewer tokens, about half the cost.
 - **Codex, full 40 tasks:** 40/40 with a single model (`gpt-6-sol`) in all three slots, 63k mean input tokens, 5.3 turns.
+- **Vs. raw `codex exec` (n=10, no Narrowbit — its own tools, one turn to completion):** 10/10 both, ~63% fewer tokens through Narrowbit (69k mean vs 186k).
 - **DeepSeek V4.1 Flash, direct:** 39/40, ~87k mean input, est. $0.22 for all 40 at list prices.
 - **Mixing models mostly didn't pay off.** Routing cheap-explore → expensive-execute (Claude Haiku→Sonnet→Opus, or Codex Luna→Sol) lost to one good model doing the whole task, both times measured — switching models mid-conversation rewrites the prompt cache, and a weaker explorer needs more turns than a stronger model needs for everything. A cheap model researching in its *own* separate conversation and handing the worker a short report (the `scout` option) did help once, on 10 tasks: Codex Sol scouting, Claude Sonnet working, cut Claude's own cost per task by ~57% at equal-or-better success — at the price of spending a second plan's quota.
 - **Antigravity, free/cheap API models:** usable but token-hungry (Antigravity ~2-3x Claude/Codex's tokens per task even with its lean custom agent); free API models capped around 6-7/10 tasks.
