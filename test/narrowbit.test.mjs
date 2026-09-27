@@ -1839,3 +1839,50 @@ describe("rewind: checkpoints of the working tree", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("plan approval (opt-in, needs lead mode and someone to ask)", () => {
+  test("Approve proceeds with the original plan; asking for changes revises it once", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([
+      JSON.stringify({ plan: ["say hi in a.txt"], files: ["a.txt"] }), // first plan
+      JSON.stringify({ plan: ["say hi in a.txt, in French"], files: ["a.txt"] }), // revised plan
+      JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "bonjour" }),
+      JSON.stringify({ action: "verify" }),
+      JSON.stringify({ action: "done", summary: "changed it" }),
+      JSON.stringify({ verdict: "approve" }),
+    ]);
+    const asked = [];
+    const ask = async (q, opts) => {
+      asked.push(q);
+      if (/Proposed plan/.test(q)) return "Ask for changes";
+      if (/What should change/.test(q)) return "make it French";
+      return null;
+    };
+    try {
+      const r = await runTask(p, "say hi in a.txt", { claudeBin: fake.bin, boss: true, planApproval: true, ask, maxSteps: 10 });
+      assert.equal(r.outcome, "done");
+      assert.equal(asked.length, 2, "asked to approve, then asked what to change");
+      const ev = readEvents(p, r.taskId);
+      assert.ok(ev.some((e) => e.summary === "plan revised after feedback"));
+      const plans = ev.filter((e) => e.type === "plan" && /^plan: \d+ steps$/.test(e.summary));
+      assert.equal(plans.length, 2, "the plan was generated, then regenerated once (a later 'N/N done' progress event doesn't count)");
+      assert.match(plans[1].summary + JSON.stringify(plans[1].meta), /French/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("Approve leaves the plan untouched, and no ask means proceed as if planApproval were off", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([
+      JSON.stringify({ plan: ["say hi in a.txt"], files: ["a.txt"] }),
+      JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "hi" }),
+      JSON.stringify({ action: "verify" }),
+      JSON.stringify({ action: "done", summary: "changed it" }),
+      JSON.stringify({ verdict: "approve" }),
+    ]);
+    try {
+      const r = await runTask(p, "say hi in a.txt", { claudeBin: fake.bin, boss: true, planApproval: true, ask: async () => "Approve", maxSteps: 10 });
+      assert.equal(r.outcome, "done");
+      assert.ok(readEvents(p, r.taskId).some((e) => e.summary === "plan approved"));
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});

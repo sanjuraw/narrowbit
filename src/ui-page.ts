@@ -458,6 +458,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <h3>Behaviour</h3>
     <label class="check"><input type="checkbox" id="leadChk"><span>Lead mode<small>Model 3 writes a plan before work starts and reviews the diff before it's reported done. Two extra calls to your strongest model per task.</small></span></label>
     <label class="check"><input type="checkbox" id="reviewOnlyChk"><span>Review only<small>Skip the plan call; still review the diff before "done" — pair with a Scout for a cheaper second opinion. Off while Lead mode is on.</small></span></label>
+    <label class="check"><input type="checkbox" id="planApprovalChk"><span>Approve plan first<small>With Lead mode, show you the plan before work starts — approve it, or ask for changes (one round). Needs Lead mode on.</small></span></label>
     <label class="check"><input type="checkbox" id="askChk"><span>Ask before running commands<small>Reads, edits and verify run freely; shell commands wait for you.</small></span></label>
     <div class="field" style="margin-top:10px"><label for="fallbackSel">Backup — if this provider hits a limit or fails, continue on</label><select id="fallbackSel"></select></div>
     <div class="field" style="margin-top:10px"><label for="scoutSel">Scout — a cheaper model reads the code first and hands the worker a short report</label><select id="scoutSel"></select></div>
@@ -1103,6 +1104,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     $("leadChk").checked = S.lead;
     $("reviewOnlyChk").checked = !!S.reviewOnly;
     $("reviewOnlyChk").disabled = S.lead;
+    $("planApprovalChk").checked = !!S.planApproval;
+    $("planApprovalChk").disabled = !S.lead;
     var notes = [];
     if (P.unavailable) notes.push(P.unavailable);
     if (list && !list.models.length) notes.push(list.note);
@@ -1159,6 +1162,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function setLead(on) { var P = S.providers[draft.provider]; saveModels(P.tiers, { lead: on }); }
   function setReviewOnly(on) { var P = S.providers[draft.provider]; saveModels(P.tiers, { reviewOnly: on }); }
   $("reviewOnlyChk").onchange = function () { setReviewOnly($("reviewOnlyChk").checked); };
+  function setPlanApproval(on) { var P = S.providers[draft.provider]; saveModels(P.tiers, { planApproval: on }); }
+  $("planApprovalChk").onchange = function () { setPlanApproval($("planApprovalChk").checked); };
   $("leadChk").onchange = function () { setLead($("leadChk").checked); };
   $("leadTog").onchange = function () { setLead($("leadTog").checked); };
   $("maxSteps").value = store("maxSteps") || "20";

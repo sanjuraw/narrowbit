@@ -44,6 +44,8 @@ export interface AgentConfig {
   boss?: boolean;
   /** Skip the plan call, still review the diff (a cheaper alternative to full lead mode). Ignored when `boss` is on. */
   reviewOnly?: boolean;
+  /** Ask the user to approve the lead's plan (or ask for changes) before work starts. Needs `boss` on. Default off. */
+  planApproval?: boolean;
 }
 
 export const DEFAULT_CONFIG: NarrowbitConfig = {

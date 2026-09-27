@@ -372,6 +372,9 @@ export interface RuntimeOptions {
   /** Skip the up-front plan call but still run the diff review before "done" (see the `boss` doc above). Useful with
    * `reviewer` set to a different model/provider: a cheap second opinion without the plan call's extra cost. */
   reviewOnly?: boolean;
+  /** Put the lead's plan to the user before work starts (via `ask`): Approve, or Ask for changes, then one
+   * revision. Needs `boss` and `ask`; a no-op otherwise (nobody to ask, or there's no plan to show). */
+  planApproval?: boolean;
   /** Continue an earlier task with `taskText` as a follow-up request, in the same event log —
    * resuming its model session when it still exists, else from a deterministic digest. */
   continueTask?: string;
@@ -527,12 +530,28 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     const f = callFor(sp);
     return { p, taskId, call: (o) => f({ ...o, claudeBin: opts.claudeBin }), model: spec.model, effort: spec.effort ?? effort, role, preexisting };
   };
-  const lead: LeadCtx = leadFor(opts.leadModel) ?? { p, taskId, call, model: tiers.escalate, effort, role, preexisting };
+  const lead: LeadCtx = leadFor(opts.leadModel) ?? { p, taskId, call, model: tiers.escalate, effort, role, preexisting, claudeBin: opts.claudeBin };
   const reviewLead: LeadCtx = leadFor(opts.reviewer) ?? lead;
   if (boss && !opts.reviewOnly && !continuing) {
     log(`[plan] (${tiers.escalate}) planning`);
     plan = await leadPlan(lead, taskText, store);
     if (plan) log(`      → ${plan.steps.length} steps`);
+    if (plan && opts.planApproval && opts.ask) {
+      const choice = await opts.ask(`Proposed plan:\n\n${renderPlanForWorker(plan)}`, ["Approve", "Ask for changes"]);
+      if (choice === "Ask for changes") {
+        const feedback = (await opts.ask("What should change about the plan?", [])) ?? "";
+        log(`[plan] revising per feedback: ${feedback.slice(0, 80)}`);
+        const revised = feedback.trim() ? await leadPlan(lead, `${taskText}\n\nRevise the plan: ${feedback.trim()}`, store) : null;
+        if (revised) {
+          plan = revised;
+          log(`      → ${plan.steps.length} steps (revised)`);
+        }
+        appendEvent(p, taskId, { actor: "user", type: "decision", summary: revised ? "plan revised after feedback" : "asked for changes, but the plan is unchanged (no feedback given, or revising failed)" });
+      } else if (choice !== null) {
+        appendEvent(p, taskId, { actor: "user", type: "decision", summary: "plan approved" });
+      }
+      // choice === null (nobody available to ask): proceed with the original plan, same as when planApproval is off.
+    }
   }
 
   // "@path" mentions in the task text: read straight into the first prompt, so the model never has to
@@ -1240,6 +1259,7 @@ interface LeadCtx {
   role: string;
   /** Untracked files that existed before the task — excluded from the reviewed diff. */
   preexisting: Set<string>;
+  claudeBin?: string;
 }
 
 function untrackedFiles(p: Paths): string[] {
@@ -1283,7 +1303,7 @@ function renderPlanForWorker(plan: LeadPlan): string {
 
 /** One stateless call to the lead model; logs its usage under `purpose` and parses a JSON reply. */
 async function leadCall(ctx: LeadCtx, purpose: "planning" | "review", system: string, prompt: string): Promise<any | null> {
-  const res = await ctx.call({ cwd: ctx.p.root, systemPrompt: system, prompt, model: ctx.model, effort: ctx.effort, role: purpose });
+  const res = await ctx.call({ cwd: ctx.p.root, systemPrompt: system, prompt, model: ctx.model, effort: ctx.effort, role: purpose, claudeBin: ctx.claudeBin });
   appendEvent(ctx.p, ctx.taskId, {
     actor: "model",
     type: "model_call",

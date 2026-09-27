@@ -196,6 +196,15 @@ describe("app page with no folder open (a brand-new user)", () => {
     await page.until(() => page.$("reviewOnlyChk").disabled, "review-only to disable once lead mode is back on");
   });
 
+  test("Approve plan first needs Lead mode on, and is remembered like the other toggles", async () => {
+    assert.equal(page.$("planApprovalChk").disabled, !page.$("leadChk").checked, "usable only while lead mode is on");
+    if (!page.$("leadChk").checked) { page.$("leadChk").click(); await page.until(() => !page.$("planApprovalChk").disabled, "plan-approval to unlock"); }
+    page.$("planApprovalChk").click();
+    await page.until(() => page.$("planApprovalChk").checked, "plan-approval to stay checked after saving");
+    page.$("leadChk").click();
+    await page.until(() => page.$("planApprovalChk").disabled, "plan-approval to disable once lead mode is off");
+  });
+
   test("the GitHub button beside the folder pill stays hidden when the repository has no GitHub remote", () => {
     assert.ok(page.$("ghCrumb").classList.contains("hidden"));
   });
