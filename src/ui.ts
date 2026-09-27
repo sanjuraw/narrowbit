@@ -281,7 +281,7 @@ export function startUi(opts: UiOptions) {
     if (root) {
       const cfg = loadConfig(paths(root));
       const sel = resolveSelection(effAgent(cfg));
-      lines.push(`provider: ${sel.provider}  models: ${PHASES.map((ph) => sel.tiers[ph] || "?").join(" / ")}  effort: ${sel.effort}  lead mode: ${effAgent(cfg)?.boss ?? true}`);
+      lines.push(`provider: ${sel.provider}  models: ${PHASES.map((ph) => sel.tiers[ph] || "?").join(" / ")}  effort: ${sel.effort}  lead mode: ${effAgent(cfg)?.boss ?? false}`);
       lines.push(`connectors: ${listConnectors().map((c) => c.name).join(", ") || "none"}   skills: ${listSkills(paths(root)).length}`);
       const problems = taskHistory(paths(root), 10).filter((t) => t.outcome === "error" || t.outcome === "blocked").slice(0, 5);
       lines.push("", "recent problems:");
@@ -309,7 +309,7 @@ export function startUi(opts: UiOptions) {
       const ga = globalAgent();
       let selection;
       try { selection = resolveSelection(ga); } catch { selection = resolveSelection(undefined); }
-      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? true, reviewOnly: !!ga?.reviewOnly, planApproval: !!ga?.planApproval, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: [] };
+      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? false, reviewOnly: !!ga?.reviewOnly, planApproval: !!ga?.planApproval, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: [] };
     }
     const p = paths(root);
     const initialized = existsSync(p.db);
@@ -340,7 +340,7 @@ export function startUi(opts: UiOptions) {
       efforts: EFFORT_LEVELS,
       running: !!run?.running && run.root === root,
       runningTask: run?.running && run.root === root ? run.taskId : null,
-      lead: effAgent(cfg)?.boss ?? true,
+      lead: effAgent(cfg)?.boss ?? false,
       fallback: effAgent(cfg)?.fallback ?? "",
       scout: effAgent(cfg)?.scout ?? "",
       reviewOnly: !!effAgent(cfg)?.reviewOnly,
@@ -363,7 +363,7 @@ export function startUi(opts: UiOptions) {
     const unavailable = unavailableReason(sel, effAgent(cfg));
     if (unavailable) return { status: 400, body: { error: unavailable } };
     if (continueTask && !readEvents(p, continueTask).length) return { status: 404, body: { error: `no task ${continueTask}` } };
-    const lead = effAgent(cfg)?.boss ?? true;
+    const lead = effAgent(cfg)?.boss ?? false;
     const reviewOnly = !!effAgent(cfg)?.reviewOnly;
     const planApproval = !!effAgent(cfg)?.planApproval;
     const thisRun: Run = {

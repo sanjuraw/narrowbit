@@ -40,7 +40,7 @@ export interface AgentConfig {
   /** Research first on another model, as "provider:model" (e.g. "codex:gpt-6-sol"): it reads the repository in its own
    * conversation and hands the worker a short report. Off unless set. See runtime.ts scoutPhase. */
   scout?: string;
-  /** Lead mode: model 3 plans the task up front and reviews the diff before "done". Default on. */
+  /** Lead mode: model 3 plans the task up front and reviews the diff before "done". Default off (measured worse than a single model for typical tasks; kept as an opt-in). */
   boss?: boolean;
   /** Skip the plan call, still review the diff (a cheaper alternative to full lead mode). Ignored when `boss` is on. */
   reviewOnly?: boolean;

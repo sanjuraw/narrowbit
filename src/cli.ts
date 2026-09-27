@@ -92,8 +92,8 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
       [--attach a.png,b.pdf] show the model images or PDFs (sent on the first call only)
       [--test-first]       refuse the first source edit until a check has failed (or a test was edited)
       [--isolate]          work in a separate git worktree; your folder changes only when you run: narrowbit apply <task>
-      [--no-boss] [--continue <task-id>]   lead mode (default): model 3 plans first and reviews the
-      diff before "done"; --continue sends a follow-up to an earlier task
+      [--boss] [--continue <task-id>]      lead mode (off by default: measured worse for typical tasks):
+      model 3 plans first and reviews the diff before "done"; --continue sends a follow-up to an earlier task
       verifies and remembers, driving the task end to end in THIS working tree (not a worktree —
       edits are real). Asks before each shell command, and refuses a dirty git tree unless --force.
   narrowbit ui [--port 4747] [--no-open]   the app: run tasks, approve each command, review the diff,
@@ -465,7 +465,7 @@ export async function main(argv: string[]): Promise<number> {
         return 2;
       }
       const maxSteps = args.flags["max-steps"] ? Number(args.flags["max-steps"]) : 20;
-      const modelsLine = `provider=${sel.provider}  models: explore=${sel.tiers.explore} execute=${sel.tiers.execute} escalate=${sel.tiers.escalate}  effort=${sel.effort}  lead mode: ${args.flags["no-boss"] || cfg.agent?.boss === false ? "off" : `on (${sel.tiers.escalate} plans + reviews)`}`;
+      const modelsLine = `provider=${sel.provider}  models: explore=${sel.tiers.explore} execute=${sel.tiers.execute} escalate=${sel.tiers.escalate}  effort=${sel.effort}  lead mode: ${args.flags["boss"] || cfg.agent?.boss === true ? `on (${sel.tiers.escalate} plans + reviews)` : "off"}`;
       if (args.flags["dry-run"]) {
         const verifyEntries = Object.entries(cfg.verify).filter(([, v]) => v);
         out(`narrowbit agent (dry run): ${text}`);
@@ -521,7 +521,7 @@ export async function main(argv: string[]): Promise<number> {
         isolate: !!args.flags.isolate,
         testFirst: !!args.flags["test-first"],
         maxSteps,
-        boss: args.flags["no-boss"] ? false : (cfg.agent?.boss ?? true),
+        boss: args.flags["boss"] ? true : (cfg.agent?.boss ?? false),
         reviewOnly: !!args.flags["review-only"],
         planApproval: !!args.flags["approve-plan"],
         continueTask: strFlag(args, "continue"),

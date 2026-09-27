@@ -367,7 +367,9 @@ export interface RuntimeOptions {
   ask?: (question: string, options: string[]) => Promise<string | null>;
   /** Aborting stops the loop before its next model call (a call already in flight finishes first). */
   signal?: AbortSignal;
-  /** Lead mode: the escalate model plans up front and reviews the diff before "done". Default true. */
+  /** Lead mode: the escalate model plans up front and reviews the diff before "done". Default off — measured
+   * worse than a single model on every axis (more tokens, more turns) for typical bug-fix-sized tasks; kept as an
+   * option for tasks where a plan and a second look are worth the extra calls. */
   boss?: boolean;
   /** Skip the up-front plan call but still run the diff review before "done" (see the `boss` doc above). Useful with
    * `reviewer` set to a different model/provider: a cheap second opinion without the plan call's extra cost. */
@@ -503,7 +505,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
 
   const prior = opts.continueTask ? readEvents(p, taskId) : [];
   const continuing = prior.length > 0;
-  const boss = opts.boss ?? true;
+  const boss = opts.boss ?? false;
   if (continuing) appendEvent(p, taskId, { actor: "user", type: "decision", summary: `follow-up: ${taskText}`, meta: { followUp: taskText } });
   else
     appendEvent(p, taskId, {
