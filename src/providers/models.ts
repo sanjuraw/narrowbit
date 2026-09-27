@@ -143,9 +143,12 @@ export const DEFAULT_TIERS: Record<ProviderName, ModelTiers> = {
   // 62k mean input and $0.12/task; Haiku 4.5 alone 23/27 at 181k; routing Haiku -> Sonnet -> Opus in one conversation cost
   // more than Sonnet alone ($0.25) because each model switch rewrites the prompt cache and Haiku needed more turns.
   claude: { explore: "sonnet", execute: "sonnet", escalate: "opus" },
-  // gpt-6-luna is the "fast, easier tasks" model: fine for reading, but it passed only 4/10 Hono tasks alone (one action
-  // per turn, never batches). gpt-6-sol ("workhorse for coding") batches and passed 2 of luna's 4 hardest failures.
-  codex: { explore: "gpt-6-luna", execute: "gpt-6-sol", escalate: "gpt-6-sol" },
+  // gpt-6-sol for everything. Measured on the full 40 Hono tasks: sol alone 40/40, 63k mean total input, 5.3 turns —
+  // clearly better than routing gpt-6-luna (explore) -> gpt-6-sol (execute/escalate), also 40/40 but 148k mean input,
+  // 10.4 turns. Luna alone passed only 4/10 on a harder subset (one action per turn, never batches); the routed
+  // default was built around that weakness, but sol alone turned out cheaper and faster than the routing meant to
+  // work around it, the same pattern seen with Claude's Haiku/Sonnet/Opus routing losing to Sonnet alone.
+  codex: { explore: "gpt-6-sol", execute: "gpt-6-sol", escalate: "gpt-6-sol" },
   antigravity: { explore: "gemini-3.8-flash-low", execute: "gemini-3.8-flash-high", escalate: "gemini-3.1-pro-high" },
   freellmapi: { explore: "auto", execute: "auto", escalate: "auto" },
   ...(Object.fromEntries(PROVIDERS.filter((p) => p !== "claude" && p !== "codex" && p !== "antigravity" && p !== "freellmapi").map((p) => [p, { explore: "", execute: "", escalate: "" }])) as Record<

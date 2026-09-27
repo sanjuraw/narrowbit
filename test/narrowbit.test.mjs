@@ -697,7 +697,7 @@ describe("security audit (audit.ts — model-free checkpoint)", () => {
 describe("model selection (providers/models.ts)", () => {
   test("defaults per provider when nothing is saved or passed", () => {
     assert.deepEqual(resolveSelection(undefined), { provider: "claude", tiers: DEFAULT_TIERS.claude, effort: "medium" });
-    assert.deepEqual(resolveSelection(undefined, { provider: "codex" }).tiers, { explore: "gpt-6-luna", execute: "gpt-6-sol", escalate: "gpt-6-sol" });
+    assert.deepEqual(resolveSelection(undefined, { provider: "codex" }).tiers, { explore: "gpt-6-sol", execute: "gpt-6-sol", escalate: "gpt-6-sol" });
   });
 
   test("precedence: per-slot flag > --model > saved config > default", () => {
@@ -712,7 +712,7 @@ describe("model selection (providers/models.ts)", () => {
   test("saved models are per provider, and switching provider doesn't leak them", () => {
     const saved = { provider: "codex", models: { claude: { explore: "sonnet" } } };
     assert.equal(resolveSelection(saved).provider, "codex");
-    assert.equal(resolveSelection(saved).tiers.explore, "gpt-6-luna");
+    assert.equal(resolveSelection(saved).tiers.explore, "gpt-6-sol");
     assert.equal(resolveSelection(saved, { provider: "claude" }).tiers.explore, "sonnet");
   });
 
