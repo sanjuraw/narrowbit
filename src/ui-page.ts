@@ -368,6 +368,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .trow.sub { padding: 8px 0; font-size: 12.5px; }
 .trow.dim { cursor: default; }
 .trow.dim .tt { opacity: .45; }
+.impact { display: inline-block; margin-left: 7px; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 5px; vertical-align: middle; text-transform: none; }
+.impact.save { background: var(--add-bg); color: var(--add-fg); }
+.impact.neutral { background: var(--panel); color: var(--faint); border: 1px solid var(--line); }
+.impact.cost { background: var(--del-bg); color: var(--del-fg); }
 .trow.sub + .trow.sub { border-top: 1px solid var(--line); }
 .trow .tt { flex: 1; min-width: 0; }
 .trow .tt strong { font-weight: 600; }
@@ -500,22 +504,20 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <div class="field"><label for="effort">Effort</label><select id="effort"></select></div>
       <div class="field"><label for="maxSteps">Max steps</label><input type="number" id="maxSteps" min="1" max="100" value="20"></div>
     </div>
-    <h3>Behaviour<span class="chip" id="modeLabel"></span></h3>
+    <h3>Behaviour<span class="chip" id="modeLabel"></span><small>Listed by effect on tokens used: saves some, then no change, then costs more.</small></h3>
     <div class="sgroup">
-      <label class="trow"><span class="tt"><strong>Lead mode</strong><small>Model 3 writes a plan before work starts and reviews the diff before it's reported done. Two extra calls to your strongest model per task.</small></span><span class="switch"><input type="checkbox" id="leadChk"><i></i></span></label>
+      <div class="frow"><label for="scoutSel">Scout<span class="impact save">saves ~25-30%</span><small>A cheaper model reads the code first and hands the worker a short report. Spends a different provider's usage to save this one's.</small></label><select id="scoutSel"></select></div>
+    </div>
+    <div class="sgroup">
+      <div class="frow"><label for="fallbackSel">Backup<span class="impact neutral">no change</span><small>If this provider hits a limit or fails, continue on</small></label><select id="fallbackSel"></select></div>
+      <label class="trow"><span class="tt">Ask before running commands<span class="impact neutral">no change</span><small>Reads, edits and verify run freely; shell commands wait for you.</small></span><span class="switch"><input type="checkbox" id="askChk"><i></i></span></label>
+    </div>
+    <div class="sgroup">
+      <label class="trow"><span class="tt"><strong>Lead mode</strong><span class="impact cost">costs 25-57% more</span><small>Model 3 writes a plan before work starts and reviews the diff before it's reported done. Two extra calls to your strongest model per task.</small></span><span class="switch"><input type="checkbox" id="leadChk"><i></i></span></label>
       <div class="sindent">
-        <label class="trow sub"><span class="tt">Approve plan first<small>Show you the plan before work starts — approve it, or ask for changes (one round). Needs Lead mode on.</small></span><span class="switch"><input type="checkbox" id="planApprovalChk"><i></i></span></label>
-        <label class="trow sub"><span class="tt">Review only<small>Skip the plan call; still review the diff before "done" — pair with a Scout for a cheaper second opinion. Off while Lead mode is on.</small></span><span class="switch"><input type="checkbox" id="reviewOnlyChk"><i></i></span></label>
+        <label class="trow sub"><span class="tt">Approve plan first<span class="impact neutral">no change</span><small>Show you the plan before work starts — approve it, or ask for changes (one round). Needs Lead mode on.</small></span><span class="switch"><input type="checkbox" id="planApprovalChk"><i></i></span></label>
+        <label class="trow sub"><span class="tt">Review only<span class="impact cost">costs the most</span><small>Skip the plan call; still review the diff before "done" — tested worse than everything else here. Off while Lead mode is on.</small></span><span class="switch"><input type="checkbox" id="reviewOnlyChk"><i></i></span></label>
       </div>
-    </div>
-    <div class="sgroup">
-      <label class="trow"><span class="tt">Ask before running commands<small>Reads, edits and verify run freely; shell commands wait for you.</small></span><span class="switch"><input type="checkbox" id="askChk"><i></i></span></label>
-    </div>
-
-    <h3>Routing</h3>
-    <div class="sgroup">
-      <div class="frow"><label for="fallbackSel">Backup<small>If this provider hits a limit or fails, continue on</small></label><select id="fallbackSel"></select></div>
-      <div class="frow"><label for="scoutSel">Scout<small>A cheaper model reads the code first and hands the worker a short report</small></label><select id="scoutSel"></select></div>
     </div>
     <div class="note hidden" id="providerNote"></div>
     <div class="saved" id="savedMsg"></div>
