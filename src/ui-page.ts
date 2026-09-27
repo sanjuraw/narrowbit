@@ -86,8 +86,10 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .repo-btn .rn { font-weight: 600; font-size: 13px; }
 .repo-btn .rb { font-size: 11.5px; color: var(--muted); }
 .side-label { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .07em; padding: 8px 18px 4px; display: flex; align-items: center; justify-content: space-between; gap: 4px; }
-.side-label.collapsible { cursor: pointer; user-select: none; }
-.side-label .cv { flex: none; font-size: 9px; transition: transform .15s; margin-right: 2px; }
+.side-label.collapsible { cursor: pointer; user-select: none; border-radius: 6px; margin: 0 6px; padding-left: 12px; padding-right: 12px; }
+.side-label.collapsible:hover { background: var(--panel-2); }
+.side-label .cv { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 5px; font-size: 10px; color: var(--faint); transition: transform .15s, background .1s; margin-right: 2px; }
+.side-label.collapsible:hover .cv { background: var(--panel-2); color: var(--text); }
 .side-label.collapsed .cv { transform: rotate(-90deg); }
 .side-label .add-skill { border: 0; background: transparent; color: var(--faint); font-size: 14px; line-height: 1; padding: 2px 6px; border-radius: 5px; text-transform: none; letter-spacing: normal; }
 .side-label .add-skill:hover { background: var(--panel-2); color: var(--text); }
@@ -825,7 +827,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     $("verLine").textContent = line;
     var a = clear($("aboutInfo"));
     a.appendChild(el("div", { text: line || "Version unknown" }));
-    var msg = !U ? "Checking for updates…" : U.canApply ? "" + (U.number ? "Update " + U.number + " is available" : "An update is available") + " — use the banner at the top." : U.behind > 0 ? (U.reason || "A newer version is available.") : U.supported ? "Up to date." : (U.reason || "Update check unavailable.");
+    var msg = !U ? "Checking for updates…" : U.canApply ? "An update is available — use the banner at the top." : U.behind > 0 ? (U.reason || "A newer version is available.") : U.supported ? "Up to date." : (U.reason || "Update check unavailable.");
     a.appendChild(el("div", { cls: "muted", style: "font-size:12.5px", text: msg }));
     a.appendChild(el("button", { text: "Check now", onclick: function () { loadUpdate(true); } }));
     var box = el("textarea", { cls: "diag hidden", readonly: "readonly", rows: "8" });
@@ -854,7 +856,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function showWhatsNew(r) {
     if (!r || !r.notes) return;
     var box = clear($("whatsNewBody"));
-    box.appendChild(el("h1", { text: r.number ? "Updated to update " + r.number : "Narrowbit is updated" }));
+    box.appendChild(el("h1", { text: "Narrowbit is updated" }));
     box.appendChild(el("p", { cls: "muted", style: "margin:0 0 12px", text: "Here is what this update brought." }));
     var ul = el("ul", { cls: "wn" });
     r.notes.forEach(function (n) {
@@ -875,8 +877,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     show(bar, show_);
     if (!show_) return;
     clear(bar);
-    var num = U.number ? "Update " + U.number + " is available" : "An update is available";
-    var msg = el("span", { cls: "u-msg" }, el("strong", { text: num }), " — " + shortChanges(U.changes) + " ");
+    var msg = el("span", { cls: "u-msg" }, el("strong", { text: "Update available" }), " — " + shortChanges(U.changes) + " ");
     var go = el("button", { cls: "primary", text: "Update now", onclick: function () {
       go.disabled = true; later.disabled = true; go.textContent = "Updating…";
       api("/api/update/apply", {}).then(function (r) {

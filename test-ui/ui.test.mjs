@@ -163,7 +163,8 @@ describe("app page with no folder open (a brand-new user)", () => {
     try {
       await p2.until(() => !p2.$("whatsNew").classList.contains("hidden"), "the what's-new dialog");
       const text = p2.$("whatsNewBody").textContent;
-      assert.match(text, /update 187/);
+      assert.match(text, /Narrowbit is updated/);
+      assert.doesNotMatch(text, /\b187\b/, "no raw commit-count number shown");
       assert.match(text, /Attach images and PDFs/);
       assert.match(text, /PDFs go as text elsewhere/, "the details are shown, not just titles");
       assert.doesNotMatch(text, /github/i);
