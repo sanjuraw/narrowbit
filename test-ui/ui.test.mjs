@@ -304,6 +304,13 @@ describe("app page with a folder open", () => {
     appendEvent(p, "rt-ckpt-test", { actor: "system", type: "checkpoint", summary: "checkpoint after step 1: edited a.txt", meta: { step: 1, commit: "cafef00d" } });
     appendEvent(p, "rt-ckpt-test", { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: "changed it", steps: 1 } });
 
+    // A Claude usage reading from 40 minutes ago: stale, since Claude's number only updates as a side effect
+    // of a real Claude call (unlike Codex's actively-refreshed one) — the app should flag it, not show it as current.
+    mkdirSync(join(home, ".narrowbit"), { recursive: true });
+    writeFileSync(join(home, ".narrowbit", "limits.json"), JSON.stringify({
+      claude: { fiveHour: { usedPercent: 95, resetsAt: Math.floor(Date.now() / 1000) + 3600 }, weekly: { usedPercent: 40, resetsAt: null }, status: "allowed", checkedAt: new Date(Date.now() - 40 * 60000).toISOString() },
+    }));
+
     app = await startApp({ cwd: repo, home });
     page = await openPage(app.url);
     await page.until(() => !page.$("crumb").classList.contains("empty") && page.$("crumbName").textContent, "the repo pill");
@@ -550,6 +557,14 @@ describe("app page with a folder open", () => {
     assert.match(page.$("input").value, /Feedback on the diff/);
     assert.match(page.$("input").value, /should this be capitalised\?/);
     assert.match(page.$("input").value, /a\.txt/);
+  });
+
+  test("a Claude usage reading from 40 minutes ago is shown flagged as possibly stale, not as current", async () => {
+    const wins = await page.until(() => { const w = [...page.w.document.querySelectorAll(".limits .win")]; return w.length ? w : null; }, "the limits rows");
+    const staleWin = wins.find((w) => w.classList.contains("stale"));
+    assert.ok(staleWin, "the Claude 5-hour window is marked stale");
+    assert.match(staleWin.textContent, /95%\?/, "the ? marks it as uncertain, the number itself is unchanged");
+    assert.match(page.$("limits").title, /may be out of date/);
   });
 
   test("the Skills list can be collapsed and expanded, without the + button also toggling it", async () => {

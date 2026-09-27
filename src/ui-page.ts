@@ -138,6 +138,8 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .limits .bar { flex: 1; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
 .limits .bar i { display: block; height: 100%; background: var(--ok); }
 .limits .bar i.mid { background: var(--warn); } .limits .bar i.high { background: var(--bad); }
+.limits .win.stale { opacity: .55; }
+.limits .win.stale .bar { background-image: repeating-linear-gradient(45deg, var(--line) 0 3px, transparent 3px 6px); background-color: transparent; }
 
 /* ---------- main ---------- */
 main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -1997,7 +1999,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     return mm <= 0 ? "resetting" : mm < 90 ? "resets in " + mm + "m" : mm < 2880 ? "resets in " + Math.round(mm / 60) + "h" : "resets " + new Date(t * 1000).toLocaleString(undefined, { weekday: "short", hour: "numeric" });
   }
   function renderLimits(L) {
-    var box = clear($("limits")), tips = [];
+    var box = clear($("limits")), tips = [], anyStale = false;
     [["claude", "Claude"], ["codex", "Codex"]].forEach(function (pair) {
       var l = L[pair[0]];
       var row = el("div", { cls: "lrow" }, el("span", { cls: "name", text: pair[1] }));
@@ -2005,16 +2007,22 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         row.appendChild(el("span", { style: "grid-column: span 2", text: l && l.error ? (/login/.test(l.error) ? "log in to see limits" : "unavailable") : "no reading yet" }));
         tips.push(pair[1] + ": " + (l && l.error ? l.error : "no reading yet"));
       } else {
+        // Codex's reading is actively re-checked (free); Claude's only updates as a side effect of an actual
+        // Claude call through Narrowbit, so it can go stale for a while if nothing's called it recently —
+        // the number shown may not reflect the current rolling window. Flag it rather than show it as current.
+        var ageMin = l.checkedAt ? Math.round((Date.now() - new Date(l.checkedAt).getTime()) / 60000) : null;
+        var stale = pair[0] === "claude" && ageMin !== null && ageMin > 10;
+        if (stale) anyStale = true;
         [["5h", l.fiveHour, "5-hour"], ["wk", l.weekly, "Weekly"]].forEach(function (w) {
           if (!w[1]) { row.appendChild(el("span")); return; }
           var pct = w[1].usedPercent;
-          row.appendChild(el("span", { cls: "win" }, el("span", { text: w[0] }), el("span", { cls: "bar" }, el("i", { cls: pct >= 90 ? "high" : pct >= 70 ? "mid" : "", style: "width:" + Math.min(100, pct) + "%" })), el("span", { text: Math.round(pct) + "%" })));
-          tips.push(pair[1] + " " + w[2] + ": " + pct + "% used, " + until(w[1].resetsAt));
+          row.appendChild(el("span", { cls: "win" + (stale ? " stale" : "") }, el("span", { text: w[0] }), el("span", { cls: "bar" }, el("i", { cls: pct >= 90 ? "high" : pct >= 70 ? "mid" : "", style: "width:" + Math.min(100, pct) + "%" })), el("span", { text: Math.round(pct) + "%" + (stale ? "?" : "") })));
+          tips.push(pair[1] + " " + w[2] + ": " + pct + "% used, " + until(w[1].resetsAt) + (stale ? " — as of " + ageMin + "m ago, may be out of date" : ""));
         });
       }
       box.appendChild(row);
     });
-    box.title = tips.join("\n") + "\n\nClick to check now (Claude: one tiny Haiku call).";
+    box.title = tips.join("\n") + (anyStale ? "\n\nClaude's number may be stale (it only updates when Narrowbit makes a Claude call) —" : "") + "\n\nClick to check now (Claude: one tiny Haiku call).";
   }
   function loadLimits() { api("/api/limits").then(renderLimits).catch(function () {}); }
   $("limits").onclick = function () {
