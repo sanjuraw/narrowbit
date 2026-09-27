@@ -85,7 +85,10 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .repo-btn:hover { background: var(--panel-2); }
 .repo-btn .rn { font-weight: 600; font-size: 13px; }
 .repo-btn .rb { font-size: 11.5px; color: var(--muted); }
-.side-label { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .07em; padding: 8px 18px 4px; display: flex; align-items: center; justify-content: space-between; }
+.side-label { font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .07em; padding: 8px 18px 4px; display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+.side-label.collapsible { cursor: pointer; user-select: none; }
+.side-label .cv { flex: none; font-size: 9px; transition: transform .15s; margin-right: 2px; }
+.side-label.collapsed .cv { transform: rotate(-90deg); }
 .side-label .add-skill { border: 0; background: transparent; color: var(--faint); font-size: 14px; line-height: 1; padding: 2px 6px; border-radius: 5px; text-transform: none; letter-spacing: normal; }
 .side-label .add-skill:hover { background: var(--panel-2); color: var(--text); }
 .sessions { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
@@ -219,9 +222,19 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .step .prev::before { content: "⎿  "; color: var(--faint); }
 .step .sb { margin: 4px 0 8px 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: auto; max-height: 360px; }
 .step .sb pre { margin: 0; padding: 8px 10px; font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; }
-.dl { font: 12px/1.55 var(--mono); white-space: pre; padding: 0 10px; min-height: 18px; }
+.dl { position: relative; font: 12px/1.55 var(--mono); white-space: pre; padding: 0 10px; min-height: 18px; }
 .dl.a { background: var(--add-bg); color: var(--add-fg); } .dl.d { background: var(--del-bg); color: var(--del-fg); } .dl.c { color: var(--muted); }
 .dl.h { color: var(--faint); background: var(--panel-2); }
+.dl.a, .dl.d, .dl.c { cursor: text; }
+.dl .dl-add { visibility: hidden; position: absolute; right: 4px; top: 0; border: 0; background: var(--panel-2); color: var(--muted); font-size: 11px; line-height: 16px; width: 16px; height: 16px; border-radius: 4px; padding: 0; }
+.dl:hover .dl-add { visibility: visible; }
+.dl.commented { box-shadow: inset 3px 0 0 var(--accent); }
+.dl-comment-row { padding: 6px 10px 6px 22px; background: var(--panel-2); border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); }
+.dl-comment-row textarea { width: 100%; min-height: 42px; font: 12.5px/1.4 -apple-system, sans-serif; border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; background: var(--panel); color: var(--text); resize: vertical; }
+.dl-comment-row .btns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 5px; }
+.dl-comment-saved { padding: 4px 10px 4px 22px; background: var(--panel-2); border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); font-size: 12px; color: var(--text); display: flex; gap: 8px; align-items: flex-start; }
+.dl-comment-saved .txt { flex: 1; white-space: pre-wrap; }
+.dl-comment-saved button { color: var(--muted); border: 0; background: transparent; padding: 0; }
 .notice { font-size: 12.5px; color: var(--muted); margin: 6px 0 6px 22px; font-style: italic; }
 .notice.warn { color: var(--warn); } .notice.bad { color: var(--bad); font-style: normal; }
 .divider { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 11.5px; margin: 14px 0; }
@@ -376,7 +389,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <button class="repo-btn" id="repoBtn" title="Switch repository"><span class="rn" id="repoName">No repository</span><span class="rb" id="repoBranch"></span></button>
     <div class="side-label">Sessions</div>
     <div class="sessions" id="sessions"></div>
-    <div class="side-label">Skills<button class="add-skill" id="addSkillBtn" title="New skill">+</button></div>
+    <div class="side-label collapsible" id="skillsLabel"><span><span class="cv" id="skillsChevron">▾</span>Skills</span><button class="add-skill" id="addSkillBtn" title="New skill">+</button></div>
     <div class="skills" id="skillsList"></div>
     <div class="side-label" id="memLabel">Memory</div>
     <div class="skills" id="memList"></div>
@@ -1779,13 +1792,67 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       d.files.forEach(function (f) { var s = d.stats[f] || {}; totalA += s.added || 0; totalR += s.removed || 0; });
       var card = el("div", { cls: "changes" });
       card.appendChild(el("div", { cls: "chh" }, el("strong", { text: d.files.length + " file" + (d.files.length > 1 ? "s" : "") + " changed" + (d.isolated ? " in a separate copy — your folder is untouched" : " — review before committing") }), el("span", { cls: "mono", style: "color:var(--ok)", text: "+" + totalA }), el("span", { cls: "mono", style: "color:var(--bad)", text: "−" + totalR })));
+      var fbSlot = el("div", { cls: "chh hidden" });
+      card.appendChild(fbSlot);
+      function renderFeedbackBtn() {
+        clear(fbSlot);
+        if (!comments.length) { show(fbSlot, false); return; }
+        show(fbSlot, true);
+        fbSlot.appendChild(el("strong", { text: comments.length + " comment" + (comments.length > 1 ? "s" : "") + " on this diff" }));
+        fbSlot.appendChild(el("button", { cls: "primary", text: "Draft as feedback", onclick: function () {
+          var msg = comments.map(function (c) { return c.file + ":\n  " + c.text.trim() + "\n  → " + c.comment; }).join("\n\n");
+          input.value = (input.value ? input.value + "\n\n" : "") + "Feedback on the diff:\n\n" + msg;
+          autosize();
+          input.focus();
+        } }));
+      }
       var byFile = splitDiff(d.diff);
+      var comments = []; // {file, line, text, comment}
+      function renderCommentRow(file, line, text, saved) {
+        var wrap = el("div");
+        var draft = function () {
+          var box = el("div", { cls: "dl-comment-row" });
+          var ta = el("textarea", { placeholder: "What should change here?" });
+          ta.value = saved || "";
+          var cancel = el("button", { cls: "link", text: "Cancel", onclick: function () { wrap.replaceChild(saved ? savedRow() : addRow(), wrap.firstChild); } });
+          var save = el("button", { cls: "primary", text: "Save", onclick: function () {
+            if (!ta.value.trim()) return;
+            comments = comments.filter(function (c) { return !(c.file === file && c.line === line); });
+            comments.push({ file: file, line: line, text: text, comment: ta.value.trim() });
+            wrap.replaceChild(savedRow(), wrap.firstChild);
+            renderFeedbackBtn();
+          } });
+          box.appendChild(ta); box.appendChild(el("div", { cls: "btns" }, cancel, save));
+          setTimeout(function () { ta.focus(); }, 0);
+          return box;
+        };
+        var savedRow = function () {
+          var c = comments.find(function (x) { return x.file === file && x.line === line; });
+          return el("div", { cls: "dl-comment-saved" },
+            el("span", { cls: "txt", text: c ? c.comment : "" }),
+            el("button", { text: "Edit", onclick: function () { wrap.replaceChild(draft(), wrap.firstChild); } }),
+            el("button", { text: "×", title: "Remove", onclick: function () { comments = comments.filter(function (x) { return !(x.file === file && x.line === line); }); wrap.remove(); renderFeedbackBtn(); } }));
+        };
+        var addRow = function () { return draft(); };
+        wrap.appendChild(saved ? savedRow() : draft());
+        return wrap;
+      }
       d.files.forEach(function (f, i) {
         var st = d.stats[f] || { added: 0, removed: 0 };
         var b = el("div", { cls: "cfb" + (i === 0 && d.files.length <= 3 ? "" : " hidden") });
         (byFile[f] || []).forEach(function (l) {
           var cls = l[0] === "+" ? "dl a" : l[0] === "-" ? "dl d" : l.slice(0, 2) === "@@" ? "dl h" : "dl c";
-          b.appendChild(el("div", { cls: cls, text: l || " " }));
+          var row = el("div", { cls: cls, text: l || " " });
+          if (cls !== "dl h") {
+            row.appendChild(el("button", { cls: "dl-add", title: "Comment on this line", onclick: function (e) {
+              e.stopPropagation();
+              if (row.nextElementSibling && row.nextElementSibling.classList.contains("dl-comment-host")) return;
+              var host = el("div", { cls: "dl-comment-host" }, renderCommentRow(f, l, l));
+              b.insertBefore(host, row.nextSibling);
+              row.classList.add("commented");
+            } }, "+"));
+          }
+          b.appendChild(row);
         });
         var h = el("div", { cls: "cfh", onclick: function () { show(b, b.classList.contains("hidden")); } },
           el("span", { cls: "n", text: f }), el("span", { style: "color:var(--ok)", text: "+" + st.added }), el("span", { style: "color:var(--bad)", text: "−" + st.removed }));
@@ -1902,6 +1969,17 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   try { if (localStorage.getItem("nb-side-hidden") === "1") $("app").classList.add("side-hidden"); } catch (e) {}
   $("menuBtn").onclick = toggleSidebar;
   $("hideSideBtn").onclick = toggleSidebar;
+  // Skills list can grow long (built-ins + imports); collapse it independently of hiding the whole sidebar.
+  function setSkillsCollapsed(on) {
+    $("skillsLabel").classList.toggle("collapsed", on);
+    show($("skillsList"), !on);
+    store("skillsCollapsed", on ? "1" : "0");
+  }
+  $("skillsLabel").addEventListener("click", function (e) {
+    if (e.target.closest("#addSkillBtn")) return;
+    setSkillsCollapsed(!$("skillsLabel").classList.contains("collapsed"));
+  });
+  setSkillsCollapsed(store("skillsCollapsed") === "1");
   document.addEventListener("keydown", function (e) {
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") { e.preventDefault(); toggleSidebar(); }
   });

@@ -532,6 +532,38 @@ describe("app page with a folder open", () => {
     for (const m of st.memory) await fetch(`${app.base}/api/memory/remove`, { method: "POST", headers: H, body: JSON.stringify({ id: m.id }) });
   });
 
+  test("diff comments: commenting on a line and drafting feedback fills the composer, without sending anything", async () => {
+    writeFileSync(join(repo, "a.txt"), "hi\nsecond line\n");
+    const sess = await page.until(() => [...page.w.document.querySelectorAll("#sessions .sess")].find((x) => /what is in a\.txt/.test(x.textContent)), "the finished session");
+    sess.click();
+    const addBtn = await page.until(() => page.w.document.querySelector(".dl.a .dl-add"), "an add-comment button on an added line");
+    addBtn.click();
+    const ta = await page.until(() => page.w.document.querySelector(".dl-comment-row textarea"), "the comment box");
+    ta.value = "should this be capitalised?";
+    const save = [...ta.closest(".dl-comment-row").querySelectorAll("button")].find((b) => b.textContent === "Save");
+    save.click();
+    assert.ok(page.w.document.querySelector(".dl-comment-saved"), "the comment is saved inline");
+    assert.match(page.w.document.querySelector(".dl-comment-saved .txt").textContent, /capitalised/);
+    const draftBtn = await page.until(() => [...page.w.document.querySelectorAll("button")].find((b) => b.textContent === "Draft as feedback"), "the draft-feedback button");
+    draftBtn.click();
+    assert.match(page.$("input").value, /Feedback on the diff/);
+    assert.match(page.$("input").value, /should this be capitalised\?/);
+    assert.match(page.$("input").value, /a\.txt/);
+  });
+
+  test("the Skills list can be collapsed and expanded, without the + button also toggling it", async () => {
+    assert.ok(!page.$("skillsLabel").classList.contains("collapsed"));
+    assert.ok(!page.$("skillsList").classList.contains("hidden"));
+    page.$("skillsLabel").click();
+    assert.ok(page.$("skillsLabel").classList.contains("collapsed"));
+    assert.ok(page.$("skillsList").classList.contains("hidden"));
+    page.$("skillsLabel").click();
+    assert.ok(!page.$("skillsLabel").classList.contains("collapsed"), "clicking again re-expands");
+    page.$("addSkillBtn").click();
+    assert.ok(!page.$("skillsLabel").classList.contains("collapsed"), "the + button opens the skill form, not the collapse toggle");
+    page.$("closeSkill").click();
+  });
+
   test("every project lists the built-in skills, without a delete button; user skills get one", async () => {
     const rows = () => [...page.w.document.querySelectorAll("#skillsList .skill-row")];
     await page.until(() => rows().length >= 6, "built-in skills");
