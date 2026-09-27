@@ -4,7 +4,37 @@ Local, context-managed coding-agent runtime: **task + repository + durable evide
 
 Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens. If quality drops, Narrowbit has failed.
 
-## Handoff (2026-09-27, current) — read this first
+## Handoff (2026-09-27, current, later) — read this first
+
+**State.** `main` = `661a219`, pushed. Tests: `npm test` 116, `npm run test:ui` 52, all passing, CI green. No uncommitted work — the PDF flagged in the prior handoff is gone (user chose delete).
+
+**Four features built this stretch, each on its own PR-sized commit, each with unit + UI tests and at least one live check through the real CLI or app, not just the fixture:**
+- **`@` file mentions** (`mentions.ts`, new): `@path` in a task reads that file straight into the first prompt — no read/grep/search turn spent finding it. Exact path or unique basename resolves; an unresolved mention is reported to the model, not silently dropped. App composer autocompletes (`GET /api/files`, debounced popover, arrow keys/Enter/Tab/Escape). Confirmed live: a mention-only task answered in one turn.
+- **Rewind** (`checkpoints.ts`, new): a working-tree snapshot before a task starts and after every edit, via plain git plumbing (a throwaway index, `write-tree`, `commit-tree`, a pinning ref under `refs/narrowbit/checkpoints/<taskId>/<step>` so `git gc` can't collect it) — never touches HEAD, branches or the user's staged index. Restoring writes back every file the checkpoint held and deletes anything created since. `narrowbit rewind <task> [checkpoint]`, a "Rewind here" button per checkpoint in the app (inline confirm, not `window.confirm()` — unreliable in the native shell). Confirmed live both directions: an edit reverted, and a file created after a checkpoint was deleted on rewind.
+- **Plan approval** (opt-in, needs Lead mode: `RuntimeOptions.planApproval`, `--approve-plan`, an "Approve plan first" checkbox disabled unless Lead is on): before work starts, the plan is put to the user via the *existing* `ask()` channel (Approve / Ask for changes) — no new plumbing. Asking for changes gets one bounded plan revision, then proceeds regardless (same pattern as the diff-review revision cap). With nobody to ask (no TTY, or the option is off), behaves exactly as before.
+  - **Found and fixed a real pre-existing bug while building this:** Lead mode's plan/review calls, on the *default* provider (no `leadModel`/`reviewer` override), never forwarded `claudeBin` to the model call — so a custom Claude binary was silently ignored for planning/review and fell through to whatever `claude` resolves to on PATH. Invisible for most users (same binary either way), a real bug for anyone running a non-default one. It's exactly what corrupted this feature's own test until traced down (leadPlan calls were hitting the *real* `claude` on this Mac instead of the test's fake bin). Fixed by threading `claudeBin` through `LeadCtx`.
+- **Diff comments** (pure front-end, no new API): hovering a diff line on the changes card shows a **+**; click it, note what should change, it's saved inline with edit/remove. A **Draft as feedback** button writes a formatted follow-up (file, line, note) into the composer for the user to review and send — nothing auto-sends, matching the "you stay in control" rule.
+- **Collapsible Skills list** (sidebar header, click to toggle; the **+** new-skill button is excluded from the toggle). Not persisted across a reload in this pass, unlike the sidebar-hide toggle — worth adding if it matters in practice.
+
+**Public-release cleanup done this stretch** (the user asked "build whatever is needed to go public"):
+- Removed a tracked Python bytecode file (`scripts/__pycache__/crawl4ai_mcp.cpython-312.pyc`) that had been accidentally committed; added `__pycache__/`/`*.pyc` to `.gitignore`.
+- Redacted a real VPS IP address that appeared twice in this file (an old FreeLLMAPI connectivity note) — no benefit to a public reader, real risk to the user.
+- Scanned `src/`, `scripts/`, `mac/` for personal usernames/paths beyond this file's own working notes — found none.
+- Rewrote `README.md`, which had gone stale: model slots were still "explore/execute/lead" (now correctly explore/execute/escalate), only Claude/Codex were listed as subscription providers (Antigravity was missing), no mention of `@` mentions/rewind/attachments/scout/lead-reviewer/theme/sidebar-toggle, cited a 43-test suite, and said Codex/API adapters were unproven (Codex is 40/40, DeepSeek verified live). Rewrote the feature list and the "What is and isn't proven" section to match current evidence, including the mixed-model findings and their caveats.
+- License: user confirmed keep MIT. `LICENSE`/`CONTRIBUTING.md`/`SECURITY.md`/`package.json` metadata already checked out fine, no changes needed.
+- **Not done: the user hasn't said to actually flip the repo public.** Everything above was prep, not the switch itself.
+
+**Open items, updated priority order.**
+1. Confirm the scout finding (Codex sol scouting Claude, -57% Claude cost) generalizes past the original n=1×10 — still the single best mixed-model result and still unconfirmed at scale.
+2. Genuinely parallel/independent-subtask multi-agent work — still unbuilt, still needs a task set that actually splits into independent pieces (Hono bug fixes don't).
+3. Measure how fast each provider burns its own plan's usage limit per task — still doesn't exist as a real comparison, now the third handoff in a row to carry this forward.
+4. Set DeepSeek as the fallback provider for Claude limits and try a real task on it.
+5. Prove a second repo/language — the whole record is still Hono/TypeScript.
+6. Real dogfooding of scout/lead/reviewer/rewind/`@` mentions/plan-approval on actual daily work, not just benchmark and unit-test runs — this is specifically how the `claudeBin`-in-`LeadCtx` bug above got found, so it's a proven way to surface things benchmarks don't.
+7. Router experiment (rules vs local Decider-2b) still inconclusive since 2026-09-23, untouched again this stretch.
+8. Persist the Skills-list collapsed state across reloads if it turns out to matter (currently session-only).
+
+## Prior handoff (2026-09-27, model defaults + mixing experiments + Antigravity)
 
 **State.** `main` = `e7825c0`, pushed. Tests: `npm test` 109, `npm run test:ui` 46, all passing. CI (`.github/workflows/ci.yml`, added 2026-09-26) is pushed and green — the user's `gh auth refresh -h github.com -s workflow` unblocked it. It failed on its first three runs (GitHub emailed the user about it): not a real secret leak, the pinned gitleaks version (8.18.4, older than this Mac's local install) flagged the deliberately-fake `sk_live_`/`ghp_` strings in `test/narrowbit.test.mjs`'s redaction test; fixed by adding them to `.gitleaks.toml`'s allowlist after reproducing the failure locally with the exact pinned version. Only uncommitted item: `vibe-coding-security-prompts.pdf` — identified as a third-party marketing PDF (five copy-paste security-audit prompts, watermarked, by an unrelated creator) that shaped some of the audit/security-review work earlier; recommended not to commit it to a public repo, left for the user to delete or move out.
 
