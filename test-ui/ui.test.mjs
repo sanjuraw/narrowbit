@@ -229,6 +229,14 @@ describe("app page with no folder open (a brand-new user)", () => {
     await page.until(() => page.$("modeLabel").textContent === "Solo mode", "back to Solo once Lead mode is off");
   });
 
+  test("the Behaviour section states what Solo saves against the native app, and that the ranking below is against Solo, not the native app", () => {
+    const box = page.w.document.querySelector(".callout");
+    assert.ok(box, "the callout exists");
+    assert.match(box.textContent, /75-90%/);
+    assert.match(box.textContent, /native Claude Code/);
+    assert.match(box.textContent, /ranked against\s*Solo/);
+  });
+
   test("the GitHub button beside the folder pill stays hidden when the repository has no GitHub remote", () => {
     assert.ok(page.$("ghCrumb").classList.contains("hidden"));
   });

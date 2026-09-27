@@ -361,6 +361,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .check { display: flex; gap: 9px; align-items: flex-start; margin: 8px 0; font-size: 13px; }
 .check input { margin-top: 3px; accent-color: var(--accent); }
 .check small { display: block; color: var(--muted); font-size: 12px; }
+.callout { font-size: 12px; line-height: 1.5; color: var(--muted); background: var(--accent-soft); border-radius: 8px; padding: 9px 11px; margin: 4px 0 10px; }
+.callout strong { color: var(--text); }
 .sgroup { border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); padding: 0 12px; margin: 8px 0; }
 .sindent { margin: 0 0 4px 16px; padding-left: 12px; border-left: 2px solid var(--line); }
 .trow { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 11px 0; font-size: 13px; cursor: pointer; }
@@ -504,7 +506,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <div class="field"><label for="effort">Effort</label><select id="effort"></select></div>
       <div class="field"><label for="maxSteps">Max steps</label><input type="number" id="maxSteps" min="1" max="100" value="20"></div>
     </div>
-    <h3>Behaviour<span class="chip" id="modeLabel"></span><small>Listed by effect on tokens used: saves some, then no change, then costs more.</small></h3>
+    <h3>Behaviour<span class="chip" id="modeLabel"></span></h3>
+    <div class="callout">Solo (nothing below turned on) already used <strong>~75-90% fewer tokens</strong> than a native Claude Code session, in our tests (Hono, 15-40 tasks, equal or better success — see the README). <strong>Everything below is ranked against Solo</strong>, not against the native app: saves some, then no change, then costs more.</div>
     <div class="sgroup">
       <div class="frow"><label for="scoutSel">Scout<span class="impact save">saves ~25-30%</span><small>A cheaper model reads the code first and hands the worker a short report. Spends a different provider's usage to save this one's.</small></label><select id="scoutSel"></select></div>
     </div>
