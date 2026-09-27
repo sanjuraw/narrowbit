@@ -4,7 +4,9 @@ A local, context-managed **coding agent** for your Mac. It plans, reads, edits, 
 
 Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens.
 
-- **Bring your own model.** Claude (your Claude subscription, via the `claude` CLI), Codex (your ChatGPT subscription, via `codex`), or any OpenAI-compatible API: OpenRouter, Groq, Gemini, OpenAI, DeepSeek, Ollama, LM Studio and others. Three model slots (explore / execute / lead) route cheap work to cheap models.
+- **Bring your own model.** Claude (your Claude subscription), Codex (your ChatGPT subscription), Antigravity (your Google account), or any OpenAI-compatible API: OpenRouter, Groq, Gemini, OpenAI, DeepSeek, Ollama, Ollama Cloud, LM Studio and others. Three model slots (explore / execute / escalate) exist for mixing models, but measurement found a single good model in all three usually wins — see "What is and isn't proven".
+- **Point it at a file.** `@path/to/file` in a task reads that file straight into context instead of costing a search turn; attach images or PDFs (Claude, Codex, vision-capable API models) for UI bugs or specs.
+- **Rewind.** A checkpoint is taken before a task starts and after every edit; undo any of them without touching your commit history.
 - **Local-first.** No telemetry, no repo upload. The only network calls are to the model provider you choose. Secrets are redacted from everything the agent stores or re-reads.
 - **You stay in control.** Commands ask for approval, edits show as diffs, and nothing is committed until you say so. "Done" is checked against your repo's own verify commands.
 - **Extensible.** Reusable **skills** (task templates) and **connectors** (any MCP server, e.g. GitHub) the agent can call.
@@ -44,11 +46,15 @@ narrowbit limits                       # Claude / Codex 5-hour and weekly usage
 
 ## What is and isn't proven
 
-Measured on `honojs/hono`: 40 tasks mined from real commits (start at the parent commit with the fix's tests applied; success = those tests pass), Claude models only.
+Measured on `honojs/hono`: 40 tasks mined from real commits (start at the parent commit with the fix's tests applied; success = those tests pass). Every number below is n=1 per task, on one repo, one language — read it as directional, not a guarantee, and see `CLAUDE.md` for every caveat and every approach that *didn't* work.
 
-- **Vs. Claude Code + Narrowbit's own MCP tools** (n=40): the agent finished 39/40 tasks (baseline 40/40) using ~90% fewer input tokens at ~56% lower notional cost. The one failure was an infrastructure error, not a wrong answer.
-- **Vs. plain native Claude Code** (n=15 subset, earlier version of the loop): 15/15 both, ~75% fewer tokens, about half the cost.
-- **Not proven:** other repos or languages, models other than Claude, or the Codex and API-provider adapters on real tasks. The Codex adapter has only been verified on its error path; the API providers only against a mock server. "Cost" for subscriptions is notional (nothing is billed per token).
+- **Vs. Claude Code + Narrowbit's own MCP tools** (n=40, Claude): 39/40 (baseline 40/40), ~90% fewer input tokens, ~56% lower notional cost.
+- **Vs. plain native Claude Code** (n=15 subset, earlier loop version): 15/15 both, ~75% fewer tokens, about half the cost.
+- **Codex, full 40 tasks:** 40/40 with a single model (`gpt-6-sol`) in all three slots, 63k mean input tokens, 5.3 turns.
+- **DeepSeek V4.1 Flash, direct:** 39/40, ~87k mean input, est. $0.22 for all 40 at list prices.
+- **Mixing models mostly didn't pay off.** Routing cheap-explore → expensive-execute (Claude Haiku→Sonnet→Opus, or Codex Luna→Sol) lost to one good model doing the whole task, both times measured — switching models mid-conversation rewrites the prompt cache, and a weaker explorer needs more turns than a stronger model needs for everything. A cheap model researching in its *own* separate conversation and handing the worker a short report (the `scout` option) did help once, on 10 tasks: Codex Sol scouting, Claude Sonnet working, cut Claude's own cost per task by ~57% at equal-or-better success — at the price of spending a second plan's quota.
+- **Antigravity, free/cheap API models:** usable but token-hungry (Antigravity ~2-3x Claude/Codex's tokens per task even with its lean custom agent); free API models capped around 6-7/10 tasks.
+- **Not proven:** other repos or languages, the API-provider adapters beyond DeepSeek (verified live) and a mock server otherwise, genuinely parallel multi-agent work (untried). "Cost" for subscriptions is notional (nothing is billed per token).
 
 Run the numbers yourself: see "Benchmarking" below. Full history, including the approaches that did *not* work, is in `CLAUDE.md`.
 
@@ -58,12 +64,12 @@ Run the numbers yourself: see "Benchmarking" below. Full history, including the 
 - **The agent asks before running commands** (in the app and in the terminal; `--allow-commands` opts out), and its file access is confined to the project folder, symlinks included.
 - **Connectors** run commands you configure, like any MCP client; their environment variables (often tokens) are stored in `~/.narrowbit/connectors.json` (mode 0600) and never sent to the app page. Only add servers you trust.
 - **Updates trust the repository:** the update button runs `npm install` and a build on whatever is on GitHub `main`. Keep the repo's owners on two-factor authentication.
-- Codex's `exec` has no switch to disable its own tools, so the adapter runs it read-only sandboxed; Claude runs fully tool-free.
+- Codex's `exec` and Antigravity's `agy` don't fully disable their own tools by flag: Codex is sandboxed and its own tool features are switched off; Antigravity runs under a lean custom agent with one inert tool. Claude runs fully tool-free.
 - Report vulnerabilities privately (see `SECURITY.md`).
 
 ## Contributing
 
-Issues and PRs welcome. `npm test` must pass (43 tests, none call a model). Read `CLAUDE.md` first: it documents the architecture and, more importantly, what was tried and failed, so you don't repeat it. A working rule of this project: every automatic feature needs a measured reason to exist.
+Issues and PRs welcome. `npm test` (114 tests) and `npm run test:ui` (49 tests) must pass; none call a model. Read `CLAUDE.md` first: it documents the architecture and, more importantly, what was tried and failed, so you don't repeat it. A working rule of this project: every automatic feature needs a measured reason to exist.
 
 ## Command reference (context tools, also usable standalone)
 
@@ -149,6 +155,11 @@ Requires Node ≥ 22.13 (for `node:sqlite`). Runtime dependency: `typescript` on
 
 - **Ask you a question** mid-task instead of guessing, and answer plain questions without touching your files.
 - **Isolated runs** (`--isolate`, or the Isolate toggle): the agent works in a separate git worktree; you press **Apply** (or run `narrowbit apply <task>`) to bring the changes into your folder, or **Discard**.
+- **Rewind** (`narrowbit rewind <task> [checkpoint]`, or a **Rewind here** button in the app): restores your folder to a checkpoint taken before the task or after any of its edits, deleting anything created since. Built on plain git plumbing; never touches your commit history.
+- **`@` mentions**: name a file in your task text and it's read straight into context, no exploration turn needed. The composer autocompletes as you type.
+- **Attachments**: images and PDFs on the composer, or `--attach a.png,b.pdf` — useful for pointing at a UI bug from a screenshot.
+- **Scout, lead and reviewer on their own models**: research, planning and review can each run on a different provider/model from the worker, in their own conversation (`narrowbit models set scout provider:model`, or the app's Scout dropdown). Off by default — see "What is and isn't proven" for when it helped and when it didn't.
 - **Remote connectors**: add a hosted MCP server by URL (Linear, Slack, Notion…) and sign in with your browser, or give it an API token. Every connector call asks first.
 - **Skills from GitHub**: import a `SKILL.md`, a folder or a repo (you read it before saving), or save a finished chat as a skill.
 - **Step view**: each step has a `context ~N` button showing exactly what the model was sent for it.
+- **Light/dark theme** and a hideable sidebar (Cmd/Ctrl+B) in the app.
