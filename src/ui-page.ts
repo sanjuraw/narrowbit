@@ -970,7 +970,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   // ---------- first-run: what can I use right now? ----------
   var R = null;
   function loadReadiness(refresh) {
-    return api("/api/readiness" + (refresh ? "?refresh=1" : "")).then(function (r) { R = r; renderGetStarted(); }).catch(function () {});
+    return api("/api/readiness" + (refresh ? "?refresh=1" : "")).then(function (r) { R = r; renderGetStarted(); renderComposer(); }).catch(function () {});
   }
   function renderGetStarted() {
     var box = $("getStarted");
@@ -1345,13 +1345,19 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function renderComposer() {
     var busy = run.active;
     var P = S && S.providers && S.providers[S.selection.provider];
+    // With no folder open there is no per-repo config to trust, so P.unavailable (which only reflects
+    // whether a key/model is configured) isn't enough — fall back to the live readiness check, same
+    // signal renderGetStarted() uses, so an unsigned-in provider can't send just because it has no folder.
+    // While readiness hasn't loaded yet (R is still null), assume it's fine rather than flash "disabled" —
+    // loadReadiness()'s own callback re-renders this once the real answer is in.
+    var notReadyNoRoot = !!(S && !S.root && R && P && (P.unavailable || R.ready.indexOf(S.selection.provider) < 0));
     show($("compactBtn"), !!(view && view.taskId));
     show($("stopBtn"), viewingRun());
     show($("sendBtn"), !viewingRun());
-    $("sendBtn").disabled = !S || (!!S.root && !S.initialized) || busy || !!(P && P.unavailable);
+    $("sendBtn").disabled = !S || (!!S.root && !S.initialized) || busy || !!(P && P.unavailable) || notReadyNoRoot;
     $("leadTog").checked = !!(S && S.lead);
     input.placeholder = view && view.taskId ? "Ask for a follow-up or a change…" : S && S.root ? "Describe a task…" : "What do you want to build? Let's talk it through…";
-    $("hint").textContent = !S ? "" : busy && !viewingRun() ? "Another task is running — open it from the sidebar to watch or stop it." : P && P.unavailable ? P.unavailable : !S.root ? "Enter to send · No folder needed yet — we'll create one when you're ready" : "Enter to send · Shift+Enter for a new line";
+    $("hint").textContent = !S ? "" : busy && !viewingRun() ? "Another task is running — open it from the sidebar to watch or stop it." : P && P.unavailable ? P.unavailable : notReadyNoRoot ? ((R[S.selection.provider] && R[S.selection.provider].detail) || "not signed in — pick a model that's ready") : !S.root ? "Enter to send · No folder needed yet — we'll create one when you're ready" : "Enter to send · Shift+Enter for a new line";
     if (S && S.root) show($("createProjectBar"), false);
   }
   var attached = [];
