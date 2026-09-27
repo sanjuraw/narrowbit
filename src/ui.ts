@@ -583,6 +583,15 @@ export function startUi(opts: UiOptions) {
           saveRecent(r);
           return json(res, 200, state());
         }
+        case "/api/repo/close": {
+          // Leaving the current project back to the rootless planning screen — the only way there once
+          // any folder has ever been opened, since the server otherwise reopens the last-used one at
+          // launch and "New task" only resets the conversation, never the open folder.
+          if (run?.running) return json(res, 409, { error: "stop the running task before closing this project" });
+          root = null;
+          run = null;
+          return json(res, 200, state());
+        }
         case "/api/plan": {
           // Discuss a project before it exists: no repo, no files, just the model replying. Always uses the
           // global model choice (there's no per-repo config yet — there's no repo).

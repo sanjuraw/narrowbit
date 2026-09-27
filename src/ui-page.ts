@@ -577,7 +577,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <button class="primary" id="openRepo">Open</button>
     </div>
     <div class="note hidden" id="repoErr" style="color:var(--bad)"></div>
-    <div style="text-align:right;margin-top:14px"><button class="link hidden" id="closeRepo">Cancel</button></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px">
+      <button class="link hidden" id="startNoFolder">Start without a folder</button>
+      <button class="link hidden" id="closeRepo">Cancel</button>
+    </div>
   </div>
 </div>
 
@@ -1476,7 +1479,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function resetView(taskId) {
     view = { taskId: taskId, seen: {}, step: null, plan: null, tokens: 0, cost: 0, segTokens: 0, segCost: 0, segSteps: 0, segStart: null, approvals: {}, pendingNew: false, working: null, finished: {} };
     clear($("items")); clearChanges();
-    show($("welcome"), !taskId && !!(S && S.initialized));
+    // No folder open at all (planning drafts, or just closed a project) has no "initialized" concept —
+    // only a freshly created-but-uninitialized project should hide this in favor of the setup card.
+    show($("welcome"), !taskId && (!S || !S.root || S.initialized));
     $("title").textContent = "";
     show($("planMini"), false);
     updateUsage();
@@ -2066,8 +2071,19 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     });
     if (!recent.length) list.appendChild(el("div", { cls: "muted", style: "font-size:13px", text: "No recent repositories." }));
     show($("pickFolder"), !!native); show($("closeRepo"), true); show($("repoErr"), false); show($("repoOverlay"), true);
+    show($("startNoFolder"), !!(S && S.root));
     if (!native) $("repoPath").focus();
   }
+  function startNoFolder() {
+    api("/api/repo/close", {}).then(function (st) {
+      if (es) { es.close(); es = null; }
+      draft = null; S = null; modelLists = {};
+      apply(st);
+      resetView(null);
+      show($("repoOverlay"), false);
+    }).catch(function (e) { banner("bad", e.message); });
+  }
+  $("startNoFolder").onclick = startNoFolder;
   function openRepo(path) {
     api("/api/repo", { path: path }).then(function (st) {
       if (es) { es.close(); es = null; }

@@ -116,6 +116,7 @@ describe("app page with no folder open (a brand-new user)", () => {
       page.$(opener).click();
       assert.ok(page.visible(page.$("repoOverlay")), `${opener} opens the dialog`);
       assert.ok(page.visible(page.$("closeRepo")), "Cancel must exist even with no folder open");
+      assert.ok(!page.visible(page.$("startNoFolder")), "nothing to leave when no folder is open yet");
       page.$("closeRepo").click();
       assert.ok(!page.visible(page.$("repoOverlay")), "Cancel closes it");
 
@@ -758,6 +759,19 @@ describe("app page with a folder open", () => {
     assert.equal(paused.status, 409);
     assert.equal((await paused.json()).error, "secrets");
     assert.equal((await post({ message: "add leak", force: true })).status, 200);
+  });
+
+  // Last in this describe: it leaves the project, so nothing after it can assume a folder is open.
+  test("'Start without a folder' leaves the project and returns to the rootless planning screen", async () => {
+    page.$("crumb").click();
+    assert.ok(page.visible(page.$("startNoFolder")), "offered since a folder is open");
+    page.$("startNoFolder").click();
+    await page.until(() => !page.visible(page.$("repoOverlay")), "the dialog to close");
+    assert.equal(page.$("crumbName").textContent, "Choose a folder to start");
+    assert.ok(page.$("crumb").classList.contains("empty"));
+    page.$("crumb").click();
+    assert.ok(!page.visible(page.$("startNoFolder")), "nothing to leave once no folder is open");
+    page.$("closeRepo").click();
   });
 });
 
