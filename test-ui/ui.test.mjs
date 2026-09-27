@@ -288,6 +288,12 @@ describe("app page with a folder open", () => {
     const { openMemory } = await import(join(ROOT, "dist", "memory.js"));
     openMemory(p).add({ type: "decision", text: "Use pnpm, not npm, in this repo", reason: "lockfile is pnpm-lock.yaml" });
 
+    // A finished task with checkpoints: rewind should render for the one after the edit, not for the rewound-to marker.
+    appendEvent(p, "rt-ckpt-test", { actor: "user", type: "decision", summary: "task received", meta: { goal: "say bye" } });
+    appendEvent(p, "rt-ckpt-test", { actor: "system", type: "checkpoint", summary: "checkpoint after step 0: before any changes", meta: { step: 0, commit: "deadbeef" } });
+    appendEvent(p, "rt-ckpt-test", { actor: "system", type: "checkpoint", summary: "checkpoint after step 1: edited a.txt", meta: { step: 1, commit: "cafef00d" } });
+    appendEvent(p, "rt-ckpt-test", { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: "changed it", steps: 1 } });
+
     app = await startApp({ cwd: repo, home });
     page = await openPage(app.url);
     await page.until(() => !page.$("crumb").classList.contains("empty") && page.$("crumbName").textContent, "the repo pill");
@@ -297,6 +303,20 @@ describe("app page with a folder open", () => {
     app?.stop();
     rmSync(home, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
+  });
+
+  test("typing @ opens a popover of matching repo files; picking one inserts its path", async () => {
+    const inp = page.$("input");
+    inp.focus();
+    inp.value = "look at @a";
+    inp.setSelectionRange(inp.value.length, inp.value.length);
+    inp.dispatchEvent(new page.w.Event("input"));
+    await page.until(() => !page.$("mentionPop").classList.contains("hidden"), "the mention popover");
+    await page.until(() => page.$("mentionPop").textContent.includes("a.txt"), "a.txt to appear as a match");
+    page.$("mentionPop").querySelector(".mi").click();
+    assert.equal(inp.value, "look at @a.txt ");
+    assert.ok(page.$("mentionPop").classList.contains("hidden"), "the popover closes after picking");
+    inp.value = "";
   });
 
   test("attaching an image shows a chip that can be removed, and other file types are refused", async () => {
@@ -526,6 +546,19 @@ describe("app page with a folder open", () => {
     const bug = [...page.w.document.querySelectorAll("#skillsList .skill")].find((b) => b.textContent === "Bug fix");
     bug.click();
     assert.match(page.$("input").value, /root cause/i);
+  });
+
+  test("rewind: each checkpoint has a Rewind button; clicking it asks to confirm before restoring", async () => {
+    const sess = await page.until(() => [...page.w.document.querySelectorAll("#sessions .sess")].find((s) => /say bye/.test(s.textContent)), "the checkpointed session");
+    sess.click();
+    const labels = await page.until(() => { const l = [...page.w.document.querySelectorAll(".ckpt-label")]; return l.length === 2 ? l : null; }, "both checkpoint rows");
+    assert.match(labels[0].textContent, /before any changes/);
+    assert.match(labels[1].textContent, /after this edit/);
+    const btn = labels[1].parentElement.querySelector("button");
+    assert.equal(btn.textContent, "Rewind here");
+    btn.click();
+    assert.match(labels[1].parentElement.textContent, /Undo everything after this\?/, "clicking asks to confirm, not restoring immediately");
+    assert.ok(labels[1].parentElement.querySelector("button.danger"), "a distinct destructive button for the actual rewind");
   });
 
   test("a usage-limit failure is explained with the reset time and a way out, not shown as a raw error", async () => {
@@ -779,5 +812,35 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "hello there\n", "Apply brought the change into the folder");
     const after = await (await fetch(`${app.base}/api/diff?task=${taskId}`, { headers: H })).json();
     assert.notEqual(after.isolated, true, "the copy is gone after Apply");
+  });
+
+  test("rewind: a checkpoint exists before the task and after its edit, and restoring one undoes the file", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    writeFileSync(join(repo, "a.txt"), "hi\n"); // this describe block's earlier tests may have left it edited
+    const { rmSync: rm } = await import("node:fs");
+    rm(join(fakeDir, "count"), { force: true });
+    writeFileSync(join(fakeDir, "replies.json"), JSON.stringify([
+      JSON.stringify({ action: "edit", path: "a.txt", old: "hi", new: "bye" }),
+      JSON.stringify({ action: "done", summary: "changed it" }),
+    ]));
+    const started = await fetch(`${app.base}/api/run`, { method: "POST", headers: H, body: JSON.stringify({ task: "say bye instead", askBeforeCommands: false, force: true }) });
+    assert.equal(started.status, 200, await started.clone().text());
+    let taskId = null;
+    for (let i = 0; i < 200 && !taskId; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      const st = await (await fetch(`${app.base}/api/state`, { headers: H })).json();
+      const h = st.history.find((x) => x.outcome === "done" && /bye instead/.test(x.goal));
+      if (h && !st.running) taskId = h.id;
+    }
+    assert.ok(taskId, "the task finished");
+    assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "bye\n");
+    const t = await (await fetch(`${app.base}/api/task/${taskId}`, { headers: H })).json();
+    const checkpoints = t.events.filter((e) => e.type === "checkpoint" && e.actor === "system");
+    assert.equal(checkpoints.length, 2, "one before the task, one after the edit");
+    const r = await fetch(`${app.base}/api/rewind`, { method: "POST", headers: H, body: JSON.stringify({ task: taskId, checkpoint: checkpoints[0].id }) });
+    assert.equal(r.status, 200, await r.clone().text());
+    assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "hi\n", "rewinding to the first checkpoint undid the edit");
+    const bad = await fetch(`${app.base}/api/rewind`, { method: "POST", headers: H, body: JSON.stringify({ task: taskId, checkpoint: "nope" }) });
+    assert.equal(bad.status, 404);
   });
 });

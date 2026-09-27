@@ -10,7 +10,7 @@ import { now, shortId } from "./util.js";
  * model (context.ts's project()) is always a fold of this log, never the log itself.
  */
 export type Actor = "model" | "system" | "user";
-export type EventType = "plan" | "tool_call" | "tool_result" | "edit" | "command" | "verify" | "model_call" | "blocker" | "decision" | "handoff";
+export type EventType = "plan" | "tool_call" | "tool_result" | "edit" | "command" | "verify" | "model_call" | "blocker" | "decision" | "handoff" | "checkpoint";
 
 export interface TokenUsage {
   model: string;

@@ -112,6 +112,9 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .sess-acts button.danger:hover { color: var(--bad); }
 .sess-edit { width: 100%; }
 .sess-confirm { display: flex; gap: 6px; align-items: center; padding: 7px 10px; font-size: 12.5px; color: var(--muted); }
+.ckpt { display: flex; align-items: center; gap: 8px; padding: 4px 2px; font-size: 12px; color: var(--faint); }
+.ckpt-label { font-family: var(--mono); }
+.ckpt-confirm { display: flex; align-items: center; gap: 6px; }
 .sess.on { background: var(--panel); box-shadow: var(--shadow); }
 .sess .st { display: flex; gap: 7px; align-items: center; font-size: 13px; }
 .sess .st span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -260,7 +263,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 /* ---------- composer ---------- */
 .composer-wrap { flex: none; padding: 0 24px 16px; }
-.composer { max-width: 780px; margin: 0 auto; background: var(--panel); border: 1px solid var(--line-2); border-radius: 16px; box-shadow: var(--shadow); padding: 10px 12px 8px; }
+.composer { position: relative; max-width: 780px; margin: 0 auto; background: var(--panel); border: 1px solid var(--line-2); border-radius: 16px; box-shadow: var(--shadow); padding: 10px 12px 8px; }
 .composer:focus-within { border-color: color-mix(in srgb, var(--accent) 50%, var(--line-2)); }
 .banner { font-size: 12.5px; border-radius: 9px; padding: 8px 10px; margin-bottom: 8px; }
 .banner.warn { background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--text); }
@@ -272,6 +275,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .cbar .mchip:hover { background: var(--panel-2); color: var(--text); }
 .cbar .mchip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .attached { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px 0; }
+.mention-pop { position: absolute; bottom: calc(100% + 6px); left: 12px; right: 12px; max-height: 200px; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); z-index: 5; }
+.mention-pop .mi { padding: 6px 12px; font-size: 12.5px; font-family: var(--mono); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mention-pop .mi.sel, .mention-pop .mi:hover { background: var(--accent-soft); color: var(--accent); }
+.mention-pop .mi.empty { color: var(--muted); font-family: inherit; cursor: default; }
 .attached .att { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 4px 3px 8px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); max-width: 220px; }
 .attached .att span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attached .att button { padding: 0 6px; border: 0; background: transparent; color: var(--muted); }
@@ -411,7 +418,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <div class="composer">
         <div id="banner" class="banner hidden"></div>
         <div id="attached" class="attached hidden"></div>
-        <textarea id="input" rows="1" placeholder="Describe a task…"></textarea>
+        <div class="mention-pop hidden" id="mentionPop"></div>
+        <textarea id="input" rows="1" placeholder="Describe a task… (@ to mention a file)"></textarea>
         <div class="cbar">
           <button class="ghost" id="attachBtn" title="Attach an image or PDF (or paste or drop one)">📎</button>
           <input type="file" id="attachInput" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf" multiple class="hidden">
@@ -1167,9 +1175,64 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   var input = $("input");
   function autosize() { input.style.height = "auto"; input.style.height = Math.min(240, input.scrollHeight) + "px"; }
   input.addEventListener("input", autosize);
+  // "@" file mentions: typing @ opens a small popover of matching repo files (server-searched, debounced);
+  // picking one inserts "@path/to/file" so the runtime can read it straight into the first prompt instead
+  // of the model spending a turn finding it.
+  var mention = { active: false, start: -1, files: [], sel: 0 };
+  var mentionTimer = null;
+  function mentionRange() {
+    var v = input.value, pos = input.selectionStart;
+    var at = v.lastIndexOf("@", pos - 1);
+    if (at < 0 || (at > 0 && !/\s|\(/.test(v[at - 1]))) return null;
+    var token = v.slice(at + 1, pos);
+    if (/\s/.test(token)) return null;
+    return { start: at, end: pos, token: token };
+  }
+  function closeMention() { mention.active = false; show($("mentionPop"), false); }
+  function renderMentionPop() {
+    var box = clear($("mentionPop"));
+    if (!mention.files.length) { box.appendChild(el("div", { cls: "mi empty", text: "No matching files" })); }
+    else mention.files.forEach(function (f, i) {
+      var row = el("div", { cls: "mi" + (i === mention.sel ? " sel" : ""), text: f, onclick: function () { pickMention(i); } });
+      box.appendChild(row);
+    });
+    show(box, true);
+  }
+  function pickMention(i) {
+    var f = mention.files[i];
+    if (!f) return;
+    var r = mentionRange();
+    if (!r) return closeMention();
+    input.value = input.value.slice(0, r.start) + "@" + f + " " + input.value.slice(r.end);
+    var cur = r.start + f.length + 2;
+    input.setSelectionRange(cur, cur);
+    closeMention();
+    autosize();
+  }
+  function updateMention() {
+    var r = mentionRange();
+    if (!r || !S || !S.root) { closeMention(); return; }
+    mention.active = true; mention.start = r.start;
+    clearTimeout(mentionTimer);
+    mentionTimer = setTimeout(function () {
+      api("/api/files?q=" + encodeURIComponent(r.token)).then(function (d) {
+        if (!mention.active) return;
+        mention.files = d.files || []; mention.sel = 0; renderMentionPop();
+      }).catch(function () {});
+    }, 120);
+  }
+  input.addEventListener("input", updateMention);
   input.addEventListener("keydown", function (e) {
+    if (mention.active && (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === "Tab" || e.key === "Escape")) {
+      if (e.key === "Escape") { e.preventDefault(); closeMention(); return; }
+      if (!mention.files.length) { if (e.key === "Enter") closeMention(); return; }
+      if (e.key === "ArrowDown") { e.preventDefault(); mention.sel = (mention.sel + 1) % mention.files.length; renderMentionPop(); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); mention.sel = (mention.sel - 1 + mention.files.length) % mention.files.length; renderMentionPop(); return; }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickMention(mention.sel); return; }
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(false); }
   });
+  input.addEventListener("blur", function () { setTimeout(closeMention, 150); });
   function viewingRun() { return !!(view && run.active && (view.pendingNew || (view.taskId && run.taskId === view.taskId))); }
   $("compactBtn").onclick = function () {
     if (!view || !view.taskId) return;
@@ -1567,6 +1630,28 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (e.type === "decision" && Array.isArray(m.suggested)) { renderSuggested(e, m.suggested); return; }
     if (e.type === "decision" && typeof m.suggestedDone === "number") { markSuggested(m.suggestedDone, m.saved, e.summary); return; }
     if (e.type === "handoff") { add(el("div", { cls: "divider", text: m.manual ? e.summary : "context compacted — continuing in a fresh session" })); return; }
+    if (e.type === "checkpoint") {
+      if (e.actor === "user") { add(el("div", { cls: "divider", text: e.summary })); return; }
+      var row = el("div", { cls: "ckpt" });
+      var label = el("span", { cls: "ckpt-label", text: m.step === 0 ? "Checkpoint: before any changes" : "Checkpoint: after this edit" });
+      row.appendChild(label);
+      var askBtn = el("button", { cls: "link", text: "Rewind here", onclick: function () {
+        if (run.active) { banner("warn", "Stop the task before rewinding."); return; }
+        row.replaceChild(confirmRow(), askBtn);
+      } });
+      function confirmRow() {
+        return el("span", { cls: "ckpt-confirm" }, el("span", { text: "Undo everything after this?" }),
+          el("button", { cls: "danger", text: "Rewind", onclick: function () {
+            api("/api/rewind", { task: view.taskId, checkpoint: e.id }).then(function (r) {
+              showToast("Rewound — " + r.message);
+            }).catch(function (er) { banner("bad", er.message); });
+          } }),
+          el("button", { cls: "link", text: "Cancel", onclick: function () { row.replaceChild(askBtn, row.lastChild); } }));
+      }
+      row.appendChild(askBtn);
+      add(row);
+      return;
+    }
     if (e.type === "blocker") {
       var sm = e.summary;
       var parse = /could not parse a JSON action.*attempt (\d+)\/(\d+)/.exec(sm);

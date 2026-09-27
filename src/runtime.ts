@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { loadConfig, type Paths } from "./config.js";
+import { parseMentions, renderMentions, resolveMentions } from "./mentions.js";
+import { checkpointNow } from "./checkpoints.js";
 import { capOutput, runCommand } from "./compress.js";
 import { getConnector, listConnectors } from "./connectors.js";
 import { project } from "./context.js";
@@ -508,6 +510,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       // Untracked files that predate the task aren't its work; the lead review must not judge them.
       meta: { goal: taskText, untrackedAtStart: untrackedFiles(p) },
     });
+  if (!continuing) checkpointNow(p, taskId, 0, "before any changes");
   const goal = continuing ? (fold(taskId, prior).goal ?? taskText) : taskText;
   let plan: LeadPlan | null = continuing ? planFromEvents(prior) : null;
   const firstEvent = continuing ? prior[0] : readEvents(p, taskId)[0];
@@ -531,6 +534,11 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     plan = await leadPlan(lead, taskText, store);
     if (plan) log(`      → ${plan.steps.length} steps`);
   }
+
+  // "@path" mentions in the task text: read straight into the first prompt, so the model never has to
+  // spend a turn finding a file the user already named. Only on a fresh task — a follow-up's mentions
+  // would just repeat what's already in the resumed conversation or the compaction digest.
+  const mentionBlock = continuing ? "" : renderMentions(resolveMentions(p, parseMentions(taskText)));
 
   let scoutReport: string | null = null;
   if (opts.scout && !continuing) {
@@ -567,8 +575,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const part = (kind: string, label: string, text: string): Part => ({ kind, label, tokens: estimateTokens(text) });
   let nextParts: Part[] = [];
   const scoutBlock = scoutReport ? `Research report from a scout who has already read the code (unverified; trust the code over it, and read a file yourself before editing it):\n${scoutReport}\n\n` : "";
-  let nextPrompt = `Task: ${taskText}\n\n${plan ? renderPlanForWorker(plan) + "\n\n" : ""}${scoutBlock}Respond with your first action as JSON.`;
-  nextParts = [part("task", "your request", taskText), ...(plan ? [part("plan", "the lead's plan", renderPlanForWorker(plan))] : []), ...(scoutReport ? [part("scout", "the scout's research report", scoutReport)] : []), part("instructions", "Narrowbit's instructions (sent once per session)", systemPrompt)];
+  let nextPrompt = `Task: ${taskText}\n\n${mentionBlock}${plan ? renderPlanForWorker(plan) + "\n\n" : ""}${scoutBlock}Respond with your first action as JSON.`;
+  nextParts = [part("task", "your request", taskText), ...(mentionBlock ? [part("mentions", "files mentioned with @", mentionBlock)] : []), ...(plan ? [part("plan", "the lead's plan", renderPlanForWorker(plan))] : []), ...(scoutReport ? [part("scout", "the scout's research report", scoutReport)] : []), part("instructions", "Narrowbit's instructions (sent once per session)", systemPrompt)];
   // callModel's costUsd is Claude Code's CUMULATIVE cost for the whole resumed session, not a
   // per-call charge (confirmed by direct measurement: it strictly increases call over call, unlike
   // every other usage field, which the Anthropic API reports per-request). Track the running total
@@ -761,7 +769,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       if (decision.action === "done") {
         let challenge: string | null = null;
         // A task about an attached file can be answered from the attachment itself, with no action first.
-        if (editsApplied === 0 && !opts.attachments?.length && !doneChallenges.has("no-edit")) {
+        if (editsApplied === 0 && !opts.attachments?.length && !mentionBlock && !doneChallenges.has("no-edit")) {
           doneChallenges.add("no-edit");
           challenge = Object.keys(actionCounts).length === 0
             ? "You have not taken a single action yet — nothing has been read or changed, so the task cannot be complete. Start by reading the relevant file."
@@ -839,6 +847,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       if (decision.action === "edit" && !editRefused) {
         editsApplied++;
         editedSinceVerify = true;
+        checkpointNow(p, taskId, steps, resultText.startsWith("edited ") ? resultText.slice(0, 100) : `edit ${decision.path ?? ""}`);
       }
       // Running one of the repo's own verify commands (e.g. `npm test`) and passing counts as verifying:
       // making the model repeat it through "verify" just to satisfy the done gate wastes a turn.

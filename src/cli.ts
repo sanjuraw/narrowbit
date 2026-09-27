@@ -10,6 +10,7 @@ import { evalHistory } from "./eval.js";
 import { train } from "./train.js";
 import { changedSince, gitState } from "./git.js";
 import { applyIsolated, discardIsolated, readIsolated } from "./isolate.js";
+import { listCheckpoints, restoreCheckpoint } from "./checkpoints.js";
 import { findSkills } from "./skillimport.js";
 import { fold, readEvents } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
@@ -110,6 +111,9 @@ const HELP = `narrowbit — minimum sufficient context for coding agents
   narrowbit keys [list]               which API keys are set    narrowbit keys set|remove <provider>
       providers: claude, codex (subscriptions); openrouter (free & paid), groq, gemini (free tiers),
       openai, deepseek (paid); ollama, lmstudio (local, free); freellmapi (your own free-tier gateway); custom (any OpenAI-compatible server)
+
+  narrowbit rewind <task>              list a task's checkpoints (one before it starts, one after each edit)
+  narrowbit rewind <task> <checkpoint> restore your folder to that point (or the isolated worktree's, if run with --isolate)
 
   narrowbit memory add <type> "<text>" [--reason ..] [--attempt ..] [--result ..] [--files a,b]
       types: ${MEMORY_TYPES.join(", ")}
@@ -819,6 +823,28 @@ export async function main(argv: string[]): Promise<number> {
       out(r.message);
       if (!r.ok) return 1;
       discardIsolated(p, id);
+      return 0;
+    }
+    case "rewind": {
+      const id = pos[0];
+      if (!id || !/^rt-[\w-]+$/.test(id)) { process.stderr.write("usage: narrowbit rewind <task id> [checkpoint id]   (with no checkpoint id, lists the task's checkpoints)\n"); return 2; }
+      const root = findRoot();
+      const p = paths(root);
+      const cps = listCheckpoints(p, id);
+      if (!cps.length) { out(`${id} has no checkpoints (a checkpoint is recorded before the task starts and after each edit).`); return 0; }
+      const which = pos[1];
+      if (!which) {
+        out(`Checkpoints for ${id}:`);
+        for (const c of cps) out(`  ${c.id}  step ${c.step}  ${c.summary}`);
+        out(`\nnarrowbit rewind ${id} <id>   restores your folder to that point`);
+        return 0;
+      }
+      const target = cps.find((c) => c.id === which);
+      if (!target) { process.stderr.write(`narrowbit: no checkpoint "${which}" for ${id} (see \`narrowbit rewind ${id}\`)\n`); return 2; }
+      const isolated = readIsolated(p, id);
+      const r = restoreCheckpoint(isolated ? isolated.dir : root, target.commit);
+      if (!r.ok) { process.stderr.write(`narrowbit: ${r.message}\n`); return 1; }
+      out(r.message);
       return 0;
     }
     case "memory": {

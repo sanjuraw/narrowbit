@@ -4,10 +4,12 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { attachmentDir, attachmentKind, saveAttachment } from "./attachments.js";
+import { suggestFiles } from "./mentions.js";
 import { ensureDirs, loadConfig, paths, saveConfig, type AgentConfig, type Paths } from "./config.js";
 import { getConnector, listConnectors, publicConnector, removeConnector, saveConnector } from "./connectors.js";
 import { completeSignIn, signOut, startSignIn } from "./oauth.js";
 import { applyIsolated, discardIsolated, readIsolated } from "./isolate.js";
+import { listCheckpoints, restoreCheckpoint } from "./checkpoints.js";
 import { findSkills } from "./skillimport.js";
 import { appendEvent, fold, readEvents, type Event } from "./events.js";
 import { changedSince, githubIdentity, gitState, pushBranch, remoteInfo } from "./git.js";
@@ -513,6 +515,11 @@ export function startUi(opts: UiOptions) {
 
       if (route === "GET /api/readiness") return json(res, 200, await checkReadiness(url.searchParams.has("refresh")));
 
+      if (route === "GET /api/files") {
+        if (!root || !existsSync(paths(root).db)) return json(res, 200, { files: [] });
+        return json(res, 200, { files: suggestFiles(paths(root), url.searchParams.get("q") ?? "", 20) });
+      }
+
       if (route === "GET /api/limits") {
         // Codex's check is free, so refresh it when stale; Claude's updates with every call.
         const l = readLimits();
@@ -835,6 +842,22 @@ export function startUi(opts: UiOptions) {
           // An idle chat: mark it, so the next message starts a fresh session from the summary instead of resuming.
           appendEvent(p, id, { actor: "user", type: "handoff", summary: "you compacted this chat — your next message starts a fresh session from a short summary", meta: { manual: true } });
           return json(res, 200, { ok: true, when: "with your next message" });
+        }
+        case "/api/rewind": {
+          if (!root) return json(res, 400, { error: "no repository open" });
+          if (run?.running) return json(res, 409, { error: "stop the running task first" });
+          const id = String(body.task ?? "");
+          if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
+          const p = paths(root);
+          const cps = listCheckpoints(p, id);
+          const target = cps.find((c) => c.id === String(body.checkpoint ?? ""));
+          if (!target) return json(res, 404, { error: "no such checkpoint" });
+          const isolated = readIsolated(p, id);
+          const targetRoot = isolated ? isolated.dir : root;
+          const r = restoreCheckpoint(targetRoot, target.commit);
+          if (!r.ok) return json(res, 500, { error: r.message });
+          appendEvent(p, id, { actor: "user", type: "checkpoint", summary: `rewound to: ${target.summary}`, meta: { rewoundTo: target.id } });
+          return json(res, 200, { ok: true, message: r.message });
         }
         case "/api/stop": {
           if (!run?.running) return json(res, 200, { ok: true });

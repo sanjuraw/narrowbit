@@ -1760,3 +1760,82 @@ test("review-only: no plan call, but the diff still gets reviewed before done", 
     assert.ok(ev.some((e) => e.type === "model_call" && e.tokens?.role === "review"), "the review call happened");
   } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
 });
+
+describe("@ file mentions", () => {
+  test("a mention resolves an exact or basename match and its content reaches the first prompt", async () => {
+    const { parseMentions, resolveMentions, renderMentions, suggestFiles } = await dist("mentions.js");
+    const { root, p } = tinyRepo();
+    try {
+      writeFileSync(join(root, "b.txt"), "second file\n");
+      assert.deepEqual(parseMentions("fix @a.txt and @a.txt again, not user@example.com"), ["a.txt"]);
+      const resolved = resolveMentions(p, ["a.txt", "nope.ts"]);
+      assert.equal(resolved[0].path, "a.txt");
+      assert.match(resolved[0].content, /hello/);
+      assert.equal(resolved[1].path, null);
+      const block = renderMentions(resolved);
+      assert.match(block, /File a\.txt.*mentioned with @a\.txt/s);
+      assert.match(block, /@nope\.ts didn't match any file/);
+      assert.deepEqual(suggestFiles(p, "b.tx"), ["b.txt"]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("the worker answers from a mentioned file's content without needing to read it first", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([JSON.stringify({ action: "done", summary: "hello" })]);
+    try {
+      const r = await runTask(p, "what does @a.txt say?", { claudeBin: fake.bin, boss: false, maxSteps: 5 });
+      assert.equal(r.outcome, "done");
+      const ev = readEvents(p, r.taskId);
+      assert.ok(!ev.some((e) => e.type === "tool_call" && e.summary.includes("read")), "no read action was needed");
+      assert.ok(ev.some((e) => e.type === "model_call" && e.meta?.context?.parts?.some((x) => x.kind === "mentions")));
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("rewind: checkpoints of the working tree", () => {
+  test("a checkpoint is recorded before the task and after each edit; restoring one puts files back exactly, deleting anything newer", async () => {
+    const { checkpointNow, listCheckpoints, restoreCheckpoint } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    try {
+      const before = listCheckpoints(p, "rt-x");
+      assert.deepEqual(before, []);
+      checkpointNow(p, "rt-x", 0, "before any changes");
+      writeFileSync(join(root, "a.txt"), "changed\n");
+      writeFileSync(join(root, "new.txt"), "brand new\n");
+      checkpointNow(p, "rt-x", 1, "edited a.txt, created new.txt");
+      const cps = listCheckpoints(p, "rt-x");
+      assert.equal(cps.length, 2);
+      assert.equal(cps[0].step, 0);
+      const r = restoreCheckpoint(root, cps[0].commit);
+      assert.ok(r.ok, r.message);
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "hello\n");
+      assert.ok(!existsSync(join(root, "new.txt")), "a file created after the checkpoint is removed on rewind");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("the runtime checkpoints automatically: one at task start, one after each applied edit, none for a refused edit", async () => {
+    const { listCheckpoints } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([
+      JSON.stringify({ action: "edit", path: "a.txt", old: "not there", new: "x" }), // refused: old text doesn't match
+      JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "hi" }),
+      JSON.stringify({ action: "done", summary: "changed it" }),
+    ]);
+    try {
+      const r = await runTask(p, "say hi", { claudeBin: fake.bin, boss: false, maxSteps: 8 });
+      const cps = listCheckpoints(p, r.taskId);
+      assert.equal(cps.length, 2, "one at start, one after the real edit — none for the refused one");
+      assert.match(cps[1].summary, /hi/i.test(readFileSync(join(root, "a.txt"), "utf8")) ? /edited a\.txt/ : /edit a\.txt/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("restoreCheckpoint on an unknown commit fails clearly instead of corrupting the working tree", async () => {
+    const { restoreCheckpoint } = await dist("checkpoints.js");
+    const { root } = tinyRepo();
+    try {
+      const r = restoreCheckpoint(root, "0000000000000000000000000000000000000000");
+      assert.equal(r.ok, false);
+      assert.match(r.message, /no longer exists/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
