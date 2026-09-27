@@ -223,6 +223,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .step .meta { margin-left: auto; display: flex; gap: 8px; align-items: baseline; flex: none; font-size: 11.5px; color: var(--faint); }
 .step .add { color: var(--ok); font-family: var(--mono); } .step .rem { color: var(--bad); font-family: var(--mono); }
 .chip { font-size: 10.5px; font-weight: 600; padding: 0 6px; border-radius: 5px; background: var(--panel-2); }
+.drawer h3 .chip { margin-left: 6px; color: var(--accent); text-transform: none; letter-spacing: normal; vertical-align: middle; padding: 2px 7px; }
 .step .prev { font-family: var(--mono); font-size: 12px; color: var(--muted); padding: 0 0 2px 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .step .prev::before { content: "⎿  "; color: var(--faint); }
 .step .sb { margin: 4px 0 8px 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: auto; max-height: 360px; }
@@ -499,7 +500,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <div class="field"><label for="effort">Effort</label><select id="effort"></select></div>
       <div class="field"><label for="maxSteps">Max steps</label><input type="number" id="maxSteps" min="1" max="100" value="20"></div>
     </div>
-    <h3>Behaviour</h3>
+    <h3>Behaviour<span class="chip" id="modeLabel"></span></h3>
     <div class="sgroup">
       <label class="trow"><span class="tt"><strong>Lead mode</strong><small>Model 3 writes a plan before work starts and reviews the diff before it's reported done. Two extra calls to your strongest model per task.</small></span><span class="switch"><input type="checkbox" id="leadChk"><i></i></span></label>
       <div class="sindent">
@@ -533,9 +534,6 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <button id="addConnector">Add connector</button>
     </div>
     <div class="note hidden" id="connectorErr" style="color:var(--bad)"></div>
-
-    <h3>Appearance</h3>
-    <div class="field"><label for="themeSel">Theme</label><select id="themeSel"><option value="auto">Match my Mac</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
 
     <h3>About</h3>
     <div class="about" id="aboutInfo"></div>
@@ -584,7 +582,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 <script>
 (function () {
-  var sel = document.getElementById("themeSel");
+  // The only theme control: the ☀/☾ button in the top bar (cycles auto → light → dark). Used to also have a
+  // dropdown in Appearance settings; removed as redundant once the button existed, so this is the one place
+  // theme state is read, applied and stored.
   var btn = document.getElementById("themeBtn");
   var mq = window.matchMedia("(prefers-color-scheme: dark)");
   function get() { try { return localStorage.getItem("nb-theme") || "auto"; } catch (e) { return "auto"; } }
@@ -594,7 +594,6 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var r = resolved(v);
     btn.textContent = r === "dark" ? "☾" : "☀";
     btn.title = "Theme: " + (v === "auto" ? "Match my Mac (currently " + r + ")" : v[0].toUpperCase() + v.slice(1)) + " — click to change";
-    if (sel.value !== v) sel.value = v;
   }
   function apply(v) {
     try { localStorage.setItem("nb-theme", v); } catch (e) {}
@@ -602,8 +601,6 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     else document.documentElement.setAttribute("data-theme", v);
     render();
   }
-  sel.value = get();
-  sel.addEventListener("change", function () { apply(sel.value); });
   btn.addEventListener("click", function () { apply({ auto: "light", light: "dark", dark: "auto" }[get()]); });
   mq.addEventListener("change", render);
   render();
@@ -1183,9 +1180,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var t = S.selection.tiers, lbl = S.providers[S.selection.provider].label;
     var line = lbl + " · " + (t.explore || "?") + " / " + (t.execute || "?") + " / " + (t.escalate || "?");
     $("settingsSub").textContent = line;
-    // The composer chip is short (provider and the working model); the full three-slot line is its tooltip.
-    $("modelChipText").textContent = lbl.split(" (")[0] + " · " + (t.execute || "?");
-    $("modelChip").title = "Models & settings — " + line;
+    // Named so the ranking in settings is legible at a glance: Solo (nothing on) is the measured-best default;
+    // Lead/Review-only/Scout are named after whichever Behaviour toggle is actually changing how the task runs.
+    var mode = S.lead ? "Lead" : S.reviewOnly ? "Review only" : S.scout ? "Scout" : "Solo";
+    // The composer chip is short (provider, working model, mode); the full three-slot line is its tooltip.
+    $("modelChipText").textContent = lbl.split(" (")[0] + " · " + (t.execute || "?") + " · " + mode;
+    $("modelChip").title = "Models & settings — " + line + " — " + mode + " mode";
+    $("modeLabel").textContent = mode + " mode";
   }
   function swapToText(ph, val) {
     var row = $("slotrow-" + ph), old = $("slot-" + ph);

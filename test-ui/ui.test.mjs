@@ -206,6 +206,29 @@ describe("app page with no folder open (a brand-new user)", () => {
     await page.until(() => page.$("planApprovalChk").disabled, "plan-approval to disable once lead mode is off");
   });
 
+  test("a mode label (Solo by default) shows in Behaviour and the composer chip, and follows Lead mode", async () => {
+    if (!page.$("drawer") || page.$("drawer").classList.contains("hidden")) page.$("settingsBtn").click();
+    await page.until(() => !page.$("drawer").classList.contains("hidden"), "the drawer to open");
+    // Other tests in this shared session may have left Lead mode or Review-only on; drive real clicks (not a
+    // raw API call, which wouldn't reach this already-open page's own in-memory state) until Solo shows, one
+    // toggle at a time, waiting on modeLabel each time — the checkbox's .checked flips natively and instantly
+    // on click, well before the save round-trip (and modeLabel, which depends on its response) completes.
+    for (let i = 0; i < 5 && page.$("modeLabel").textContent !== "Solo mode"; i++) {
+      const before = page.$("modeLabel").textContent;
+      if (page.$("leadChk").checked) page.$("leadChk").click();
+      else if (page.$("reviewOnlyChk").checked) page.$("reviewOnlyChk").click();
+      else break;
+      await page.until(() => page.$("modeLabel").textContent !== before, "the mode label to change");
+    }
+    assert.equal(page.$("modeLabel").textContent, "Solo mode");
+    assert.match(page.$("modelChipText").textContent, /Solo$/);
+    page.$("leadChk").click();
+    await page.until(() => page.$("modeLabel").textContent === "Lead mode", "the label to follow Lead mode");
+    assert.match(page.$("modelChipText").textContent, /Lead$/);
+    page.$("leadChk").click();
+    await page.until(() => page.$("modeLabel").textContent === "Solo mode", "back to Solo once Lead mode is off");
+  });
+
   test("the GitHub button beside the folder pill stays hidden when the repository has no GitHub remote", () => {
     assert.ok(page.$("ghCrumb").classList.contains("hidden"));
   });
@@ -225,34 +248,27 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.ok(!app.classList.contains("side-hidden"));
   });
 
-  test("the theme selector switches between light, dark and the Mac setting", () => {
-    const sel = page.$("themeSel");
-    const root = page.w.document.documentElement;
-    sel.value = "dark";
-    sel.dispatchEvent(new page.w.Event("change"));
-    assert.equal(root.getAttribute("data-theme"), "dark");
-    sel.value = "light";
-    sel.dispatchEvent(new page.w.Event("change"));
-    assert.equal(root.getAttribute("data-theme"), "light");
-    sel.value = "auto";
-    sel.dispatchEvent(new page.w.Event("change"));
-    assert.equal(root.getAttribute("data-theme"), null);
+  test("there is no theme dropdown in settings — the top-right button is the only theme control", () => {
+    assert.equal(page.$("themeSel"), null);
   });
 
-  test("the top-right theme button cycles auto → light → dark → auto, in sync with the settings dropdown", () => {
+  test("the top-right theme button cycles auto → light → dark → auto, and its icon/title reflect the state", () => {
     const btn = page.$("themeBtn");
-    const sel = page.$("themeSel");
     const root = page.w.document.documentElement;
-    sel.value = "auto"; sel.dispatchEvent(new page.w.Event("change"));
+    // Reset to a known start (auto) regardless of what an earlier test left it at.
+    while (root.getAttribute("data-theme") !== null) btn.click();
+    assert.match(btn.title, /Match my Mac/);
     btn.click();
     assert.equal(root.getAttribute("data-theme"), "light");
-    assert.equal(sel.value, "light", "the dropdown reflects the button's change");
+    assert.equal(btn.textContent, "☀");
+    assert.match(btn.title, /^Theme: Light/);
     btn.click();
     assert.equal(root.getAttribute("data-theme"), "dark");
-    assert.equal(sel.value, "dark");
+    assert.equal(btn.textContent, "☾");
+    assert.match(btn.title, /^Theme: Dark/);
     btn.click();
     assert.equal(root.getAttribute("data-theme"), null, "back to auto");
-    assert.equal(sel.value, "auto");
+    assert.match(btn.title, /Match my Mac/);
   });
 
   test("the version is visible in the sidebar and in About", () => {
