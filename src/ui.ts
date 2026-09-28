@@ -132,7 +132,8 @@ function json(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-function taskHistory(p: Paths, limit = 40) {
+/** `tag` identifies which project/draft-space a row belongs to, for the merged cross-project list below. */
+function taskHistory(p: Paths, limit = 40, tag?: { project: string; root: string | null }) {
   if (!existsSync(p.runtime)) return [];
   const rows = [];
   for (const id of readdirSync(p.runtime)) {
@@ -155,7 +156,26 @@ function taskHistory(p: Paths, limit = 40) {
       files: state.filesTouched,
       tokens: roles.reduce((a, r) => a + r.inputTokens + r.cacheCreationTokens + r.cacheReadTokens + r.outputTokens, 0),
       costUsd: roles.reduce((a, r) => a + r.costUsd, 0),
+      ...(tag ? { project: tag.project, projectRoot: tag.root } : {}),
     });
+  }
+  return rows.sort((a, b) => b.last.localeCompare(a.last)).slice(0, limit);
+}
+
+/**
+ * Conversations across every recent project plus rootless planning drafts, merged into one list sorted by
+ * recency — like Claude.ai's single chat list, rather than only ever showing whichever one project happens
+ * to be open right now. Each recent project's own event logs are small, and this already re-scans the
+ * *current* project's full history on every state() call (unchanged from before); scanning a further
+ * handful of recent ones on top is the same order of work, not a new class of cost.
+ */
+function mergedHistory(root: string | null, limit = 40) {
+  const rows = taskHistory(draftsPaths(), limit, { project: "Planning", root: null });
+  for (const r of loadRecent().slice(0, 10)) {
+    if (r === root || !existsSync(r)) continue; // the open project's own history is added by the caller, already tagged
+    const p = paths(r);
+    if (!existsSync(p.db)) continue; // not a Narrowbit project (never initialized) — nothing to scan
+    rows.push(...taskHistory(p, limit, { project: basename(r), root: r }));
   }
   return rows.sort((a, b) => b.last.localeCompare(a.last)).slice(0, limit);
 }
@@ -341,7 +361,7 @@ export function startUi(opts: UiOptions) {
       const ga = globalAgent();
       let selection;
       try { selection = resolveSelection(ga); } catch { selection = resolveSelection(undefined); }
-      return { root: null, missingRoot, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? false, reviewOnly: !!ga?.reviewOnly, planApproval: !!ga?.planApproval, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: taskHistory(draftsPaths()) };
+      return { root: null, missingRoot, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? false, reviewOnly: !!ga?.reviewOnly, planApproval: !!ga?.planApproval, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: mergedHistory(null) };
     }
     const p = paths(root);
     const initialized = existsSync(p.db);
@@ -377,7 +397,9 @@ export function startUi(opts: UiOptions) {
       scout: effAgent(cfg)?.scout ?? "",
       reviewOnly: !!effAgent(cfg)?.reviewOnly,
       planApproval: !!effAgent(cfg)?.planApproval,
-      history: initialized ? taskHistory(p) : [],
+      history: [...(initialized ? taskHistory(p, 40, { project: basename(root), root }) : []), ...mergedHistory(root)]
+        .sort((a, b) => b.last.localeCompare(a.last))
+        .slice(0, 40),
       skills: listSkills(p),
       memory: openMemory(p).load().filter((e) => e.status === "active" && !e.external).map((e) => ({ id: e.id, type: e.type, text: e.text, reason: e.reason ?? "", date: e.date })),
       connectors: listConnectors().map(publicConnector),

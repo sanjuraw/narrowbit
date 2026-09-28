@@ -8,7 +8,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 
@@ -1023,6 +1023,69 @@ describe("a project folder renamed or moved outside the app", () => {
       await page.until(() => !page.$("crumb").classList.contains("empty"), "back in the project at its new location");
       assert.match(page.$("crumbName").textContent, /renamed · main$/);
     } finally { execFileSync("mv", [renamed, repo]); }
+  });
+});
+
+describe("sidebar sessions are merged across recent projects, like Claude.ai's single chat list", () => {
+  let home, repoA, repoB, app, page;
+  const git = (cwd, ...a) => execFileSync("git", a, { cwd, stdio: "ignore" });
+  function makeRepo(name) {
+    const r = fresh(name);
+    git(r, "init", "-q", "-b", "main");
+    git(r, "config", "user.email", "t@t.t");
+    git(r, "config", "user.name", "t");
+    writeFileSync(join(r, "a.txt"), "hi\n");
+    git(r, "add", "-A");
+    git(r, "commit", "-qm", "init");
+    return r;
+  }
+  before(async () => {
+    home = fresh("home");
+    repoA = makeRepo("repoA");
+    repoB = makeRepo("repoB");
+    execFileSync(process.execPath, [BIN, "init", "--no-index"], { cwd: repoA, stdio: "ignore", env: { ...process.env, HOME: home } });
+    execFileSync(process.execPath, [BIN, "init", "--no-index"], { cwd: repoB, stdio: "ignore", env: { ...process.env, HOME: home } });
+    const { appendEvent } = await import(join(ROOT, "dist", "events.js"));
+    const { paths } = await import(join(ROOT, "dist", "config.js"));
+    // "initialized" is judged by the index file existing — --no-index above skips creating it for real.
+    mkdirSync(paths(repoA).nb, { recursive: true }); writeFileSync(paths(repoA).db, "");
+    mkdirSync(paths(repoB).nb, { recursive: true }); writeFileSync(paths(repoB).db, "");
+    appendEvent(paths(repoA), "rt-a-test", { actor: "user", type: "decision", summary: "task received", meta: { goal: "work done in repo A" } });
+    appendEvent(paths(repoA), "rt-a-test", { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: "done", steps: 1 } });
+    appendEvent(paths(repoB), "rt-b-test", { actor: "user", type: "decision", summary: "task received", meta: { goal: "work done in repo B" } });
+    appendEvent(paths(repoB), "rt-b-test", { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: "done", steps: 1 } });
+    app = await startApp({ cwd: repoA, home });
+    // Register repoB in "recent" the same way opening it through the app would — this app instance never
+    // visits it through the UI in this test, only ever through repoA, so this is the one thing that has to
+    // happen out of band to set the scene.
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repoB }) });
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repoA }) });
+    page = await openPage(app.url);
+    await page.until(() => !page.$("crumb").classList.contains("empty") && page.$("crumbName").textContent, "the repo pill");
+  });
+  after(() => {
+    page?.close();
+    app?.stop();
+    for (const d of [home, repoA, repoB]) rmSync(d, { recursive: true, force: true });
+  });
+
+  test("both projects' sessions show in one sidebar list, tagged by project, sorted by recency", async () => {
+    await page.until(() => page.w.document.querySelectorAll("#sessions .sess").length >= 2, "both sessions to appear");
+    const rows = [...page.w.document.querySelectorAll("#sessions .sess")];
+    const own = rows.find((r) => /work done in repo A/.test(r.textContent));
+    const other = rows.find((r) => /work done in repo B/.test(r.textContent));
+    assert.ok(own, "the open project's own session is listed");
+    assert.ok(other, "the other recent project's session is listed too, not just the open one's");
+    assert.match(own.textContent, /^work done in repo A/, "no project tag on a row already in the open project");
+    assert.equal(other.textContent.indexOf(basename(repoB) + " · work done in repo B"), 0, "a row from elsewhere is tagged with its project");
+  });
+
+  test("opening another project's session switches to that project first, then opens it", async () => {
+    const other = [...page.w.document.querySelectorAll("#sessions .sess")].find((r) => /work done in repo B/.test(r.textContent));
+    other.click();
+    await page.until(() => page.$("crumbName") && page.$("crumbName").textContent.indexOf(basename(repoB)) === 0, "switched into repo B");
+    await page.until(() => page.w.document.querySelector(".outcome"), "the session's content loaded");
   });
 });
 

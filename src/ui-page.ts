@@ -812,17 +812,35 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   $("ghCreateGo").onclick = ghCreateGo;
   $("ghRepoName").addEventListener("keydown", function (e) { if (e.key === "Enter") ghCreateGo(); });
   function showToast(text) { var n = el("div", { cls: "notice", text: text }); add(n); }
+  // One merged, recency-sorted list across every recent project plus rootless drafts (like Claude.ai's
+  // single chat list) rather than only ever showing whichever one project happens to be open — each row
+  // carries its own project tag, and opening one not in the currently-open project switches to it first.
+  function switchToSession(r) {
+    if (r.project === "Planning") { openDraft(r.id); closeSide(); return; }
+    if (S && r.projectRoot === S.root) { openSession(r.id); closeSide(); return; }
+    api("/api/repo", { path: r.projectRoot }).then(function (st) {
+      if (es) { es.close(); es = null; }
+      draft = null; S = null; modelLists = {};
+      apply(st);
+      openSession(r.id);
+      closeSide();
+    }).catch(function (e) { banner("bad", e.message); });
+  }
   function renderSessions() {
     var box = clear($("sessions"));
     var drafting = !(S && S.root);
     if (!S || !S.history || !S.history.length) { box.appendChild(el("div", { cls: "muted", style: "font-size:12.5px;padding:6px 10px", text: drafting ? "No conversations yet — describe what you want to build." : "No sessions yet." })); return; }
     S.history.forEach(function (r) {
       var live = run.active && run.taskId === r.id;
-      var b = el("button", { cls: "sess" + (view && view.taskId === r.id ? " on" : ""), title: r.goal, onclick: function () { if (drafting) openDraft(r.id); else openSession(r.id); closeSide(); } },
-        el("div", { cls: "st" }, el("span", { cls: "dot o-" + (live ? "running" : r.outcome) }), el("span", { text: r.goal })),
+      var sameProject = r.project === "Planning" ? drafting : !!(S && r.projectRoot === S.root);
+      var label = r.project && !sameProject ? r.project + " · " + r.goal : r.goal;
+      var b = el("button", { cls: "sess" + (view && view.taskId === r.id ? " on" : ""), title: label, onclick: function () { switchToSession(r); } },
+        el("div", { cls: "st" }, el("span", { cls: "dot o-" + (live ? "running" : r.outcome) }), el("span", { text: label })),
         el("div", { cls: "sm", text: (live ? "running" : ago(r.last)) + (r.turns > 1 ? " · " + r.turns + " messages" : "") + " · " + fmt(r.tokens) + " tok" }));
       var row = el("div", { cls: "sess-row" }, b);
-      if (!live && !drafting) {
+      // Rename/delete act on whatever project is currently open — only offered for a row that's actually
+      // in it, so a click can never silently rename or delete a session in some other project.
+      if (!live && sameProject && r.project !== "Planning") {
         row.appendChild(el("div", { cls: "sess-acts" },
           el("button", { title: "Rename", "aria-label": "Rename", onclick: function (e) { e.stopPropagation(); renameSession(r, row, b); } }, "✎"),
           el("button", { cls: "danger", title: "Delete", "aria-label": "Delete", onclick: function (e) { e.stopPropagation(); confirmDelete(r, row, b); } }, "🗑")));
