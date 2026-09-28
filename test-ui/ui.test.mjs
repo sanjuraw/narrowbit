@@ -764,6 +764,20 @@ describe("app page with a folder open", () => {
   });
 
   // Last in this describe: it leaves the project, so nothing after it can assume a folder is open.
+  test("'New task' always starts a blank, no-folder chat — like Claude's own 'New' — not a task in whatever project is open", async () => {
+    assert.ok(!page.$("crumb").classList.contains("empty"), "a project is open to start");
+    page.$("newBtn").click();
+    await page.until(() => page.$("crumb").classList.contains("empty"), "the project to be left");
+    assert.equal(page.$("crumbName").textContent, "Choose a folder to start");
+    assert.equal(page.w.document.querySelector(".final"), null, "a blank chat, nothing rendered");
+    // The left project isn't gone — it's still one click away in the folder picker's recents.
+    page.$("crumb").click();
+    const row = [...page.w.document.querySelectorAll("#recentList button")].find((b) => /repo/.test(b.textContent));
+    assert.ok(row, "the left project is still listed as a recent folder");
+    row.click();
+    await page.until(() => !page.$("crumb").classList.contains("empty"), "back in the project");
+  });
+
   test("'Start without a folder' leaves the project and returns to the rootless planning screen", async () => {
     page.$("crumb").click();
     assert.ok(page.visible(page.$("startNoFolder")), "offered since a folder is open");

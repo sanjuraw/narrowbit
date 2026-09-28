@@ -224,6 +224,9 @@ export interface UiOptions {
 export function startUi(opts: UiOptions) {
   const token = randomBytes(24).toString("hex");
   let root: string | null = opts.root && existsSync(opts.root) ? repoRootOf(opts.root) : (loadRecent()[0] ?? null);
+  // A folder opened by cwd/CLI at launch (not through /api/repo) wasn't otherwise recorded — record it now,
+  // so leaving it later (Start without a folder, or "New task" going rootless) still finds it in recents.
+  if (root) saveRecent(root);
   let run: Run | null = null;
   const clients = new Set<ServerResponse>();
   const modelCache = new Map<string, { at: number; list: ModelList }>();

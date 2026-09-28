@@ -702,7 +702,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       show($("setupCard"), false);
       if (S.providers) { draft = { root: null, provider: S.selection.provider, effort: S.selection.effort }; renderSettings(); renderConnectors(); renderGetStarted(); }
       renderSessions(); renderComposer();
-      if (first) newTask();
+      if (first) blankView();
       return;
     }
     if (!draft || draft.root !== S.root) draft = { root: S.root, provider: S.selection.provider, effort: S.selection.effort };
@@ -711,7 +711,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     show($("setupCard"), !S.initialized);
     if (first) {
       if (S.running && S.runningTask) openSession(S.runningTask);
-      else newTask();
+      else blankView();
     }
     if (!es) connect();
   }
@@ -789,7 +789,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function confirmDelete(r, row, b) {
     var box = el("div", { cls: "sess-confirm" }, el("span", { text: "Delete this chat?" }),
       el("button", { cls: "danger", text: "Delete", onclick: function () {
-        api("/api/session/delete", { id: r.id }).then(function (st) { var wasOpen = view && view.taskId === r.id; apply(st); if (wasOpen) newTask(); }).catch(function (e) { banner("bad", e.message); renderSessions(); });
+        api("/api/session/delete", { id: r.id }).then(function (st) { var wasOpen = view && view.taskId === r.id; apply(st); if (wasOpen) blankView(); }).catch(function (e) { banner("bad", e.message); renderSessions(); });
       } }),
       el("button", { text: "Cancel", onclick: function () { renderSessions(); } }));
     row.replaceChild(box, b); var acts = row.querySelector(".sess-acts"); if (acts) acts.remove();
@@ -1482,7 +1482,26 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     updateUsage();
     renderComposer();
   }
-  function newTask() { resetView(null); show($("createProjectBar"), false); renderSessions(); input.focus(); closeSide(); }
+  // Just blanking the composer for a fresh task within whatever project (or lack of one) is already
+  // current — used for internal bookkeeping (first load, the active session got deleted, forking a task)
+  // where nothing about which project is open should change.
+  function blankView() { resetView(null); show($("createProjectBar"), false); renderSessions(); input.focus(); closeSide(); }
+  // The user-facing "New task" action, though, always starts a blank, no-folder chat — matching Claude's
+  // own "New" — rather than silently continuing whatever project happened to be open. The current project
+  // stays reachable from the folder picker's recents list; this is the one place that leaves it, so it
+  // needs the same close-then-reset a project switch does, not just blankView()'s local view reset.
+  function newTask() {
+    if (S && S.root) {
+      api("/api/repo/close", {}).then(function (st) {
+        if (es) { es.close(); es = null; }
+        draft = null; S = null; modelLists = {};
+        apply(st);
+        blankView();
+      }).catch(function (e) { banner("bad", e.message); });
+    } else {
+      blankView();
+    }
+  }
   $("newBtn").onclick = newTask;
   document.addEventListener("keydown", function (e) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); newTask(); }
@@ -1553,7 +1572,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       el("span", { cls: "when", text: at ? ago(at) : "" }),
       copyBtn,
       iconBtn("again", "Edit and send again", function () { input.value = text; autosize(); input.focus(); input.setSelectionRange(text.length, text.length); }),
-      iconBtn("fork", "Start a new task from this", function () { newTask(); input.value = text; autosize(); input.focus(); }));
+      iconBtn("fork", "Start a new task from this", function () { blankView(); input.value = text; autosize(); input.focus(); }));
   }
   function add(node, force) { follow(function () { $("items").appendChild(node); }, force); placeWorking(); return node; }
   function setWorking(text) { if (!view) return; view.working = text; placeWorking(); }
