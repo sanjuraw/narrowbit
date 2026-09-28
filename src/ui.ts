@@ -572,16 +572,35 @@ export function startUi(opts: UiOptions) {
 
       switch (url.pathname) {
         case "/api/repo": {
+          // One action for both "open this existing project" and "start a new one here" — an empty or
+          // not-yet-created folder is created (git init + a bootstrap commit) rather than refused, so
+          // there's a single "choose a folder" flow instead of a separate create-project ceremony.
           if (run?.running) return json(res, 409, { error: "stop the running task before switching repositories" });
           const dir = resolve(String(body.path ?? "").replace(/^~(?=$|\/)/, homedir()));
-          if (!existsSync(dir) || !statSync(dir).isDirectory()) return json(res, 400, { error: `not a folder: ${dir}` });
-          const r = repoRootOf(dir);
-          if (!existsSync(join(r, ".git")) && !existsSync(join(r, "package.json"))) return json(res, 400, { error: `${r} doesn't look like a project (no .git or package.json)` });
-          if (r === homedir()) return json(res, 400, { error: "refusing to use your home folder as a repository" });
+          if (dir === homedir()) return json(res, 400, { error: "refusing to use your home folder as a repository" });
+          if (existsSync(dir) && !statSync(dir).isDirectory()) return json(res, 400, { error: `not a folder: ${dir}` });
+          const looksLikeProject = existsSync(dir) && (existsSync(join(dir, ".git")) || existsSync(join(dir, "package.json")));
+          let r: string;
+          let seedTask: string | undefined;
+          if (looksLikeProject) {
+            r = repoRootOf(dir);
+          } else if (!existsSync(dir) || readdirSync(dir).length === 0) {
+            const taskId = typeof body.taskId === "string" && /^pl-[\w-]+$/.test(body.taskId) ? body.taskId : undefined;
+            try {
+              const created = createProjectFromDraft(taskId, dir);
+              r = created.root;
+              seedTask = created.seedTask || undefined;
+            } catch (e: any) {
+              return json(res, 400, { error: e.message });
+            }
+          } else {
+            return json(res, 400, { error: `${dir} isn't empty and doesn't look like a project (no .git or package.json) — pick an empty folder to start fresh, or an existing project.` });
+          }
           root = r;
           run = null;
           saveRecent(r);
-          return json(res, 200, state());
+          const st = state();
+          return json(res, 200, seedTask ? { ...st, seedTask } : st);
         }
         case "/api/repo/close": {
           // Leaving the current project back to the rootless planning screen — the only way there once
@@ -610,23 +629,6 @@ export function startUi(opts: UiOptions) {
           const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.execute, sel.effort);
           if (r.isError) return json(res, 400, { error: r.errorMessage ?? "the model call failed", taskId: r.taskId });
           return json(res, 200, { taskId: r.taskId, reply: r.text });
-        }
-        case "/api/plan/create": {
-          if (run?.running) return json(res, 409, { error: "stop the running task before switching repositories" });
-          const id = String(body.taskId ?? "");
-          if (!/^pl-[\w-]+$/.test(id)) return json(res, 400, { error: "bad draft id" });
-          const dir = resolve(String(body.path ?? "").replace(/^~(?=$|\/)/, homedir()));
-          if (dir === homedir()) return json(res, 400, { error: "refusing to use your home folder as a project" });
-          let created: { root: string; seedTask: string };
-          try {
-            created = createProjectFromDraft(id, dir);
-          } catch (e: any) {
-            return json(res, 400, { error: e.message });
-          }
-          root = created.root;
-          run = null;
-          saveRecent(created.root);
-          return json(res, 200, { ...state(), seedTask: created.seedTask });
         }
         case "/api/init": {
           if (!root) return json(res, 400, { error: "no repository open" });

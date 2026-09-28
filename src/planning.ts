@@ -88,10 +88,12 @@ export function draftGoal(taskId: string): string | null {
 }
 
 /**
- * Turns a planning discussion into a real, local project: a new folder, `git init`, one commit — nothing
- * about GitHub here. Publishing is a separate, later decision (the existing Push flow), not part of this.
+ * Turns a folder — new, empty, or mid-discussion draft — into a real local project: `git init`, one commit,
+ * nothing about GitHub here. Publishing is a separate, later decision (the existing Push flow). `taskId` is
+ * optional: given one, the project is seeded with that draft's digest as its first task; omitted, it's just
+ * an empty folder to open, the same "choose a folder" action whether or not you'd been discussing it first.
  */
-export function createProjectFromDraft(taskId: string, targetPath: string): { root: string; seedTask: string } {
+export function createProjectFromDraft(taskId: string | undefined, targetPath: string): { root: string; seedTask: string } {
   const root = resolve(targetPath);
   if (existsSync(root) && readdirSync(root).length > 0) throw new Error(`${root} already exists and isn't empty — pick an empty or new folder.`);
   mkdirSync(root, { recursive: true, mode: 0o755 });
@@ -108,7 +110,7 @@ export function createProjectFromDraft(taskId: string, targetPath: string): { ro
   }
   if (commit.status !== 0) throw new Error(`git commit failed: ${(commit.stderr ?? "").trim() || "unknown error"}`);
   initProject(paths(root), { index: false });
-  const digest = draftDigest(taskId);
+  const digest = taskId ? draftDigest(taskId) : "";
   const seedTask = digest ? `Based on our discussion:\n\n${digest}\n\nSet this project up accordingly.` : "";
   return { root, seedTask };
 }

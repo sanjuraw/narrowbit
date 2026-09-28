@@ -426,7 +426,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   <aside>
     <div class="side-top"><span class="brand"><svg class="mark" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="20" y="25" width="8" height="50"/><rect x="20" y="25" width="20" height="8"/><rect x="20" y="67" width="20" height="8"/><rect x="72" y="25" width="8" height="50"/><rect x="60" y="25" width="20" height="8"/><rect x="60" y="67" width="20" height="8"/><rect x="44" y="44" width="12" height="12"/></svg>Narrowbit</span><button class="ghost" id="hideSideBtn" title="Hide sidebar (Cmd/Ctrl+B)" aria-label="Hide sidebar">⇤</button></div>
     <button class="new-btn" id="newBtn"><span class="plus">+</span>New task <span style="margin-left:auto"><kbd>⌘</kbd> <kbd>K</kbd></span></button>
-    <button class="repo-btn" id="repoBtn" title="Switch repository"><span class="rn" id="repoName">No repository</span><span class="rb" id="repoBranch"></span></button>
+    <button class="repo-btn" id="repoBtn" title="Switch repository"><span class="rn" id="repoName">Choose a folder</span><span class="rb" id="repoBranch"></span></button>
     <div class="side-label">Sessions</div>
     <div class="sessions" id="sessions"></div>
     <div class="side-label collapsible" id="skillsLabel"><span><span class="cv" id="skillsChevron">▾</span>Skills</span><button class="add-skill" id="addSkillBtn" title="New skill">+</button></div>
@@ -469,16 +469,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     </div>
     <div class="composer-wrap">
       <div class="cpbar hidden" id="createProjectBar">
-        <div class="cpbar-row" id="cpbarAsk">
+        <div class="cpbar-row">
           <span>Ready to start building this for real?</span>
-          <button class="primary" id="cpbarOpen">Create project</button>
+          <button class="primary" id="cpbarOpen">Choose a folder</button>
         </div>
-        <div class="cpbar-row hidden" id="cpbarForm">
-          <input type="text" id="cpbarName" placeholder="Project name (e.g. my-app)" class="mono">
-          <button class="primary" id="cpbarCreate">Create</button>
-          <button class="link" id="cpbarCancel">Cancel</button>
-        </div>
-        <div class="note hidden" id="cpbarErr" style="color:var(--bad)"></div>
       </div>
       <div class="crumb-wrap" id="crumbWrap"><button class="crumb" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button> <button class="crumb hidden" id="ghCrumb" title="Open this repository on GitHub"><span class="ci">⎇</span><span id="ghName"></span></button></div>
       <div class="composer">
@@ -568,8 +562,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 </div>
 <div class="overlay hidden" id="repoOverlay">
   <div class="modal">
-    <h1>Open a repository</h1>
-    <p class="muted" style="margin:0">Narrowbit works directly in the folder you choose. Edits are real — you review and commit them here.</p>
+    <h1>Choose a folder</h1>
+    <p class="muted" style="margin:0">Pick an existing project, or a new or empty folder to start one there. Narrowbit works directly in it — edits are real, you review and commit them here.</p>
     <div class="recent" id="recentList"></div>
     <div class="open-row">
       <input type="text" id="repoPath" placeholder="/path/to/your/project" class="mono">
@@ -722,7 +716,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (!es) connect();
   }
   function renderRepo() {
-    $("repoName").textContent = S && S.root ? S.name : "No repository";
+    $("repoName").textContent = S && S.root ? S.name : "Choose a folder";
     $("repoBranch").textContent = S && S.git && S.git.branch ? S.git.branch + (S.git.head ? " · " + S.git.head : "") : "";
     $("welcomeTitle").textContent = S && S.root ? "What should we work on in " + S.name + "?" : "What should we work on?";
     // Persistent breadcrumb above the chat, not just the sidebar — visible in every view (idle or
@@ -1405,6 +1399,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     input.value = ""; autosize();
     var wasNew = !cont;
     if (wasNew) resetView(null);
+    if (wasNew) $("title").textContent = text;
     add(el("div", { cls: "msg-user" }, el("div", { cls: "bubble" }, rich(text))), true);
     var thinking = add(el("div", { cls: "working" }, el("span", { cls: "spark" }), el("span", { cls: "shimmer", text: "Thinking…" })), true);
     $("sendBtn").disabled = true;
@@ -2084,41 +2079,31 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     }).catch(function (e) { banner("bad", e.message); });
   }
   $("startNoFolder").onclick = startNoFolder;
+  // One action for opening an existing folder or starting a new one there (an empty or not-yet-created
+  // path is created rather than refused — see /api/repo) — mid-draft, it's seeded with the discussion so
+  // far, the same "you stay in control" pattern as everywhere else: it fills the composer, never sends.
   function openRepo(path) {
-    api("/api/repo", { path: path }).then(function (st) {
-      if (es) { es.close(); es = null; }
-      draft = null; S = null; modelLists = {};
-      apply(st);
-    }).catch(function (e) {
-      var n = $("repoErr"); n.textContent = e.message; show(n, true);
-      banner("bad", e.message);
-    });
-  }
-  // Turning a planning draft into a real project: local only (git init, one commit) — publishing to
-  // GitHub is a separate, later step from the Push flow, not part of this.
-  $("cpbarOpen").onclick = function () { show($("cpbarAsk"), false); show($("cpbarForm"), true); $("cpbarName").focus(); };
-  $("cpbarCancel").onclick = function () { show($("cpbarForm"), false); show($("cpbarAsk"), true); show($("cpbarErr"), false); };
-  function createProject() {
-    var v = $("cpbarName").value.trim();
-    if (!v) { $("cpbarName").focus(); return; }
-    var path = /^[~/]/.test(v) ? v : "~/Projects/" + v;
-    $("cpbarCreate").disabled = true;
-    api("/api/plan/create", { taskId: view.taskId, path: path }).then(function (st) {
+    var body = { path: path };
+    if (S && !S.root && view && view.taskId) body.taskId = view.taskId;
+    api("/api/repo", body).then(function (st) {
       if (es) { es.close(); es = null; }
       draft = null; S = null; modelLists = {};
       var seed = st.seedTask;
       delete st.seedTask;
       apply(st);
       resetView(null);
-      if (seed) { input.value = seed; autosize(); }
-      showToast("Project created at " + path + " — review the message below, then send it to start building.");
+      if (seed) { input.value = seed; autosize(); showToast("Created " + st.name + " — review the message below, then send it to start building."); }
     }).catch(function (e) {
-      $("cpbarCreate").disabled = false;
-      var n = $("cpbarErr"); n.textContent = e.message; show(n, true);
+      var n = $("repoErr"); n.textContent = e.message; show(n, true);
+      banner("bad", e.message);
     });
   }
-  $("cpbarCreate").onclick = createProject;
-  $("cpbarName").addEventListener("keydown", function (e) { if (e.key === "Enter") createProject(); });
+  function slugify(s) { return (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40); }
+  $("cpbarOpen").onclick = function () {
+    openRepoPicker(true);
+    var name = slugify($("title").textContent);
+    if (name) $("repoPath").value = "~/Projects/" + name;
+  };
   $("repoBtn").onclick = function () { openRepoPicker(true); };
   $("crumb").onclick = function () { openRepoPicker(true); };
   $("ghCrumb").onclick = function () {

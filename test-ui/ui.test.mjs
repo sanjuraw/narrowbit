@@ -109,6 +109,7 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.ok(page.visible(page.$("crumbWrap")));
     assert.equal(page.$("repoBar"), null, "the old top-bar folder control must be gone");
     assert.equal(page.$("crumbWrap").nextElementSibling.className, "composer", "the pill sits directly above the composer");
+    assert.equal(page.$("repoName").textContent, "Choose a folder", "no leaky 'No repository' wording in the sidebar");
   });
 
   test("the folder dialog opens from the pill and the sidebar, and can always be closed (Cancel, Escape, click outside)", async () => {
@@ -348,11 +349,13 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     await page.until(() => page.w.document.querySelector(".final"), "the reopened draft's reply");
   });
 
-  test("Create project turns the draft into a real local git repo — no GitHub involved — and seeds the first task", async () => {
+  test("'Choose a folder' turns the draft into a real local git repo — no GitHub involved — and seeds the first task", async () => {
     const target = join(home, "Projects", "cli-tool-test");
     page.$("cpbarOpen").click();
-    page.$("cpbarName").value = target;
-    page.$("cpbarCreate").click();
+    assert.ok(page.visible(page.$("repoOverlay")), "opens the same folder dialog used everywhere else");
+    assert.match(page.$("repoPath").value, /^~\/Projects\/i-want-to-build/, "prefilled with a suggested path from the discussion");
+    page.$("repoPath").value = target;
+    page.$("openRepo").click();
     await page.until(() => page.$("crumbName") && page.$("crumbName").textContent.indexOf("cli-tool-test") === 0, "the app to switch into the new project");
     assert.ok(existsSync(join(target, ".git")), "a real git repo was created");
     assert.equal(execFileSync("git", ["remote"], { cwd: target }).toString().trim(), "", "no GitHub remote — creating one is a separate, later step");
