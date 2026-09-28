@@ -322,7 +322,14 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
       const exit = code ?? (signal ? 124 : 1);
       const logName = `${shortId()}.log`;
       const rawLog = join(p.logs, logName);
-      writeFileSync(rawLog, `$ ${command}\n# exit ${exit}\n${raw}`, { mode: 0o600 });
+      try {
+        writeFileSync(rawLog, `$ ${command}\n# exit ${exit}\n${raw}`, { mode: 0o600 });
+      } catch {
+        // Non-essential: the compressed result below still gets returned to the caller either way. This
+        // callback runs from a child process's own 'close' event, outside any promise chain a caller could
+        // catch — an uncaught throw here (e.g. p.logs vanished because the project folder was renamed or
+        // removed out from under a running task) crashes the whole server, not just this one command.
+      }
       const c = compressOutput(raw, exit);
       const rawLines = raw.split("\n").length;
       const head = `$ ${command}  (exit ${exit}${signal ? `, ${signal}` : ""}; ${rawLines} lines → ${c.text.split("\n").length}; raw: ${relative(p.root, rawLog)})`;

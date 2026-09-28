@@ -240,6 +240,27 @@ export function startUi(opts: UiOptions) {
     for (const c of clients) c.write(frame);
   };
 
+  // Found live: a project folder renamed out from under a running task made a background command's own
+  // log-write throw ENOENT from inside a child process's 'close' callback — outside any promise chain a
+  // caller could .catch(), so it reached Node as an uncaught exception and took down the entire app ("the
+  // engine stopped"), not just that one command. Node's own guidance is that an uncaught exception may
+  // leave the process in an inconsistent state and the safest thing is to log and exit — but this server's
+  // state (root, the current run, connected clients) is plain in-memory data untouched by an isolated
+  // failure like a stray filesystem error in one background callback, and a desktop app crashing outright
+  // over one bad command is a far worse outcome than logging it and continuing. Every write this server
+  // itself controls should still be guarded at the source (see compress.ts's own fix alongside this one) —
+  // this is the backstop for whatever the next one turns out to be, not a replacement for that.
+  const onFatal = (label: string) => (err: unknown) => {
+    const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    process.stderr.write(`narrowbit ui: ${label}: ${msg}\n`);
+    if (run?.running) {
+      emit({ type: "failed", error: `Narrowbit hit an internal error and had to stop this task: ${err instanceof Error ? err.message : String(err)}` });
+      run.running = false;
+    }
+  };
+  process.on("uncaughtException", onFatal("uncaught exception"));
+  process.on("unhandledRejection", onFatal("unhandled rejection"));
+
   const buildProviders = (agent: AgentConfig | undefined) => {
     // Model lists are fetched separately (/api/models): some are network calls, and only the
     // provider on screen needs one.

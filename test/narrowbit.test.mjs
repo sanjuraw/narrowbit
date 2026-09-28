@@ -153,6 +153,23 @@ Found 3 errors in 2 files.`;
     assert.ok(c.text.split("\n").length <= 40);
     assert.match(c.text, /Done in 3\.2s/);
   });
+
+  test("runCommand still returns a result when its raw log can't be written, instead of crashing", async () => {
+    // Found live: a project folder renamed out from under a running task made this write throw ENOENT
+    // from inside the child process's own 'close' callback — outside any promise chain a caller could
+    // .catch(), which reached Node as an uncaught exception and crashed the whole app, not just this
+    // command. p.logs pointing at a path that can't be created (a file sitting where a directory is
+    // expected) reproduces the same "write fails" condition without needing an actual mid-task rename.
+    const { runCommand } = await dist("compress.js");
+    const root = mkdtempSync(join(tmpdir(), "nb-runcmd-"));
+    const blocker = join(root, "logs-blocker");
+    writeFileSync(blocker, "not a directory");
+    try {
+      const r = await runCommand({ root, logs: join(blocker, "logs") }, "echo hello");
+      assert.equal(r.exit, 0);
+      assert.match(r.rendered, /hello/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 });
 
 describe("stream-json parsing (benchmark)", () => {
