@@ -981,6 +981,51 @@ process.exit(1);
   });
 });
 
+describe("a project folder renamed or moved outside the app", () => {
+  let home, repo, app, page;
+  before(async () => {
+    home = fresh("home");
+    repo = fresh("repo");
+    const git = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@t.t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "a.txt"), "hi\n");
+    git("add", "-A");
+    git("commit", "-qm", "init");
+    execFileSync(process.execPath, [BIN, "init", "--no-index"], { cwd: repo, stdio: "ignore", env: { ...process.env, HOME: home } });
+    app = await startApp({ cwd: repo, home });
+    page = await openPage(app.url);
+    await page.until(() => !page.$("crumb").classList.contains("empty") && page.$("crumbName").textContent, "the repo pill");
+  });
+  after(() => {
+    page?.close();
+    app?.stop();
+    for (const d of [home, repo]) rmSync(d, { recursive: true, force: true, maxRetries: 1 });
+  });
+
+  test("a folder that vanished from under the app is reported plainly, with a way to relocate it — not silently dropped", async () => {
+    const renamed = repo + "-renamed";
+    execFileSync("mv", [repo, renamed]);
+    try {
+      // /api/state isn't polled on a timer — the app only re-checks on the next load (relaunch, or any
+      // action that refreshes state), same as how this was actually noticed in real use.
+      page.close();
+      page = await openPage(app.url);
+      await page.until(() => page.$("missingCard") && !page.$("missingCard").classList.contains("hidden"), "the missing-project card");
+      assert.match(page.$("missingPath").textContent, /repo/, "names the path that went missing");
+      assert.equal(page.$("crumbName").textContent, "Project not found — locate it");
+      assert.ok(!page.visible(page.$("welcome")), "not just the ordinary blank-composer welcome screen");
+      page.$("locateBtn").click();
+      assert.ok(page.visible(page.$("repoOverlay")), "opens the same folder picker used everywhere else — no separate relocate flow to learn");
+      page.$("repoPath").value = renamed;
+      page.$("openRepo").click();
+      await page.until(() => !page.$("crumb").classList.contains("empty"), "back in the project at its new location");
+      assert.match(page.$("crumbName").textContent, /renamed · main$/);
+    } finally { execFileSync("mv", [renamed, repo]); }
+  });
+});
+
 describe("the agent asking the user a question in the app (stand-in model, no network)", () => {
   let home, repo, fakeDir, app;
   const git = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });

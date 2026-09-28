@@ -459,6 +459,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
           <div class="examples" id="examples"></div>
         </div>
         <div class="gs hidden" id="getStarted"></div>
+        <div class="setup hidden" id="missingCard">
+          <strong>Can't find this project's folder</strong>
+          <p class="muted" style="margin:6px 0 4px" id="missingPath"></p>
+          <p class="muted" style="margin:0 0 12px">It may have been renamed, moved, or is on a drive that isn't connected right now. Nothing was lost — point Narrowbit at wherever it is now.</p>
+          <button class="primary" id="locateBtn">Locate folder…</button>
+        </div>
         <div class="setup hidden" id="setupCard">
           <strong>Narrowbit isn't set up in this repository yet.</strong>
           <p class="muted" style="margin:6px 0 12px">This creates a local <span class="mono">.narrowbit/</span> folder (git-ignored) and indexes the code. Nothing leaves your Mac.</p>
@@ -715,9 +721,11 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     renderVersion();
     show($("repoOverlay"), false);
     if (!S.root) {
-      show($("welcome"), !view || !view.taskId);
+      show($("welcome"), !S.missingRoot && (!view || !view.taskId));
       show($("setupCard"), false);
-      if (S.providers) { draft = { root: null, provider: S.selection.provider, effort: S.selection.effort }; renderSettings(); renderConnectors(); renderGetStarted(); }
+      show($("missingCard"), !!S.missingRoot);
+      if (S.missingRoot) $("missingPath").textContent = S.missingRoot;
+      if (S.providers) { draft = { root: null, provider: S.selection.provider, effort: S.selection.effort }; renderSettings(); renderConnectors(); if (!S.missingRoot) renderGetStarted(); else show($("getStarted"), false); }
       renderSessions(); renderComposer();
       if (first) blankView();
       return;
@@ -733,7 +741,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (!es) connect();
   }
   function renderRepo() {
-    $("repoName").textContent = S && S.root ? S.name : "Choose a folder";
+    $("repoName").textContent = S && S.root ? S.name : S && S.missingRoot ? "Project not found" : "Choose a folder";
     $("repoBranch").textContent = S && S.git && S.git.branch ? S.git.branch + (S.git.head ? " · " + S.git.head : "") : "";
     $("welcomeTitle").textContent = S && S.root ? "What should we work on in " + S.name + "?" : "What should we work on?";
     // Persistent breadcrumb above the chat, not just the sidebar — visible in every view (idle or
@@ -744,7 +752,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var gh = hasRepo && S.remote && S.remote.webUrl;
     show($("ghCrumb"), !!gh);
     if (gh) { $("ghName").textContent = S.remote.repoName; $("ghCrumb").dataset.url = S.remote.webUrl; }
-    $("crumbName").textContent = hasRepo ? S.name + (S.git && S.git.branch ? " · " + S.git.branch : "") : "Choose a folder to start";
+    $("crumbName").textContent = hasRepo ? S.name + (S.git && S.git.branch ? " · " + S.git.branch : "") : S && S.missingRoot ? "Project not found — locate it" : "Choose a folder to start";
     var t = $("treePill");
     if (S && S.git && S.git.isRepo) {
       var n = S.git.changed.length + S.git.untracked.filter(function (f) { return f !== ".narrowbitignore"; }).length;
@@ -1523,8 +1531,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     view = { taskId: taskId, seen: {}, step: null, plan: null, tokens: 0, cost: 0, segTokens: 0, segCost: 0, segSteps: 0, segStart: null, approvals: {}, pendingNew: false, working: null, finished: {} };
     clear($("items")); clearChanges();
     // No folder open at all (planning drafts, or just closed a project) has no "initialized" concept —
-    // only a freshly created-but-uninitialized project should hide this in favor of the setup card.
-    show($("welcome"), !taskId && (!S || !S.root || S.initialized));
+    // only a freshly created-but-uninitialized project should hide this in favor of the setup card. A
+    // missing project's folder hides it in favor of missingCard instead, same reasoning.
+    show($("welcome"), !taskId && !(S && S.missingRoot) && (!S || !S.root || S.initialized));
     $("title").textContent = "";
     show($("planMini"), false);
     updateUsage();
@@ -2184,6 +2193,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   $("repoPath").addEventListener("keydown", function (e) { if (e.key === "Enter") $("openRepo").click(); });
   $("pickFolder").onclick = function () { native.postMessage({ type: "pickFolder" }); };
   window.narrowbitFolderPicked = function (path) { if (path) openRepo(path); };
+  $("locateBtn").onclick = function () { openRepoPicker(true); };
   $("initBtn").onclick = function () {
     var b = $("initBtn"); b.disabled = true; b.textContent = "Indexing…";
     api("/api/init", {}).then(function (st) { apply(st); resetView(null); }).catch(function (e) { banner("bad", e.message); }).then(function () { b.disabled = false; b.textContent = "Set up Narrowbit here"; });

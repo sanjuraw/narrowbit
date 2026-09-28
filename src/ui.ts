@@ -307,13 +307,20 @@ export function startUi(opts: UiOptions) {
   const effAgent = (cfg: { agent?: AgentConfig }): AgentConfig | undefined => cfg.agent ?? globalAgent();
 
   const state = () => {
-    if (!root) {
+    // The open project's folder was renamed or moved outside Narrowbit (or is on a drive that's not
+    // mounted right now) — root is still set, but nothing on disk backs it any more. Unlike Claude Code,
+    // which just runs inside a live shell process whose cwd survives a rename (tied to the inode, not the
+    // path), Narrowbit is a long-running server that remembers the project as a path string across app
+    // restarts — so a rename breaks that string with no way to notice except checking. Report it plainly
+    // instead of letting every git/file call downstream fail with a raw, confusing error.
+    const missingRoot = root && !existsSync(root) ? root : null;
+    if (!root || missingRoot) {
       // No repository yet: settings are per-repo so nothing can be saved, but the provider/model
       // lists must still render or the picker looks empty on a fresh profile.
       const ga = globalAgent();
       let selection;
       try { selection = resolveSelection(ga); } catch { selection = resolveSelection(undefined); }
-      return { root: null, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? false, reviewOnly: !!ga?.reviewOnly, planApproval: !!ga?.planApproval, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: taskHistory(draftsPaths()) };
+      return { root: null, missingRoot, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? false, reviewOnly: !!ga?.reviewOnly, planApproval: !!ga?.planApproval, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: taskHistory(draftsPaths()) };
     }
     const p = paths(root);
     const initialized = existsSync(p.db);
