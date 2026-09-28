@@ -292,8 +292,14 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .banner.bad { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
 .banner ul { margin: 4px 0 6px; padding-left: 18px; }
 #input { width: 100%; border: 0; background: transparent; resize: none; outline: none; font-size: 15px; line-height: 1.5; max-height: 240px; min-height: 26px; padding: 2px 2px; }
-.cbar { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
-.cbar .mchip { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; padding: 4px 8px; border-radius: 8px; font-size: 12.5px; color: var(--muted); max-width: 320px; }
+/* Two purpose-built rows instead of one flat row that wraps unpredictably: settings (attach, model,
+   toggles) left-aligned and free to wrap on its own; actions (compact, usage, send) a tight cluster
+   pinned right, never stretched across the full width — the old single flex row with one spacer put
+   the spacer wherever it happened to land after a wrap, leaving a large empty gap on a short second line. */
+.cbar { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.cbar-settings { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.cbar-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.cbar .mchip { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; padding: 3px 7px; border-radius: 8px; font-size: 12.5px; color: var(--muted); max-width: 320px; }
 .cbar .mchip:hover { background: var(--panel-2); color: var(--text); }
 .cbar .mchip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .attached { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px 0; }
@@ -304,14 +310,16 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .attached .att { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 4px 3px 8px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); max-width: 220px; }
 .attached .att span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attached .att button { padding: 0 6px; border: 0; background: transparent; color: var(--muted); }
-.tog { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--muted); padding: 4px 8px; border-radius: 8px; cursor: pointer; user-select: none; }
+.tog { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); padding: 3px 6px; border-radius: 8px; cursor: pointer; user-select: none; }
 .tog:hover { background: var(--panel-2); }
 .tog input { accent-color: var(--accent); margin: 0; }
-.cbar .spacer { flex: 1; }
-.usage { font-size: 11.5px; color: var(--faint); white-space: nowrap; }
-.send { width: 32px; height: 32px; border-radius: 10px; padding: 0; display: grid; place-items: center; background: var(--accent); border: 0; color: var(--on-accent); font-size: 16px; font-weight: 700; }
+.usage { font-size: 11.5px; color: var(--faint); white-space: nowrap; display: inline-flex; align-items: baseline; gap: 5px; }
+.usage-cost { font-size: 12.5px; color: var(--muted); font-weight: 600; }
+.usage-tok { color: var(--faint); }
+.send { width: 30px; height: 30px; border-radius: 50%; padding: 0; display: grid; place-items: center; background: var(--accent); border: 0; color: var(--on-accent); font-size: 15px; font-weight: 700; flex-shrink: 0; }
 .send:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
-.stop { width: 32px; height: 32px; border-radius: 10px; padding: 0; display: grid; place-items: center; background: var(--text); color: var(--bg); border: 0; }
+.send:disabled { opacity: .45; }
+.stop { width: 30px; height: 30px; border-radius: 50%; padding: 0; display: grid; place-items: center; background: var(--text); color: var(--bg); border: 0; flex-shrink: 0; }
 .stop i { width: 10px; height: 10px; background: currentColor; border-radius: 2px; }
 .hint { max-width: 780px; margin: 6px auto 0; text-align: center; font-size: 11px; color: var(--faint); }
 
@@ -488,17 +496,20 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         <div class="mention-pop hidden" id="mentionPop"></div>
         <textarea id="input" rows="1" placeholder="Describe a task… (@ to mention a file)"></textarea>
         <div class="cbar">
-          <button class="ghost" id="attachBtn" title="Attach an image or PDF (or paste or drop one)">📎</button>
-          <input type="file" id="attachInput" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf" multiple class="hidden">
-          <button class="mchip" id="modelChip" title="Models &amp; settings"><span id="modelChipText"></span>▾</button>
-          <label class="tog" title="Model 3 plans the task first and reviews the diff before it's done"><input type="checkbox" id="leadTog"> Lead</label>
-          <label class="tog" title="Work in a separate copy of the folder; nothing changes your files until you press Apply"><input type="checkbox" id="isoTog"> Isolate</label>
-          <label class="tog" title="Shell commands wait for your approval"><input type="checkbox" id="askTog"> Ask before commands</label>
-          <span class="spacer"></span>
-          <button class="ghost hidden" id="compactBtn" title="Start a fresh session from a short summary of this chat — smaller context, nothing lost from the files or your saved notes">Compact</button>
-          <span class="usage" id="usage"></span>
-          <button class="stop hidden" id="stopBtn" title="Stop after the current step"><i></i></button>
-          <button class="send" id="sendBtn" title="Send (Enter)">↑</button>
+          <div class="cbar-settings">
+            <button class="ghost" id="attachBtn" title="Attach an image or PDF (or paste or drop one)">📎</button>
+            <input type="file" id="attachInput" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf" multiple class="hidden">
+            <button class="mchip" id="modelChip" title="Models &amp; settings"><span id="modelChipText"></span>▾</button>
+            <label class="tog" title="Model 3 plans the task first and reviews the diff before it's done"><input type="checkbox" id="leadTog"> Lead</label>
+            <label class="tog" title="Work in a separate copy of the folder; nothing changes your files until you press Apply"><input type="checkbox" id="isoTog"> Isolate</label>
+            <label class="tog" title="Shell commands wait for your approval"><input type="checkbox" id="askTog"> Ask before commands</label>
+          </div>
+          <div class="cbar-actions">
+            <button class="ghost hidden" id="compactBtn" title="Start a fresh session from a short summary of this chat — smaller context, nothing lost from the files or your saved notes">Compact</button>
+            <span class="usage" id="usage"></span>
+            <button class="stop hidden" id="stopBtn" title="Stop after the current step"><i></i></button>
+            <button class="send" id="sendBtn" title="Send (Enter)">↑</button>
+          </div>
         </div>
       </div>
       <div class="hint" id="hint">Enter to send · Shift+Enter for a new line</div>
@@ -1661,7 +1672,16 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var t = $("workTimer");
     if (t && view && view.segStart) t.textContent = dur(Date.now() - view.segStart);
   }, 1000);
-  function updateUsage() { $("usage").textContent = view && view.tokens ? fmt(view.tokens) + " tokens · " + money(view.cost) : ""; }
+  // Cost first, tokens second and muted: a raw token count (hundreds of thousands, on a resumed session
+  // that resends prior turns from cache every call) reads as alarming even when the real cost is small —
+  // most of that figure is heavily-discounted cache reads, and cost is the number that actually matters.
+  function updateUsage() {
+    var u = $("usage");
+    clear(u);
+    if (!view || !view.tokens) return;
+    u.appendChild(el("span", { cls: "usage-cost", text: money(view.cost) }));
+    u.appendChild(el("span", { cls: "usage-tok", text: fmt(view.tokens) + " tok" }));
+  }
 
   var VERB = { read: "Read", grep: "Grep", search: "Search", edit: "Edit", run: "Run", verify: "Verify", recall: "Recall", remember: "Remember", ask: "Ask", connector: "Connector", describe: "Describe" };
   function tierColor(model) {
