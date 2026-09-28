@@ -95,18 +95,30 @@ export function draftGoal(taskId: string): string | null {
  */
 export function createProjectFromDraft(taskId: string | undefined, targetPath: string): { root: string; seedTask: string } {
   const root = resolve(targetPath);
-  if (existsSync(root) && readdirSync(root).length > 0) throw new Error(`${root} already exists and isn't empty — pick an empty or new folder.`);
+  // An existing folder with files in it (a hand-made scaffold, a downloaded template, whatever) is just as
+  // valid a starting point as an empty one — git-initing it and committing what's already there versions
+  // it, it doesn't touch or discard anything, so there's no reason to refuse it the way an empty-only check
+  // once did.
+  const hadFiles = existsSync(root) && readdirSync(root).length > 0;
   mkdirSync(root, { recursive: true, mode: 0o755 });
   const git = (...args: string[]) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
   const init = git("init", "-q", "-b", "main");
   if (init.status !== 0) throw new Error(`git init failed: ${(init.stderr ?? "").trim() || "unknown error"}`);
-  let commit = git("commit", "-q", "--allow-empty", "-m", "Initial commit");
+  if (hadFiles) {
+    const add = git("add", "-A");
+    if (add.status !== 0) throw new Error(`git add failed: ${(add.stderr ?? "").trim() || "unknown error"}`);
+  }
+  // --allow-empty even when hadFiles: everything present might be gitignored (e.g. only a node_modules/),
+  // leaving nothing staged — that's still a valid starting point, not an error.
+  const commitArgs = ["commit", "-q", "--allow-empty", "-m", "Initial commit"];
+  let commit = git(...commitArgs);
   if (commit.status !== 0 && /please tell me who you are|user\.name|user\.email/i.test((commit.stderr ?? "").trim())) {
-    // This first commit is empty scaffolding, not authored work — a real project shouldn't need your git
-    // identity configured before you can even start talking to it, any more than Claude Code would. Fall
-    // back to a placeholder identity for just this one bootstrap commit, same as isolate.ts's own internal
-    // snapshots; real commits you make later still use whatever identity git is actually configured with.
-    commit = spawnSync("git", ["-c", "user.name=narrowbit", "-c", "user.email=narrowbit@localhost", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "Initial commit"], { cwd: root, encoding: "utf8" });
+    // This first commit isn't necessarily authored work (an empty one is pure scaffolding either way) — a
+    // real project shouldn't need your git identity configured before you can even start talking to it,
+    // any more than Claude Code would. Fall back to a placeholder identity for just this one bootstrap
+    // commit, same as isolate.ts's own internal snapshots; real commits you make later still use whatever
+    // identity git is actually configured with.
+    commit = spawnSync("git", ["-c", "user.name=narrowbit", "-c", "user.email=narrowbit@localhost", "-c", "commit.gpgsign=false", ...commitArgs], { cwd: root, encoding: "utf8" });
   }
   if (commit.status !== 0) throw new Error(`git commit failed: ${(commit.stderr ?? "").trim() || "unknown error"}`);
   initProject(paths(root), { index: false });

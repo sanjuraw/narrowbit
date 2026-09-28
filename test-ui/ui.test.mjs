@@ -361,6 +361,19 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     assert.equal(execFileSync("git", ["remote"], { cwd: target }).toString().trim(), "", "no GitHub remote — creating one is a separate, later step");
     assert.match(page.$("input").value, /CLI tool|language|Python/i, "the discussion was seeded into the composer, not auto-sent");
   });
+
+  test("choosing a folder that already has files (but no git yet) versions them instead of refusing", async () => {
+    const target = join(home, "Projects", "hand-made-scaffold");
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(target, "notes.txt"), "an idea I sketched out before opening Narrowbit\n");
+    page.$("crumb").click();
+    page.$("repoPath").value = target;
+    page.$("openRepo").click();
+    await page.until(() => page.$("crumbName") && page.$("crumbName").textContent.indexOf("hand-made-scaffold") === 0, "the app to switch into the new project");
+    assert.ok(existsSync(join(target, ".git")), "a real git repo was created");
+    assert.match(execFileSync("git", ["log", "--format=%s"], { cwd: target }).toString(), /Initial commit/);
+    assert.match(execFileSync("git", ["show", "--stat", "HEAD"], { cwd: target }).toString(), /notes\.txt/, "the pre-existing file was committed, not skipped");
+  });
 });
 
 describe("app page with a folder open", () => {

@@ -575,9 +575,10 @@ export function startUi(opts: UiOptions) {
 
       switch (url.pathname) {
         case "/api/repo": {
-          // One action for both "open this existing project" and "start a new one here" — an empty or
-          // not-yet-created folder is created (git init + a bootstrap commit) rather than refused, so
-          // there's a single "choose a folder" flow instead of a separate create-project ceremony.
+          // One action for both "open this existing project" and "start a new one here" — a folder that
+          // isn't already a project (new, empty, or with files already in it — a hand-made scaffold, a
+          // downloaded template) is created (git init, add whatever's there, one commit) rather than
+          // refused, so there's a single "choose a folder" flow instead of a separate create ceremony.
           if (run?.running) return json(res, 409, { error: "stop the running task before switching repositories" });
           const dir = resolve(String(body.path ?? "").replace(/^~(?=$|\/)/, homedir()));
           if (dir === homedir()) return json(res, 400, { error: "refusing to use your home folder as a repository" });
@@ -587,7 +588,7 @@ export function startUi(opts: UiOptions) {
           let seedTask: string | undefined;
           if (looksLikeProject) {
             r = repoRootOf(dir);
-          } else if (!existsSync(dir) || readdirSync(dir).length === 0) {
+          } else {
             const taskId = typeof body.taskId === "string" && /^pl-[\w-]+$/.test(body.taskId) ? body.taskId : undefined;
             try {
               const created = createProjectFromDraft(taskId, dir);
@@ -596,8 +597,6 @@ export function startUi(opts: UiOptions) {
             } catch (e: any) {
               return json(res, 400, { error: e.message });
             }
-          } else {
-            return json(res, 400, { error: `${dir} isn't empty and doesn't look like a project (no .git or package.json) — pick an empty folder to start fresh, or an existing project.` });
           }
           root = r;
           run = null;
