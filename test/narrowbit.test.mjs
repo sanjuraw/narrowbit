@@ -1886,3 +1886,49 @@ describe("plan approval (opt-in, needs lead mode and someone to ask)", () => {
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 });
+
+describe("git ownership mismatches don't silently break every git-aware feature", () => {
+  // A folder that predates Narrowbit, or a shared Mac with more than one account, is very often owned by a
+  // different user than whichever one runs `narrowbit ui` — git's own safety check then refuses every
+  // command on it. GIT_TEST_ASSUME_DIFFERENT_OWNER reproduces exactly that (git's own test suite uses the
+  // same env var for this), without needing a second real macOS account. withUnownedRepo() sets it on
+  // process.env only for the duration of its callback (spawnSync inherits process.env by default) and
+  // always restores the prior value, so it can't leak into other tests in this file.
+  let sh;
+  before(async () => { ({ sh } = await dist("util.js")); });
+  function freshRepo() {
+    const root = mkdtempSync(join(tmpdir(), "nb-ownertest-"));
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: root });
+    return root;
+  }
+  function withUnownedRepo(fn) {
+    const root = freshRepo();
+    const savedEnv = process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER;
+    process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER = "1";
+    try { return fn(root); } finally {
+      if (savedEnv === undefined) delete process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER; else process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER = savedEnv;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+  test("confirms the env var actually reproduces the failure git would otherwise hit", () => {
+    withUnownedRepo((root) => {
+      assert.throws(() => execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, stdio: "pipe" }));
+    });
+  });
+  test("sh() still works on a repo git considers untrusted, scoped to just that call", () => {
+    withUnownedRepo((root) => {
+      const r = sh("git", ["rev-parse", "HEAD"], root);
+      assert.equal(r.code, 0);
+      assert.match(r.stdout.trim(), /^[0-9a-f]{40}$/);
+    });
+  });
+  test("gitState() reports a real repo instead of silently claiming there isn't one", async () => {
+    const { gitState } = await dist("git.js");
+    withUnownedRepo((root) => {
+      const st = gitState(root);
+      assert.equal(st.isRepo, true);
+      assert.ok(st.head, "HEAD resolved, not silently null");
+    });
+  });
+});

@@ -18,7 +18,10 @@ import { appendEvent, readEvents } from "./events.js";
  * history — restoring only ever reads its tree, never rebases or resets onto it.
  */
 function git(root: string, args: string[], env?: Record<string, string>): { code: number; out: string } {
-  const r = spawnSync("git", args, { cwd: root, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env, maxBuffer: 64 * 1024 * 1024 });
+  // See util.ts's sh() for why every git invocation here needs this: ownership mismatches (a shared Mac, a
+  // folder that predates Narrowbit) otherwise make every checkpoint silently fail — snapshotTree() below
+  // would just see "not a usable git repo" and quietly skip rewind entirely, no error surfaced anywhere.
+  const r = spawnSync("git", ["-c", `safe.directory=${root}`, ...args], { cwd: root, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env, maxBuffer: 64 * 1024 * 1024 });
   return { code: r.status ?? 1, out: (r.stdout ?? r.stderr ?? "").trim() };
 }
 

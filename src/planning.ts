@@ -101,7 +101,10 @@ export function createProjectFromDraft(taskId: string | undefined, targetPath: s
   // once did.
   const hadFiles = existsSync(root) && readdirSync(root).length > 0;
   mkdirSync(root, { recursive: true, mode: 0o755 });
-  const git = (...args: string[]) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
+  // See util.ts's sh() for why: a folder that predates Narrowbit (or a shared Mac with more than one
+  // account) is very often owned by a different user than whichever one is running this, and git refuses
+  // to touch a repository it doesn't own — silently, from here, since spawnSync doesn't throw on its own.
+  const git = (...args: string[]) => spawnSync("git", ["-c", `safe.directory=${root}`, ...args], { cwd: root, encoding: "utf8" });
   const init = git("init", "-q", "-b", "main");
   if (init.status !== 0) throw new Error(`git init failed: ${(init.stderr ?? "").trim() || "unknown error"}`);
   if (hadFiles) {
@@ -118,7 +121,7 @@ export function createProjectFromDraft(taskId: string | undefined, targetPath: s
     // any more than Claude Code would. Fall back to a placeholder identity for just this one bootstrap
     // commit, same as isolate.ts's own internal snapshots; real commits you make later still use whatever
     // identity git is actually configured with.
-    commit = spawnSync("git", ["-c", "user.name=narrowbit", "-c", "user.email=narrowbit@localhost", "-c", "commit.gpgsign=false", ...commitArgs], { cwd: root, encoding: "utf8" });
+    commit = spawnSync("git", ["-c", `safe.directory=${root}`, "-c", "user.name=narrowbit", "-c", "user.email=narrowbit@localhost", "-c", "commit.gpgsign=false", ...commitArgs], { cwd: root, encoding: "utf8" });
   }
   if (commit.status !== 0) throw new Error(`git commit failed: ${(commit.stderr ?? "").trim() || "unknown error"}`);
   initProject(paths(root), { index: false });

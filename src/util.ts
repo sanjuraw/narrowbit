@@ -15,7 +15,16 @@ export function estimateTokens(text: string): number {
 }
 
 export function sh(cmd: string, args: string[], cwd: string, input?: string): { code: number; stdout: string; stderr: string } {
-  const r = spawnSync(cmd, args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, input });
+  // Git refuses to touch a repository it doesn't own (a real safety feature — protects against another
+  // user planting a malicious repo you'd cd into) — but on a shared Mac, or a project folder that existed
+  // before Narrowbit ever touched it, "doesn't own" often just means a different macOS account created the
+  // folder. Without this, every git call fails silently from Narrowbit's own perspective: gitState() and
+  // remoteInfo() see a plain error, not a special case, and simply report "not a repo" / "no remote" — no
+  // banner, no clue anything is wrong, the whole git-aware half of the UI just vanishes. Narrowbit is only
+  // ever asked to operate on a folder the user explicitly pointed it at, so it's reasonable to trust that
+  // one folder for its own commands, scoped to this single invocation — not a persistent config change.
+  const realArgs = cmd === "git" ? ["-c", `safe.directory=${cwd}`, ...args] : args;
+  const r = spawnSync(cmd, realArgs, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, input });
   return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
