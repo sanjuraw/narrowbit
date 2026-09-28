@@ -496,6 +496,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         <div class="mention-pop hidden" id="mentionPop"></div>
         <textarea id="input" rows="1" placeholder="Describe a task… (@ to mention a file)"></textarea>
         <div class="cbar">
+          <div class="cbar-actions">
+            <button class="ghost hidden" id="compactBtn" title="Start a fresh session from a short summary of this chat — smaller context, nothing lost from the files or your saved notes">Compact</button>
+            <span class="usage" id="usage"></span>
+            <button class="stop hidden" id="stopBtn" title="Stop after the current step"><i></i></button>
+            <button class="send" id="sendBtn" title="Send (Enter)">↑</button>
+          </div>
           <div class="cbar-settings">
             <button class="ghost" id="attachBtn" title="Attach an image or PDF (or paste or drop one)">📎</button>
             <input type="file" id="attachInput" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf" multiple class="hidden">
@@ -503,12 +509,6 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
             <label class="tog" title="Model 3 plans the task first and reviews the diff before it's done"><input type="checkbox" id="leadTog"> Lead</label>
             <label class="tog" title="Work in a separate copy of the folder; nothing changes your files until you press Apply"><input type="checkbox" id="isoTog"> Isolate</label>
             <label class="tog" title="Shell commands wait for your approval"><input type="checkbox" id="askTog"> Ask before commands</label>
-          </div>
-          <div class="cbar-actions">
-            <button class="ghost hidden" id="compactBtn" title="Start a fresh session from a short summary of this chat — smaller context, nothing lost from the files or your saved notes">Compact</button>
-            <span class="usage" id="usage"></span>
-            <button class="stop hidden" id="stopBtn" title="Stop after the current step"><i></i></button>
-            <button class="send" id="sendBtn" title="Send (Enter)">↑</button>
           </div>
         </div>
       </div>
