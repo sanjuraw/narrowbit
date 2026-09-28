@@ -448,6 +448,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <button class="pill hidden" id="planMini"></button>
       <span class="pill hidden" id="treePill"></span>
       <button class="pill warn hidden" id="pushPill" title="Push your commits to the remote"></button>
+      <button class="pill hidden" id="publishPill" title="Create a GitHub repository for this project">Publish to GitHub</button>
       <button class="ghost" id="themeBtn" aria-label="Theme"></button>
     </div>
     <div class="scroll" id="scroll">
@@ -574,6 +575,22 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px">
       <button class="link hidden" id="startNoFolder">Start without a folder</button>
       <button class="link hidden" id="closeRepo">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay hidden" id="ghCreateOverlay">
+  <div class="modal">
+    <h1>Publish to GitHub</h1>
+    <p class="muted" style="margin:0">Creates a new GitHub repository from this project and adds it as the remote — nothing is pushed yet, that's still the ordinary Push button, right after this.</p>
+    <div class="open-row">
+      <input type="text" id="ghRepoName" placeholder="repo-name" class="mono">
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-top:6px"><input type="checkbox" id="ghPrivate" checked> Private repository</label>
+    <div class="note hidden" id="ghCreateErr" style="color:var(--bad)"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px">
+      <button class="link" id="ghCreateCancel">Cancel</button>
+      <button class="primary" id="ghCreateGo">Create</button>
     </div>
   </div>
 </div>
@@ -742,6 +759,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   var pushArm = null;
   function renderPush() {
     var b = $("pushPill"), r = S && S.remote;
+    // A local-only project (created via "Choose a folder", never touched GitHub) has no remote at all —
+    // offer to publish one instead of just hiding both pills with no way forward.
+    show($("publishPill"), !!(S && S.root && S.git && S.git.isRepo && r && !r.hasRemote));
     if (!S || !S.root || !r || !r.hasRemote || !r.ahead) { show(b, false); return; }
     var where = r.upstream || "origin";
     b.textContent = pushArm ? "Click again to push to " + where : "↑ " + r.ahead + " to push";
@@ -755,6 +775,34 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     api("/api/push", {}).then(function (r) { b.disabled = false; apply(r.state); banner("", null); flash($("savedMsg"), r.message); showToast(r.message); })
       .catch(function (e) { b.disabled = false; renderPush(); banner("bad", e.message); });
   };
+  // Publishing is a separate, explicit step from creating the project (planning.ts's createProjectFromDraft
+  // never touches GitHub) — this is that step: create the repo and add it as the remote, but don't push.
+  // The ordinary Push pill takes over for the actual push once a remote exists.
+  $("publishPill").onclick = function () {
+    $("ghRepoName").value = (S && S.name || "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+    $("ghPrivate").checked = true;
+    show($("ghCreateErr"), false);
+    show($("ghCreateOverlay"), true);
+    $("ghRepoName").focus();
+  };
+  $("ghCreateCancel").onclick = function () { show($("ghCreateOverlay"), false); };
+  $("ghCreateOverlay").onclick = function (e) { if (e.target === this) show(this, false); };
+  function ghCreateGo() {
+    var name = $("ghRepoName").value.trim();
+    if (!name) { $("ghRepoName").focus(); return; }
+    $("ghCreateGo").disabled = true;
+    api("/api/github/create-repo", { name: name, private: $("ghPrivate").checked }).then(function (r) {
+      $("ghCreateGo").disabled = false;
+      show($("ghCreateOverlay"), false);
+      apply(r.state);
+      showToast(r.message + " Click Push when you're ready to publish your commits.");
+    }).catch(function (e) {
+      $("ghCreateGo").disabled = false;
+      var n = $("ghCreateErr"); n.textContent = e.message; show(n, true);
+    });
+  }
+  $("ghCreateGo").onclick = ghCreateGo;
+  $("ghRepoName").addEventListener("keydown", function (e) { if (e.key === "Enter") ghCreateGo(); });
   function showToast(text) { var n = el("div", { cls: "notice", text: text }); add(n); }
   function renderSessions() {
     var box = clear($("sessions"));
@@ -2130,7 +2178,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (u) { if (native) native.postMessage({ type: "openUrl", url: u }); else window.open(u, "_blank", "noopener"); }
   };
   $("repoOverlay").onclick = function (e) { if (e.target === this) show(this, false); };
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape") { show($("repoOverlay"), false); show($("skillOverlay"), false); } });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") { show($("repoOverlay"), false); show($("skillOverlay"), false); show($("ghCreateOverlay"), false); } });
   $("closeRepo").onclick = function () { show($("repoOverlay"), false); };
   $("openRepo").onclick = function () { var v = $("repoPath").value.trim(); if (v) openRepo(v); };
   $("repoPath").addEventListener("keydown", function (e) { if (e.key === "Enter") $("openRepo").click(); });

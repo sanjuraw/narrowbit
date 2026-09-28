@@ -928,6 +928,59 @@ describe("pushing commits to the remote (a local bare repo stands in for GitHub)
   });
 });
 
+describe("publishing a local-only project to GitHub (stand-in `gh`)", () => {
+  let home, repo, fakeBin, app, page;
+  before(async () => {
+    home = fresh("home");
+    repo = fresh("repo");
+    fakeBin = fresh("fakebin");
+    const git = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@t.t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "a.txt"), "hi\n");
+    git("add", "-A");
+    git("commit", "-qm", "init");
+    execFileSync(process.execPath, [BIN, "init", "--no-index"], { cwd: repo, stdio: "ignore", env: { ...process.env, HOME: home } });
+    // A stand-in `gh`, ahead of the real one on PATH: confirms sign-in, then reproduces the one real side
+    // effect this feature depends on — `gh repo create --source=. --remote=origin` registering the remote.
+    writeFileSync(join(fakeBin, "gh"), `#!/usr/bin/env node
+const { execFileSync } = require("child_process");
+const a = process.argv.slice(2);
+if (a[0] === "auth" && a[1] === "status") process.exit(0);
+if (a[0] === "repo" && a[1] === "create") {
+  const name = a[2];
+  execFileSync("git", ["remote", "add", "origin", "https://github.com/testuser/" + name], { cwd: process.cwd() });
+  console.log("https://github.com/testuser/" + name);
+  process.exit(0);
+}
+process.exit(1);
+`, { mode: 0o755 });
+    app = await startApp({ cwd: repo, home, env: { PATH: fakeBin + ":" + process.env.PATH } });
+    page = await openPage(app.url);
+    await page.until(() => !page.$("crumb").classList.contains("empty") && page.$("crumbName").textContent, "the repo pill");
+  });
+  after(() => {
+    page?.close();
+    app?.stop();
+    for (const d of [home, repo, fakeBin]) rmSync(d, { recursive: true, force: true });
+  });
+
+  test("'Publish to GitHub' shows for a repo with no remote, and creates one without pushing", async () => {
+    assert.ok(page.visible(page.$("publishPill")), "offered since there's no remote yet");
+    assert.ok(!page.visible(page.$("pushPill")), "nothing to push to yet");
+    page.$("publishPill").click();
+    assert.equal(page.$("ghRepoName").value, page.$("crumbName").textContent.split(" ")[0].toLowerCase(), "prefilled from the project name");
+    page.$("ghRepoName").value = "test-repo";
+    page.$("ghCreateGo").click();
+    await page.until(() => !page.visible(page.$("ghCreateOverlay")), "the dialog to close");
+    assert.equal(execFileSync("git", ["remote", "get-url", "origin"], { cwd: repo }).toString().trim(), "https://github.com/testuser/test-repo");
+    await page.until(() => page.visible(page.$("pushPill")), "the ordinary push pill takes over once a remote exists");
+    assert.ok(!page.visible(page.$("publishPill")), "nothing left to publish");
+    assert.match(execFileSync("git", ["log", "-1"], { cwd: repo }).toString(), /init/, "nothing was pushed — nothing to compare against a real GitHub here, but the local log is untouched");
+  });
+});
+
 describe("the agent asking the user a question in the app (stand-in model, no network)", () => {
   let home, repo, fakeDir, app;
   const git = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
