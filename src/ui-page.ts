@@ -2257,7 +2257,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (e.target.closest("#addSkillBtn")) return;
     setSkillsCollapsed(!$("skillsLabel").classList.contains("collapsed"));
   });
-  setSkillsCollapsed(store("skillsCollapsed") === "1");
+  // Hidden by default on a fresh launch (nothing stored yet) — only an explicit "0" (the user expanded it
+  // once) keeps it open; unlike most such flags here, "unset" doesn't mean "off".
+  setSkillsCollapsed(store("skillsCollapsed") !== "0");
   document.addEventListener("keydown", function (e) {
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") { e.preventDefault(); toggleSidebar(); }
   });

@@ -685,17 +685,17 @@ describe("app page with a folder open", () => {
     assert.match(page.$("limits").title, /may be out of date/);
   });
 
-  test("the Skills list can be collapsed and expanded, without the + button also toggling it", async () => {
-    assert.ok(!page.$("skillsLabel").classList.contains("collapsed"));
-    assert.ok(!page.$("skillsList").classList.contains("hidden"));
-    page.$("skillsLabel").click();
-    assert.ok(page.$("skillsLabel").classList.contains("collapsed"));
+  test("the Skills list is hidden by default and can be unhidden and rehidden, without the + button also toggling it", async () => {
+    assert.ok(page.$("skillsLabel").classList.contains("collapsed"), "hidden on a fresh launch — nothing stored yet");
     assert.ok(page.$("skillsList").classList.contains("hidden"));
     page.$("skillsLabel").click();
-    assert.ok(!page.$("skillsLabel").classList.contains("collapsed"), "clicking again re-expands");
+    assert.ok(!page.$("skillsLabel").classList.contains("collapsed"), "clicking unhides it");
+    assert.ok(!page.$("skillsList").classList.contains("hidden"));
     page.$("addSkillBtn").click();
     assert.ok(!page.$("skillsLabel").classList.contains("collapsed"), "the + button opens the skill form, not the collapse toggle");
     page.$("closeSkill").click();
+    page.$("skillsLabel").click();
+    assert.ok(page.$("skillsLabel").classList.contains("collapsed"), "clicking again rehides it");
   });
 
   test("every project lists the built-in skills, without a delete button; user skills get one", async () => {
