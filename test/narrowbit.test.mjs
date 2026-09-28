@@ -1942,4 +1942,38 @@ describe("git ownership mismatches don't silently break every git-aware feature"
       assert.ok(st.head, "HEAD resolved, not silently null");
     });
   });
+
+  // `gh repo create --source=.` shells out to git as a plain subprocess createGithubRepo() can't pass a
+  // `-c` flag to — it has to reach that nested git call through environment variables instead. This checks
+  // createGithubRepo() actually sets them, with a stand-in `gh` that fails unless it sees the right values
+  // (portable everywhere, unlike the tests above — it doesn't depend on git's ownership check at all).
+  test("createGithubRepo() passes safe.directory to gh's own nested git call via env, not just -c", async () => {
+    const { createGithubRepo } = await dist("git.js");
+    const root = freshRepo();
+    const fakeBin = mkdtempSync(join(tmpdir(), "nb-fakegh-"));
+    writeFileSync(join(fakeBin, "gh"), `#!/usr/bin/env node
+const a = process.argv.slice(2);
+const e = process.env;
+if (a[0] === "auth" && a[1] === "status") process.exit(0);
+if (a[0] === "repo" && a[1] === "create") {
+  if (e.GIT_CONFIG_COUNT !== "1" || e.GIT_CONFIG_KEY_0 !== "safe.directory" || e.GIT_CONFIG_VALUE_0 !== ${JSON.stringify(root)}) {
+    console.error("missing or wrong safe.directory env for gh's nested git call");
+    process.exit(1);
+  }
+  console.log("https://github.com/testuser/" + a[2]);
+  process.exit(0);
+}
+process.exit(1);
+`, { mode: 0o755 });
+    const savedPath = process.env.PATH;
+    process.env.PATH = fakeBin + ":" + process.env.PATH;
+    try {
+      const r = createGithubRepo(root, "test-repo", { private: true });
+      assert.equal(r.ok, true, r.message);
+    } finally {
+      process.env.PATH = savedPath;
+      rmSync(root, { recursive: true, force: true });
+      rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
 });

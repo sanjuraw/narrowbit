@@ -133,12 +133,18 @@ export function githubWebUrl(remote: string): { webUrl: string; repoName: string
  * all. Requires the `gh` CLI, signed in. Doesn't push — that's still the ordinary Push button, right after.
  */
 export function createGithubRepo(root: string, name: string, opts: { private: boolean }): { ok: boolean; message: string } {
-  const gh = spawnSync("gh", ["auth", "status", "--hostname", "github.com"], { cwd: root, encoding: "utf8", timeout: 6000 });
+  // `gh repo create --source=.` shells out to `git` itself, as a plain subprocess with no way for us to
+  // pass it a `-c` flag — the same ownership mismatch sh() works around elsewhere here reappears, reported
+  // as gh's own generic "current directory is not a git repository" instead of git's real message. Git also
+  // reads config from these three environment variables (documented, no version-specific `-c` needed), so
+  // this reaches gh's nested git call the same way -c safe.directory=<root> reaches a direct one.
+  const gitEnv = { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "safe.directory", GIT_CONFIG_VALUE_0: root };
+  const gh = spawnSync("gh", ["auth", "status", "--hostname", "github.com"], { cwd: root, encoding: "utf8", timeout: 6000, env: { ...process.env, ...gitEnv } });
   if (gh.error && (gh.error as any).code === "ENOENT") return { ok: false, message: "The GitHub CLI (`gh`) isn't installed. Install it (brew install gh), run `gh auth login`, then try again." };
   if (gh.status !== 0) return { ok: false, message: "Not signed in to GitHub. Run `gh auth login` in a terminal, then try again." };
   const r = spawnSync("gh", ["repo", "create", name, opts.private ? "--private" : "--public", "--source=.", "--remote=origin"], {
     cwd: root, encoding: "utf8", timeout: 30_000,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    env: { ...process.env, ...gitEnv, GIT_TERMINAL_PROMPT: "0" },
   });
   const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`.trim();
   if (r.status !== 0) {
