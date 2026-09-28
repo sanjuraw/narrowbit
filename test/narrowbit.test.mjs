@@ -1894,15 +1894,31 @@ describe("git ownership mismatches don't silently break every git-aware feature"
   // same env var for this), without needing a second real macOS account. withUnownedRepo() sets it on
   // process.env only for the duration of its callback (spawnSync inherits process.env by default) and
   // always restores the prior value, so it can't leak into other tests in this file.
-  let sh;
-  before(async () => { ({ sh } = await dist("util.js")); });
+  // GIT_TEST_ASSUME_DIFFERENT_OWNER is honored only by git builds compiled with its developer test hooks —
+  // present on this Mac's git, not guaranteed on every CI runner's. Checked once up front; every test below
+  // skips itself (rather than falsely passing OR failing the build) when this environment's git doesn't
+  // support it, since there is no portable way to reproduce a real ownership mismatch without a second
+  // actual user account.
+  let sh, supported;
+  before(async () => {
+    ({ sh } = await dist("util.js"));
+    const root = mkdtempSync(join(tmpdir(), "nb-ownertest-probe-"));
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+    execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: root });
+    try {
+      execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, stdio: "pipe", env: { ...process.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" } });
+      supported = false;
+    } catch { supported = true; }
+    rmSync(root, { recursive: true, force: true });
+  });
   function freshRepo() {
     const root = mkdtempSync(join(tmpdir(), "nb-ownertest-"));
     execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
     execFileSync("git", ["-c", "user.email=t@t.t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: root });
     return root;
   }
-  function withUnownedRepo(fn) {
+  function withUnownedRepo(t, fn) {
+    if (!supported) { t.skip("this git build doesn't honor GIT_TEST_ASSUME_DIFFERENT_OWNER"); return; }
     const root = freshRepo();
     const savedEnv = process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER;
     process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER = "1";
@@ -1911,21 +1927,16 @@ describe("git ownership mismatches don't silently break every git-aware feature"
       rmSync(root, { recursive: true, force: true });
     }
   }
-  test("confirms the env var actually reproduces the failure git would otherwise hit", () => {
-    withUnownedRepo((root) => {
-      assert.throws(() => execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, stdio: "pipe" }));
-    });
-  });
-  test("sh() still works on a repo git considers untrusted, scoped to just that call", () => {
-    withUnownedRepo((root) => {
+  test("sh() still works on a repo git considers untrusted, scoped to just that call", (t) => {
+    withUnownedRepo(t, (root) => {
       const r = sh("git", ["rev-parse", "HEAD"], root);
       assert.equal(r.code, 0);
       assert.match(r.stdout.trim(), /^[0-9a-f]{40}$/);
     });
   });
-  test("gitState() reports a real repo instead of silently claiming there isn't one", async () => {
+  test("gitState() reports a real repo instead of silently claiming there isn't one", async (t) => {
     const { gitState } = await dist("git.js");
-    withUnownedRepo((root) => {
+    withUnownedRepo(t, (root) => {
       const st = gitState(root);
       assert.equal(st.isRepo, true);
       assert.ok(st.head, "HEAD resolved, not silently null");
