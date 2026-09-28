@@ -1044,8 +1044,19 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       const start = d.start ?? 1;
       const end = d.end ?? lines;
       const raw = readLines(p.root, path, start, end);
+      // capSummary()'s generic "ask again with a narrower range" leaves the model guessing where the cut
+      // fell — on a file too big for one read, it can't tell how many lines it actually got, so a naive
+      // "keep reading further" retry either re-covers ground it already saw or skips ahead blind. Both were
+      // observed live: a 293-line file cost 10 read turns, most of them re-reading overlapping tails.
+      // Telling it the exact next line lets it resume precisely, in one further read instead of guessing.
       const capped = capSummary(raw);
-      const text = `read ${path}:${start}-${end}\n${capped}${guardNote(capped)}`;
+      const truncated = capped.length < raw.length;
+      // -1 rather than the raw segment count: the cut usually falls mid-line, so the last segment shown is
+      // only a partial line — resuming there re-shows a short duplicated prefix, which beats silently
+      // dropping the rest of that line forever.
+      const nextStart = truncated ? start + capped.slice(0, capped.lastIndexOf("\n… (truncated")).split("\n").length - 1 : null;
+      const capText = truncated ? capped.slice(0, capped.lastIndexOf("\n… (truncated")) + `\n… (truncated here — this file has ${lines} lines; continue with start:${nextStart} if you need the rest)` : capped;
+      const text = `read ${path}:${start}-${end}\n${capText}${guardNote(capText)}`;
       const handle = writeEvidence(p, taskId, "file", raw, capped, path);
       appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, evidenceRef: handle.id, meta: { path } });
       return text;

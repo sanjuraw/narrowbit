@@ -965,6 +965,32 @@ function mockMcpWorld() {
   return new Promise((r) => srv.listen(0, "127.0.0.1", () => r({ srv, state, base: `http://127.0.0.1:${srv.address().port}` })));
 }
 
+describe("read truncation gives a precise resume point", () => {
+  test("a truncated read tells the model exactly where to resume, instead of leaving it to guess", async () => {
+    // Live use on a real 293-line file cost 10 read turns: the model, told only "ask again with a
+    // narrower range" with no idea where the cut fell, kept re-reading largely the same overlapping tail
+    // (30-293, 70-293, 100-293, ...) instead of ever reading a genuinely new chunk. A scripted fake model
+    // can't demonstrate the model then acting on the hint (it can't read its own context), but it can
+    // confirm the hint itself names a real, useful line number instead of a vague "narrower range".
+    const { root, p } = tinyRepo();
+    const big = Array.from({ length: 400 }, (_, i) => `line ${i + 1} of a long plan document with enough padding text to push this file past the read cap`).join("\n");
+    writeFileSync(join(root, "PLAN.md"), big);
+    const fake = fakeClaude([
+      JSON.stringify({ action: "read", path: "PLAN.md" }),
+      JSON.stringify({ action: "done", summary: "read the plan" }),
+    ]);
+    try {
+      const r = await runTask(p, "read PLAN.md", { claudeBin: fake.bin, boss: false, maxSteps: 6 });
+      const result = readEvents(p, r.taskId).find((e) => e.type === "tool_result" && e.meta?.path === "PLAN.md");
+      assert.match(result.summary, /truncated here — this file has 400 lines; continue with start:(\d+) if you need the rest/);
+      assert.match(result.summary, /line 31/, "the last fully-shown line is still visible, nothing before the cut is lost");
+      const nextStart = Number(/continue with start:(\d+)/.exec(result.summary)[1]);
+      assert.ok(nextStart > 1 && nextStart < 400, `expected a real line past what was shown, got ${nextStart}`);
+      assert.ok(!/ask again with a narrower range/.test(result.summary), "the vague generic hint is replaced, not just appended to");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
 describe("remote MCP servers", () => {
   const realHome = process.env.HOME;
   let home, world;
