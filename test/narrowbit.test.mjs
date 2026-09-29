@@ -881,6 +881,26 @@ function tinyRepo() {
   return { root, p };
 }
 
+describe("CLI: `narrowbit agent`'s \"files changed\" summary", () => {
+  test("a pre-existing untracked file (e.g. left by `narrowbit init`) is not reported as changed by a task that touched nothing", () => {
+    // Found via a cold-clone dry run: a task that fails before making any edit (no provider
+    // configured, model call error, etc.) still listed .narrowbitignore as "changed" and told the
+    // user to "review the diff" — because changedSince() reports every untracked file, not just
+    // ones the task itself created.
+    const { root, p } = tinyRepo();
+    nb(root, "index");
+    writeFileSync(join(root, ".narrowbitignore"), "*.log\n");
+    writeFileSync(join(root, "scratch-notes.txt"), "unrelated pre-existing file\n");
+    const fake = fakeClaude([JSON.stringify({ action: "done", summary: "nothing to do" })]);
+    try {
+      const out = nb(root, "agent", "look around, don't change anything", "--claude-bin", fake.bin, "--max-steps", "2");
+      assert.match(out, /files changed: \(none\)/);
+      assert.doesNotMatch(out, /scratch-notes\.txt/);
+      assert.doesNotMatch(out, /narrowbitignore/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
 describe("ask action", () => {
   test("the model's question reaches the user, and their answer comes back into the loop", async () => {
     const { root, p } = tinyRepo();

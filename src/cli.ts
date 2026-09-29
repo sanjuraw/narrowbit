@@ -449,6 +449,7 @@ export async function main(argv: string[]): Promise<number> {
         return 2;
       }
       const headBefore = g.head;
+      const untrackedBefore = new Set(g.untracked);
       const cfg = loadConfig(p);
       let sel: Selection;
       try {
@@ -532,7 +533,11 @@ export async function main(argv: string[]): Promise<number> {
         compactThreshold: args.flags["compact-threshold"] ? Number(args.flags["compact-threshold"]) : undefined,
         log: (line) => process.stderr.write(line + "\n"),
       });
-      const changed = headBefore ? changedSince(root, headBefore).filter((f) => !f.startsWith(".narrowbit/")) : [];
+      // Untracked files already sitting in the tree before this task started (e.g. from `narrowbit init`,
+      // or a user's own scratch files) are not something this task changed — only report new ones.
+      const changed = headBefore
+        ? changedSince(root, headBefore).filter((f) => !f.startsWith(".narrowbit/") && !untrackedBefore.has(f))
+        : [];
       const label = result.outcome === "done" ? "DONE" : result.outcome === "blocked" ? "BLOCKED" : result.outcome === "error" ? "ERROR" : result.outcome === "stopped" ? "STOPPED" : "STOPPED (step budget)";
       out(`\n${label}: ${result.summary}`);
       out(`${result.steps} step(s)${result.compactions ? `, ${result.compactions} compaction(s)` : ""} — files changed: ${changed.length ? changed.join(", ") : "(none)"}`);
@@ -543,7 +548,7 @@ export async function main(argv: string[]): Promise<number> {
       out(`usage: ~${fmtNum(totalTok)} tokens, ~$${totalCost.toFixed(3)} notional (subscription usage — nothing is billed per token)`);
       if (result && args.flags.isolate && readIsolated(p, result.taskId)) out(`\nmade in a separate copy — nothing in your folder changed yet.\n  bring the changes over:  narrowbit apply ${result.taskId}\n  throw them away:         narrowbit discard ${result.taskId}`);
       out(`task: ${result.taskId}  (full log: .narrowbit/runtime/${result.taskId}/events.jsonl)`);
-      if (result.outcome !== "done") out(`tip: review the diff before trusting this — the task did not report a clean completion.`);
+      if (result.outcome !== "done" && changed.length) out(`tip: review the diff before trusting this — the task did not report a clean completion.`);
       return result.outcome === "done" ? 0 : result.outcome === "blocked" ? 1 : 2;
     }
     case "ui": {
