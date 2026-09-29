@@ -12,7 +12,7 @@ export interface VerifyResult {
   ran: boolean;
   changed: string[];
   unexpected: string[];
-  steps: { name: string; ok: boolean; exit: number; summary: string; run?: RunResult }[];
+  steps: { name: string; ok: boolean; exit: number; summary: string; run?: RunResult; skipped?: boolean }[];
   report: string;
 }
 
@@ -45,6 +45,15 @@ export async function verify(
       return;
     }
     const run = await runCommand(p, cmd);
+    // Exit 127 is the shell saying the command doesn't exist here (mypy/ruff named in pyproject.toml
+    // but not installed in the active environment, say). That is a missing tool, not failing code:
+    // counting it as a failure made every verify red on tests that passed, and repeated failed
+    // checks feed the runtime's escalation to the most expensive model. Report it as not run.
+    if (run.exit === 127) {
+      const tool = cmd.trim().split(/\s+/)[0];
+      steps.push({ name, ok: true, skipped: true, exit: 127, summary: `skipped — \`${tool}\` isn't installed here, so this check did not run (it did not pass either)`, run });
+      return;
+    }
     steps.push({ name, ok: run.exit === 0, exit: run.exit, summary: run.compressed.summary, run });
   };
 
@@ -57,22 +66,23 @@ export async function verify(
   const focused = [...new Set([...changedTests, ...mapped])];
   if (opts.full || !cfg.verify.testFocused) await step("test", cfg.verify.test);
   else if (focused.length) await step(`tests (focused: ${focused.length})`, cfg.verify.testFocused.replace("{files}", focused.map((f) => JSON.stringify(f)).join(" ")));
-  else if (cfg.verify.test) steps.push({ name: "tests", ok: true, exit: 0, summary: "no tests mapped to changed files (run with --full for the whole suite)" });
+  else if (cfg.verify.test) steps.push({ name: "tests", ok: true, skipped: true, exit: 0, summary: "no tests mapped to changed files (run with --full for the whole suite)" });
 
   // Unexpected changes: modified files that were neither selected nor mapped tests nor dirty before the task.
   const expected = new Set([...(task?.selected.map((s) => s.path) ?? []), ...(task?.tests ?? []), ...(task?.dirtyAtStart ?? [])]);
   const unexpected = task ? changed.filter((f) => !expected.has(f)) : [];
 
-  const ran = steps.length > 0;
-  // An empty `steps` means no verify command is configured for this repo — that is not the same
-  // as everything passing, and reporting "PASSED" on zero checks was misleading (Array.every on
-  // an empty array is vacuously true). Report it plainly instead.
+  // "Ran" means at least one check really executed. Zero configured checks, or only skipped ones
+  // (tool missing, no tests mapped), is not the same as everything passing — Array.every on an
+  // empty array is vacuously true, and reporting "PASSED" there was misleading. Say so plainly.
+  const ran = steps.some((s) => !s.skipped);
   const ok = ran && steps.every((s) => s.ok);
-  const status = !ran ? "NO CHECKS CONFIGURED" : ok ? "PASSED" : "FAILED";
+  const status = steps.length === 0 ? "NO CHECKS CONFIGURED" : !ran ? "NO CHECKS RAN" : ok ? "PASSED" : "FAILED";
   const lines = [`VERIFICATION ${status}  (${changed.length} changed file(s) vs ${base.slice(0, 8)})`];
-  if (!ran) lines.push("no verify.test/typecheck/lint command is set for this repo (.narrowbit/config.json) — nothing was actually checked");
+  if (steps.length === 0) lines.push("no verify.test/typecheck/lint command is set for this repo (.narrowbit/config.json) — nothing was actually checked");
+  else if (!ran) lines.push("every configured check was skipped — nothing was actually checked");
   for (const s of steps) {
-    lines.push(`${s.ok ? "✓" : "✗"} ${s.name}: ${s.summary}`);
+    lines.push(`${s.skipped ? "–" : s.ok ? "✓" : "✗"} ${s.name}: ${s.summary}`);
     if (!s.ok && s.run) lines.push(s.run.compressed.text.split("\n").slice(0, 60).join("\n"), `  raw: ${s.run.rawLog}`);
   }
   if (unexpected.length) lines.push(`note: changed outside selected context: ${unexpected.slice(0, 10).join(", ")}`);

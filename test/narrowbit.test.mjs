@@ -2005,6 +2005,51 @@ describe("verify: agent-invoked checks are gated by approval, and honestly repor
       assert.doesNotMatch(v.report, /VERIFICATION PASSED/);
     } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
   });
+
+  test("a configured tool that isn't installed is skipped, not counted as failing code — tests that pass still read as PASSED", async () => {
+    // Found via the Python (pallets/click) benchmark: detectVerifyPython() configured `mypy .` and
+    // `ruff check .` because pyproject.toml mentions them, but neither was installed in the venv. Every
+    // verify then came back FAILED (exit 127, "command not found") even with all tests green — and
+    // repeated failed checks feed the runtime's escalation to the most expensive model (Opus steps
+    // showed up in 7 of 8 runs). A missing tool is an environment fact, not a code failure.
+    const { root, p } = tinyRepo();
+    const store = new Store(p.db);
+    try {
+      const cfg = loadConfig(p);
+      cfg.verify = { typecheck: "narrowbit-no-such-tool --check .", test: 'node -e "process.exit(0)"' };
+      const v = await verify(p, cfg, store, null, { full: true });
+      assert.equal(v.ok, true, "the test step really ran and passed; the missing typecheck tool must not turn that red");
+      assert.equal(v.ran, true);
+      assert.match(v.report, /VERIFICATION PASSED/);
+      assert.match(v.report, /–\s+typecheck: skipped — `narrowbit-no-such-tool` isn't installed/);
+    } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("when EVERY configured check is skipped, verify says nothing ran — it does not fall back to PASSED", async () => {
+    const { root, p } = tinyRepo();
+    const store = new Store(p.db);
+    try {
+      const cfg = loadConfig(p);
+      cfg.verify = { typecheck: "narrowbit-no-such-tool --check .", lint: "narrowbit-other-missing-tool ." };
+      const v = await verify(p, cfg, store, null, { full: true });
+      assert.equal(v.ran, false);
+      assert.equal(v.ok, false);
+      assert.match(v.report, /NO CHECKS RAN/);
+      assert.doesNotMatch(v.report, /VERIFICATION PASSED/);
+    } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a genuinely failing check still fails, even next to a skipped one", async () => {
+    const { root, p } = tinyRepo();
+    const store = new Store(p.db);
+    try {
+      const cfg = loadConfig(p);
+      cfg.verify = { typecheck: "narrowbit-no-such-tool --check .", test: 'node -e "process.exit(1)"' };
+      const v = await verify(p, cfg, store, null, { full: true });
+      assert.equal(v.ok, false);
+      assert.match(v.report, /VERIFICATION FAILED/);
+    } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+  });
 });
 
 describe("plan approval (opt-in, needs lead mode and someone to ask)", () => {
