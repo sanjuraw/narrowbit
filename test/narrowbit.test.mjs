@@ -35,6 +35,7 @@ const { publicConnector } = await dist("connectors.js");
 const { auditRepo } = await dist("audit.js");
 const { listSkills, getSkill, saveSkill, removeSkill, renameSkill, slugify } = await dist("skills.js");
 const { resolveSelection, DEFAULT_TIERS } = await dist("providers/models.js");
+const { verify } = await dist("verify.js");
 
 const nb = (cwd, ...args) => execFileSync(process.execPath, [BIN, ...args], { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
 
@@ -1935,6 +1936,74 @@ describe("rewind: checkpoints of the working tree", () => {
       assert.equal(r.ok, false);
       assert.match(r.message, /no longer exists/);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("restoring a checkpoint does not unstage the user's own unrelated staged changes", async () => {
+    // Found by an independent review: the first version of restoreCheckpoint checked the checkpoint's
+    // tree out with `git checkout <commit> -- .` then ran a plain `git reset` to leave it unstaged —
+    // but that reset touches the REAL index, discarding anything the user had staged before restoring,
+    // whether or not it had anything to do with the task. The fix checks out through a throwaway index.
+    const { checkpointNow, listCheckpoints, restoreCheckpoint } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    try {
+      checkpointNow(p, "rt-y", 0, "start");
+      writeFileSync(join(root, "a.txt"), "changed by the task\n");
+      const cps = listCheckpoints(p, "rt-y");
+      // The user stages an unrelated file of their own, independent of the task, before rewinding.
+      writeFileSync(join(root, "unrelated.txt"), "the user's own work, staged before rewind\n");
+      execFileSync("git", ["add", "unrelated.txt"], { cwd: root });
+      const staged = execFileSync("git", ["diff", "--name-only", "--cached"], { cwd: root, encoding: "utf8" }).trim();
+      assert.equal(staged, "unrelated.txt", "sanity: it's staged before the restore");
+      const r = restoreCheckpoint(root, cps[0].commit);
+      assert.ok(r.ok, r.message);
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "hello\n", "the task's own change was reverted");
+      const stillStaged = execFileSync("git", ["diff", "--name-only", "--cached"], { cwd: root, encoding: "utf8" }).trim();
+      assert.equal(stillStaged, "unrelated.txt", "the user's unrelated staged file is still staged after rewind");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("verify: agent-invoked checks are gated by approval, and honestly report when nothing ran", () => {
+  test("a configured verify command asks for approval the same way `run` does, and a decline is reported as unconfirmed, not passing", async () => {
+    // Found by an independent review: `run` actions check `approve` before executing, but the agent's
+    // `verify` action called verify() directly — since verify's commands come from the repo's own
+    // config (package.json scripts, pyproject.toml, ...), an untrusted repo could put anything there
+    // and it would run unasked, defeating the "commands ask for approval" promise for that one path.
+    const { root, p } = tinyRepo();
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "x", scripts: { test: "node -e \"console.log(1)\"" } }));
+    const cfg = loadConfig(p);
+    cfg.verify.test = "npm test --silent";
+    (await dist("config.js")).saveConfig(p, cfg);
+    const fake = fakeClaude([JSON.stringify({ action: "verify" }), JSON.stringify({ action: "done", summary: "checked" })]);
+    const asked = [];
+    try {
+      const r = await runTask(p, "just verify", {
+        claudeBin: fake.bin,
+        boss: false,
+        maxSteps: 6,
+        approve: async (cmd) => { asked.push(cmd); return false; }, // decline every command
+      });
+      assert.equal(asked.length, 1, "verify's configured test command was routed through the approval gate");
+      assert.match(asked[0], /npm test/);
+      const ev = readEvents(p, r.taskId);
+      const verifyEvent = ev.find((e) => e.type === "verify");
+      assert.match(verifyEvent.summary, /declined by user/);
+      assert.doesNotMatch(verifyEvent.summary, /VERIFICATION PASSED/, "a declined check must never be reported as a pass");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("verify() with no verify commands configured reports 'no checks configured', not a vacuous PASSED", async () => {
+    const { root, p } = tinyRepo();
+    const store = new Store(p.db);
+    try {
+      const cfg = loadConfig(p);
+      assert.deepEqual(cfg.verify, {}, "sanity: tinyRepo has no package.json, so nothing was detected");
+      const v = await verify(p, cfg, store, null);
+      assert.equal(v.ran, false);
+      assert.equal(v.ok, false, "no checks configured must not read as success");
+      assert.match(v.report, /NO CHECKS CONFIGURED/);
+      assert.doesNotMatch(v.report, /VERIFICATION PASSED/);
+    } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
   });
 });
 

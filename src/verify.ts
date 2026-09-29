@@ -9,6 +9,7 @@ import { now } from "./util.js";
 
 export interface VerifyResult {
   ok: boolean;
+  ran: boolean;
   changed: string[];
   unexpected: string[];
   steps: { name: string; ok: boolean; exit: number; summary: string; run?: RunResult }[];
@@ -18,14 +19,31 @@ export interface VerifyResult {
 /**
  * Deterministic checks after the agent claims completion. Focused tests first
  * (tests mapped to changed files); the full suite only with `full: true`.
+ *
+ * `opts.approve`, when given, is asked before each configured command runs — verify's commands
+ * come from the repo's own config (package.json scripts, pyproject.toml, ...), so an untrusted
+ * repo can put anything there; without this gate they'd run unasked even though the otherwise
+ * equivalent `run` action always asks. The CLI's own `narrowbit verify` and the MCP `nb_verify`
+ * tool don't pass one, since running verify there is already the user's own direct, deliberate
+ * action — only the agent loop's autonomous `verify` action needs the gate.
  */
-export async function verify(p: Paths, cfg: NarrowbitConfig, store: Store, task: TaskRecord | null, opts: { full?: boolean; base?: string } = {}): Promise<VerifyResult> {
+export async function verify(
+  p: Paths,
+  cfg: NarrowbitConfig,
+  store: Store,
+  task: TaskRecord | null,
+  opts: { full?: boolean; base?: string; approve?: (command: string) => Promise<boolean> } = {},
+): Promise<VerifyResult> {
   const base = opts.base ?? task?.head ?? "HEAD";
   const changed = changedSince(p.root, base).filter((f) => !f.startsWith(".narrowbit/"));
   const steps: VerifyResult["steps"] = [];
 
   const step = async (name: string, cmd: string | undefined) => {
     if (!cmd) return;
+    if (opts.approve && !(await opts.approve(cmd))) {
+      steps.push({ name, ok: false, exit: -1, summary: "declined by user — not run; this check is unconfirmed, not passing" });
+      return;
+    }
     const run = await runCommand(p, cmd);
     steps.push({ name, ok: run.exit === 0, exit: run.exit, summary: run.compressed.summary, run });
   };
@@ -45,14 +63,20 @@ export async function verify(p: Paths, cfg: NarrowbitConfig, store: Store, task:
   const expected = new Set([...(task?.selected.map((s) => s.path) ?? []), ...(task?.tests ?? []), ...(task?.dirtyAtStart ?? [])]);
   const unexpected = task ? changed.filter((f) => !expected.has(f)) : [];
 
-  const ok = steps.every((s) => s.ok);
-  const lines = [`VERIFICATION ${ok ? "PASSED" : "FAILED"}  (${changed.length} changed file(s) vs ${base.slice(0, 8)})`];
+  const ran = steps.length > 0;
+  // An empty `steps` means no verify command is configured for this repo — that is not the same
+  // as everything passing, and reporting "PASSED" on zero checks was misleading (Array.every on
+  // an empty array is vacuously true). Report it plainly instead.
+  const ok = ran && steps.every((s) => s.ok);
+  const status = !ran ? "NO CHECKS CONFIGURED" : ok ? "PASSED" : "FAILED";
+  const lines = [`VERIFICATION ${status}  (${changed.length} changed file(s) vs ${base.slice(0, 8)})`];
+  if (!ran) lines.push("no verify.test/typecheck/lint command is set for this repo (.narrowbit/config.json) — nothing was actually checked");
   for (const s of steps) {
     lines.push(`${s.ok ? "✓" : "✗"} ${s.name}: ${s.summary}`);
     if (!s.ok && s.run) lines.push(s.run.compressed.text.split("\n").slice(0, 60).join("\n"), `  raw: ${s.run.rawLog}`);
   }
   if (unexpected.length) lines.push(`note: changed outside selected context: ${unexpected.slice(0, 10).join(", ")}`);
-  return { ok, changed, unexpected, steps, report: lines.join("\n") };
+  return { ok, ran, changed, unexpected, steps, report: lines.join("\n") };
 }
 
 export function verifyRecord(v: VerifyResult): NonNullable<TaskRecord["verify"]> {

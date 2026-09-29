@@ -72,6 +72,16 @@ export function listCheckpoints(p: Paths, taskId: string): Checkpoint[] {
  * written back, and every file that exists now but didn't at the checkpoint (created by a later step) is
  * removed. Never touches HEAD, the index, or any branch — this only ever changes files on disk, the same
  * as an edit action would, so the ordinary diff/commit/discard flow sees it as normal uncommitted changes.
+ *
+ * The checkout itself goes through a throwaway index (`GIT_INDEX_FILE`), the same trick snapshotTree()
+ * uses — `git checkout <commit> -- .` followed by `git reset` was tried first, but `reset` unstages the
+ * *real* index wholesale, discarding anything the user had staged before restoring that had nothing to
+ * do with this task. A throwaway index never touches the real one, so there's nothing to reset afterward.
+ *
+ * Caveat this doesn't (and can't) solve: the "delete anything created since" step below can't tell an
+ * agent-created file from one the user created independently in this same folder while the task ran
+ * concurrently. Rewind assumes nothing else was editing the folder at the same time, the same assumption
+ * every part of `narrowbit agent`'s direct-working-tree design makes.
  */
 export function restoreCheckpoint(root: string, commit: string): { ok: boolean; message: string } {
   if (git(root, ["cat-file", "-e", `${commit}^{commit}`]).code !== 0) return { ok: false, message: "that checkpoint no longer exists (the repository may have been garbage-collected)" };
@@ -86,8 +96,15 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
       /* already gone, or a race with the filesystem — either way the goal (it's not there) is met */
     }
   }
-  const co = git(root, ["checkout", commit, "--", "."]);
-  if (co.code !== 0) return { ok: false, message: co.out.split("\n").pop() || "the restore failed" };
-  git(root, ["reset"]); // leave the changes unstaged, like an ordinary edit — checkout stages what it touches
+  const dir = mkdtempSync(join(tmpdir(), "nb-ckpt-restore-"));
+  const idx = join(dir, "index");
+  try {
+    const env = { GIT_INDEX_FILE: idx };
+    if (git(root, ["read-tree", commit], env).code !== 0) return { ok: false, message: "the restore failed (could not read the checkpoint's tree)" };
+    const co = git(root, ["checkout-index", "-a", "-f"], env);
+    if (co.code !== 0) return { ok: false, message: co.out.split("\n").pop() || "the restore failed" };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
   return { ok: true, message: `restored ${before.size} file(s)` };
 }

@@ -4,7 +4,33 @@ Local, context-managed coding-agent runtime: **task + repository + durable evide
 
 Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens. If quality drops, Narrowbit has failed.
 
-## Handoff (2026-09-29, public-release checks: cold clone, Python support, second-language proof) — read this first
+## Handoff (2026-09-30, an independent Codex review found two real release blockers) — read this first
+
+**State.** `main` = `fe0f5fd` before this stretch's commit, pushed after. Tests: `npm test` 128, `npm run test:ui` 66, all passing. The user asked Codex (a different model, run independently, no shared context with this session) for a second opinion on public-release readiness. Codex found four issues; all four were independently re-verified against the actual code before any fix — not applied on trust. All four were real.
+
+**1. Verification bypassed command approval (the real severity-1 finding).** `run` actions check `approve` before executing; the agent's `verify` action called `verify()` directly with no approval check at all — and `verify()`'s commands come from the repo's own config (`package.json` scripts, `pyproject.toml`, the new Python detection added 2026-09-29), so an untrusted repo could put anything there and it would run unasked, silently defeating the README's own "commands ask for approval" promise for that one path. **Fixed:** `verify()` gained an optional `approve` callback, checked before each configured command; `runtime.ts`'s agent-invoked `verify` action now passes it through. The CLI's own `narrowbit verify` and the MCP `nb_verify` tool deliberately don't pass one — running verify there is already the user's own direct action, the same trust level as typing `npm test` themselves. A declined check is reported as "declined by user — not run; unconfirmed, not passing," never as a silent pass.
+
+**2. Rewind's `git reset` unstaged the user's own unrelated work.** `restoreCheckpoint` checked out the checkpoint's tree with `git checkout <commit> -- .` then ran a plain `git reset` to leave the result unstaged — but that reset touches the *real* index wholesale, discarding anything the user had staged before restoring, whether or not it had anything to do with the task. **Fixed:** the checkout now goes through a throwaway index (`GIT_INDEX_FILE`, the same trick `snapshotTree()` already uses for taking checkpoints) via `read-tree` + `checkout-index -a -f`, so the real index is never touched and no reset is needed. **Not fixed, disclosed instead:** rewind's "delete anything created since the checkpoint" step still can't distinguish an agent-created file from one the user created independently in the same folder while the task ran — a real limitation of the whole direct-working-tree design, not something patchable in `checkpoints.ts` alone; now documented in the function's own comment rather than left implicit.
+
+**3. `verify()` reported "PASSED" on zero configured checks.** `steps.every(s => s.ok)` on an empty array is vacuously `true`, so a repo with no `verify.test`/`typecheck`/`lint` configured got "VERIFICATION PASSED" despite nothing being checked. **Fixed:** `VerifyResult` gained `ran`; the report now says "NO CHECKS CONFIGURED" and `ok` is `false` when `steps.length === 0`, distinct from a genuine pass. `runtime.ts`'s two places that pattern-matched on `"VERIFICATION FAILED"` text were updated so "no checks" isn't mislabeled as "verification passed" in the router's own summaries.
+
+**4. README overclaimed network privacy.** "The only network calls are to the model provider you choose" ignored the app's own GitHub update check and any connectors the user configures. **Fixed:** reworded to name those explicitly, plus reworded to be precise about what "local-first" actually means (selected code goes to whichever provider you pick, same as typing it into that provider yourself).
+
+**Verification discipline for all four:** re-read the actual code before trusting Codex's line numbers and claims (all four held up); wrote a regression test per fix and confirmed each one actually fails without the fix (`git stash` the fix, re-run, watch it fail, restore) before calling anything done — same discipline as every other fix this project has made. Two new tests added: the verify-approval-gate test and the checkpoint-staged-index test, both directly reproducing the exact failure Codex described.
+
+**Open items, unchanged from 2026-09-29 (still the priority list):**
+1. Confirm the scout finding (Codex sol scouting Claude, -57% Claude cost) generalizes past the original n=1×10.
+2. Genuinely parallel/independent-subtask multi-agent work — still unbuilt.
+3. Measure how fast each provider burns its own plan's usage limit per task.
+4. Extend `build-tasks.mjs` to mine Python (or another language) commit history automatically.
+5. Set DeepSeek as the fallback provider for Claude limits and try a real task on it.
+6. Real dogfooding of scout/lead/reviewer/rewind/`@` mentions/plan-approval on actual daily work.
+7. Router experiment (rules vs local Decider-2b) still inconclusive.
+8. Persist the Skills-list collapsed state across reloads if it turns out to matter.
+
+**Public-release status: the two real blockers Codex found are fixed; nothing else changed the picture.** Everything from the 2026-09-29 handoff still stands — secrets clean, license/CI/docs in place, honest benchmark caveats. A second model's independent review, taken seriously and verified rather than either dismissed or applied blindly, is now part of the record for whether this was actually checked before going public.
+
+## Prior handoff (2026-09-29, public-release checks: cold clone, Python support, second-language proof)
 
 **State.** `main` = `700fa4a`, pushed, CI green, deployed to `/Users/Shared/NarrowbitApp` + `/Applications/Narrowbit.app`. Tests: `npm test` 125, `npm run test:ui` 66, all passing. Prompted by the user asking "is this ready to go public?" — this stretch worked through the real blockers from the last handoff's public-release checklist rather than more feature work.
 

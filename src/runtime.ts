@@ -982,7 +982,7 @@ function resultMeta(d: Decision, result: string): string {
     case "read": return /file not found/.test(result) ? "the file was not found" : `read ${d.path ?? "a file"} (${lines} lines)`;
     case "grep": case "search": return /no matches/i.test(result) ? "no matches" : `${Math.max(0, lines - 1)} result lines`;
     case "edit": return result.startsWith("edited ") ? "the edit was applied" : "the edit was refused";
-    case "verify": return result.startsWith("VERIFICATION FAILED") ? "verification failed" : "verification passed";
+    case "verify": return result.startsWith("VERIFICATION FAILED") ? "verification failed" : result.startsWith("VERIFICATION NO CHECKS") ? "verify ran but no checks are configured" : "verification passed";
     case "run": { const m = /\(exit (\d+)/.exec(result); return m ? (m[1] === "0" ? "the command succeeded" : `the command failed (exit ${m[1]})`) : "the command ran"; }
     default: return `${d.action} returned ${lines} line(s)`;
   }
@@ -1156,7 +1156,7 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
     case "verify": {
       const cfg = loadConfig(p);
       const store = openStore(p);
-      const v = await verify(p, cfg, store, null);
+      const v = await verify(p, cfg, store, null, { approve });
       store.close();
       const capped = capOutput(v.report);
       const handle = writeEvidence(p, taskId, "command", v.report, capped);
