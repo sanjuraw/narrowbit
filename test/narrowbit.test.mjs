@@ -15,7 +15,7 @@ const { parseSource } = await dist("parser.js");
 const { IgnoreMatcher } = await dist("files.js");
 const { compressOutput, groupSimilar, capOutput } = await dist("compress.js");
 const { redact } = await dist("redact.js");
-const { paths, ensureDirs, loadConfig } = await dist("config.js");
+const { paths, ensureDirs, loadConfig, detectVerify } = await dist("config.js");
 const { Store } = await dist("store.js");
 const { indexRepo } = await dist("indexer.js");
 const { buildPackage } = await dist("package.js");
@@ -191,6 +191,41 @@ describe("stream-json parsing (benchmark)", () => {
     assert.equal(s.turns, 3);
     assert.equal(s.costUsd, 0.05);
     assert.equal(s.isError, false);
+  });
+});
+
+describe("detectVerify: Python projects (pytest/mypy/ruff), not just package.json", () => {
+  test("a pyproject.toml project with a tests/ folder, mypy and ruff configured gets all three commands", () => {
+    const root = mkdtempSync(join(tmpdir(), "nb-py-"));
+    try {
+      mkdirSync(join(root, "tests"));
+      writeFileSync(join(root, "pyproject.toml"), "[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n\n[tool.mypy]\nstrict = true\n\n[tool.ruff]\nline-length = 100\n");
+      const v = detectVerify(root);
+      assert.equal(v.test, "pytest -q");
+      assert.equal(v.testFocused, "pytest -q {files}");
+      assert.equal(v.typecheck, "mypy .");
+      assert.equal(v.lint, "ruff check .");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a plain setup.cfg project with a [flake8] section and no pyproject.toml still gets test + lint", () => {
+    const root = mkdtempSync(join(tmpdir(), "nb-py-"));
+    try {
+      mkdirSync(join(root, "tests"));
+      writeFileSync(join(root, "setup.cfg"), "[flake8]\nmax-line-length = 100\n");
+      const v = detectVerify(root);
+      assert.equal(v.test, "pytest -q");
+      assert.equal(v.lint, "flake8");
+      assert.equal(v.typecheck, undefined, "no mypy config, so no typecheck command is invented");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a folder with no package.json and no Python project files gets nothing (not guessed)", () => {
+    const root = mkdtempSync(join(tmpdir(), "nb-py-"));
+    try {
+      writeFileSync(join(root, "README.md"), "just some notes\n");
+      assert.deepEqual(detectVerify(root), {});
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
 

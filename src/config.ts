@@ -158,10 +158,10 @@ export function saveConfig(p: Paths, c: NarrowbitConfig): void {
   writeFileSync(p.config, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
 }
 
-/** Detect verification commands from package.json. Deterministic, no guessing beyond what the repo declares. */
+/** Detect verification commands from package.json, or from pyproject.toml/setup.cfg for a Python project. */
 export function detectVerify(root: string): VerifyConfig {
   const pkgPath = join(root, "package.json");
-  if (!existsSync(pkgPath)) return {};
+  if (!existsSync(pkgPath)) return detectVerifyPython(root);
   let pkg: any;
   try {
     pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
@@ -182,5 +182,33 @@ export function detectVerify(root: string): VerifyConfig {
   if (deps.vitest) v.testFocused = "npx vitest run {files}";
   else if (deps.jest || deps["ts-jest"]) v.testFocused = "npx jest {files}";
   else if (deps.mocha) v.testFocused = "npx mocha {files}";
+  return v;
+}
+
+function tryRead(path: string): string {
+  return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
+/** Same detection, for a Python project: only what the repo's own config files declare, nothing guessed. */
+function detectVerifyPython(root: string): VerifyConfig {
+  const text = tryRead(join(root, "pyproject.toml"));
+  const setupCfg = tryRead(join(root, "setup.cfg"));
+  const isPython =
+    text !== "" ||
+    existsSync(join(root, "setup.py")) ||
+    setupCfg !== "" ||
+    existsSync(join(root, "requirements.txt")) ||
+    existsSync(join(root, "requirements-dev.txt"));
+  if (!isPython) return {};
+  const v: VerifyConfig = {};
+  const hasTests =
+    existsSync(join(root, "tests")) || existsSync(join(root, "test")) || /\[tool\.pytest/.test(text) || /^\[pytest/m.test(setupCfg) || existsSync(join(root, "pytest.ini"));
+  if (hasTests) {
+    v.test = "pytest -q";
+    v.testFocused = "pytest -q {files}";
+  }
+  if (/\[tool\.mypy\]/.test(text) || existsSync(join(root, "mypy.ini"))) v.typecheck = "mypy .";
+  if (/\[tool\.ruff/.test(text) || existsSync(join(root, "ruff.toml")) || existsSync(join(root, ".ruff.toml"))) v.lint = "ruff check .";
+  else if (existsSync(join(root, ".flake8")) || /\[flake8\]/.test(setupCfg)) v.lint = "flake8";
   return v;
 }
