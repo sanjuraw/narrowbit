@@ -18,7 +18,7 @@ Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens
 
 **Verification discipline for all four:** re-read the actual code before trusting Codex's line numbers and claims (all four held up); wrote a regression test per fix and confirmed each one actually fails without the fix (`git stash` the fix, re-run, watch it fail, restore) before calling anything done — same discipline as every other fix this project has made. Two new tests added: the verify-approval-gate test and the checkpoint-staged-index test, both directly reproducing the exact failure Codex described.
 
-**Open items, unchanged from 2026-09-29 (still the priority list):**
+**Open items, priority list (mostly unchanged from 2026-09-29, one addition):**
 1. Confirm the scout finding (Codex sol scouting Claude, -57% Claude cost) generalizes past the original n=1×10.
 2. Genuinely parallel/independent-subtask multi-agent work — still unbuilt.
 3. Measure how fast each provider burns its own plan's usage limit per task.
@@ -27,6 +27,7 @@ Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens
 6. Real dogfooding of scout/lead/reviewer/rewind/`@` mentions/plan-approval on actual daily work.
 7. Router experiment (rules vs local Decider-2b) still inconclusive.
 8. Persist the Skills-list collapsed state across reloads if it turns out to matter.
+9. **Plan-hash invalidation for `planApproval`** (idea from reviewing `chaseai-yt/claudex-loop`, a Claude Code/Codex skill with a similar cross-model plan-review/inspection pattern to Narrowbit's own `leadModel`/`reviewer`/scout, already measured 2026-09-23): its approved plans are bound to a SHA256 of the plan text, invalidated automatically if the plan changes after approval. Narrowbit's `planApproval` has no equivalent — an approved plan could drift silently. Speculative, not measured as an actual problem in real use; per this project's own "every feature needs a benchmark reason to exist" rule, don't build until dogfooding actually hits this gap.
 
 **Public-release status: the two real blockers Codex found are fixed; nothing else changed the picture.** Everything from the 2026-09-29 handoff still stands — secrets clean, license/CI/docs in place, honest benchmark caveats. A second model's independent review, taken seriously and verified rather than either dismissed or applied blindly, is now part of the record for whether this was actually checked before going public.
 
