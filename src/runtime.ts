@@ -506,6 +506,13 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // deterministically, if no edit was actually applied, or if files changed since the last verify.
   let editsApplied = 0;
   let editedSinceVerify = false;
+  // True once a check has actually EXECUTED since the last edit (a verify with at least one real step, or one of
+  // the repo's own verify commands run directly). editedSinceVerify only asks "did you call verify?", and is
+  // deliberately satisfied by a verify that found nothing to run, so a repo with no checks configured can
+  // still finish; this is the separate, honest question "did anything check these edits?" — used to label
+  // the result, not to block it.
+  let checkedSinceEdit = false;
+  let lastVerifyHead = "";
   const doneChallenges = new Set<string>();
 
   const prior = opts.continueTask ? readEvents(p, taskId) : [];
@@ -827,6 +834,17 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         }
         outcome = "done";
         summary = decision.summary ?? "done";
+        // Finishing is allowed with no check having run (a repo may have none configured, and blocking forever
+        // would trap it), but the result must not read as verified. Say so where the user will see it.
+        if (editsApplied > 0 && !checkedSinceEdit) {
+          const why = /NO CHECKS CONFIGURED/.test(lastVerifyHead)
+            ? "this repo has no verify command configured"
+            : /NO CHECKS RAN/.test(lastVerifyHead)
+              ? "no configured check could run (a tool isn't installed, or the commands were declined)"
+              : "verify was not run after the last edit";
+          summary += `\n\n[Narrowbit: NOT verified — ${why}, so no check has confirmed these edits.]`;
+          appendEvent(p, taskId, { actor: "system", type: "decision", summary: `finished with edits but no check ran: ${why}` });
+        }
         if (plan && plan.steps.some((x) => x.status !== "done")) {
           markSteps(plan, plan.steps.map((_, i2) => i2 + 1));
           appendEvent(p, taskId, { actor: "model", type: "plan", summary: `plan: ${plan.steps.length}/${plan.steps.length} done`, meta: planMeta(plan) });
@@ -873,6 +891,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       if (decision.action === "edit" && !editRefused) {
         editsApplied++;
         editedSinceVerify = true;
+        checkedSinceEdit = false;
         checkpointNow(p, taskId, steps, resultText.startsWith("edited ") ? resultText.slice(0, 100) : `edit ${decision.path ?? ""}`);
       }
       // Running one of the repo's own verify commands (e.g. `npm test`) and passing counts as verifying:
@@ -880,6 +899,13 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       const verifyCommands = Object.values(cfg.verify).filter(Boolean) as string[];
       const ranVerifyCommand = decision.action === "run" && /^\$ .*\(exit 0/.test(resultText) && verifyCommands.some((c) => (decision.command ?? "").trim() === c || (decision.command ?? "").trim() === c.replace(/ --silent$/, ""));
       if ((decision.action === "verify" && !resultText.startsWith("VERIFICATION FAILED")) || ranVerifyCommand) editedSinceVerify = false;
+      if (decision.action === "verify") {
+        lastVerifyHead = resultText.split("\n")[0] ?? "";
+        // verify.ts only reports PASSED / FAILED when at least one check really executed; "NO CHECKS ..." covers
+        // nothing configured, every check skipped (tool not installed), and every check declined.
+        if (/^VERIFICATION (PASSED|FAILED)/.test(lastVerifyHead)) checkedSinceEdit = true;
+      }
+      if (decision.action === "run" && !resultText.startsWith("run: the user declined") && verifyCommands.some((c) => (decision.command ?? "").trim() === c || (decision.command ?? "").trim() === c.replace(/ --silent$/, ""))) checkedSinceEdit = true;
       // Only a *failed* check counts toward escalation — edit → typecheck → verify → done is normal,
       // not stuck. The markers are our own output formats: verify.ts's report header and
       // compress.ts's "$ cmd  (exit N; …)" head line.

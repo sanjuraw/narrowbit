@@ -75,12 +75,13 @@ export async function verify(
   // "Ran" means at least one check really executed. Zero configured checks, or only skipped ones
   // (tool missing, no tests mapped), is not the same as everything passing — Array.every on an
   // empty array is vacuously true, and reporting "PASSED" there was misleading. Say so plainly.
-  const ran = steps.some((s) => !s.skipped);
+  // A declined check has no `run` (it never executed), so it doesn't count as having run either.
+  const ran = steps.some((s) => !s.skipped && !!s.run);
   const ok = ran && steps.every((s) => s.ok);
   const status = steps.length === 0 ? "NO CHECKS CONFIGURED" : !ran ? "NO CHECKS RAN" : ok ? "PASSED" : "FAILED";
   const lines = [`VERIFICATION ${status}  (${changed.length} changed file(s) vs ${base.slice(0, 8)})`];
   if (steps.length === 0) lines.push("no verify.test/typecheck/lint command is set for this repo (.narrowbit/config.json) — nothing was actually checked");
-  else if (!ran) lines.push("every configured check was skipped — nothing was actually checked");
+  else if (!ran) lines.push("no configured check actually ran (tool not installed, declined, or nothing to run) — nothing was actually checked");
   for (const s of steps) {
     lines.push(`${s.skipped ? "–" : s.ok ? "✓" : "✗"} ${s.name}: ${s.summary}`);
     if (!s.ok && s.run) lines.push(s.run.compressed.text.split("\n").slice(0, 60).join("\n"), `  raw: ${s.run.rawLog}`);

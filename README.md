@@ -6,7 +6,7 @@ Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens
 
 - **Bring your own model.** Claude (your Claude subscription), Codex (your ChatGPT subscription), Antigravity (your Google account), or any OpenAI-compatible API: OpenRouter, Groq, Gemini, OpenAI, DeepSeek, Ollama, Ollama Cloud, LM Studio and others. Three model slots (explore / execute / escalate) exist for mixing models, but measurement found a single good model in all three usually wins — see "What is and isn't proven".
 - **Point it at a file.** `@path/to/file` in a task reads that file straight into context instead of costing a search turn; attach images or PDFs (Claude, Codex, vision-capable API models) for UI bugs or specs.
-- **Rewind.** A checkpoint is taken before a task starts and after every edit; undo any of them without touching your commit history.
+- **Rewind.** A checkpoint is taken before a task starts and after every edit; undo any of them without touching your commit history. Files created since the checkpoint are moved to `.narrowbit/rewind-trash/` rather than deleted, and files you have staged are left alone.
 - **Local-first.** No telemetry, no repo upload. Selected code and context go to the model provider you choose on every call, the same as typing it into that provider yourself; the app also checks GitHub for updates, and any connectors you configure make their own calls. Secrets are redacted from everything the agent stores or re-reads.
 - **You stay in control.** Commands ask for approval, edits show as diffs, and nothing is committed until you say so. "Done" is checked against your repo's own verify commands.
 - **Extensible.** Reusable **skills** (task templates) and **connectors** (any MCP server, e.g. GitHub) the agent can call.

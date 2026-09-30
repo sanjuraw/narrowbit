@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Paths } from "./config.js";
 import { appendEvent, readEvents } from "./events.js";
 
@@ -68,9 +68,9 @@ export function listCheckpoints(p: Paths, taskId: string): Checkpoint[] {
 }
 
 /**
- * Restores the working tree to exactly what it looked like at `commit`: every file the checkpoint had is
- * written back, and every file that exists now but didn't at the checkpoint (created by a later step) is
- * removed. Never touches HEAD, the index, or any branch — this only ever changes files on disk, the same
+ * Restores the working tree to what it looked like at `commit`: every file the checkpoint had is written
+ * back, and files that exist now but didn't at the checkpoint (created by a later step) are moved out of
+ * the way. Never touches HEAD, the index, or any branch — this only ever changes files on disk, the same
  * as an edit action would, so the ordinary diff/commit/discard flow sees it as normal uncommitted changes.
  *
  * The checkout itself goes through a throwaway index (`GIT_INDEX_FILE`), the same trick snapshotTree()
@@ -78,22 +78,44 @@ export function listCheckpoints(p: Paths, taskId: string): Checkpoint[] {
  * *real* index wholesale, discarding anything the user had staged before restoring that had nothing to
  * do with this task. A throwaway index never touches the real one, so there's nothing to reset afterward.
  *
- * Caveat this doesn't (and can't) solve: the "delete anything created since" step below can't tell an
- * agent-created file from one the user created independently in this same folder while the task ran
- * concurrently. Rewind assumes nothing else was editing the folder at the same time, the same assumption
- * every part of `narrowbit agent`'s direct-working-tree design makes.
+ * Removing "files created since" can't tell an agent-created file from one the user created themselves in
+ * this folder while the task ran (an independent review confirmed rewind was deleting both, staged ones
+ * included). So rewind never deletes on that guess: a file the user has *staged* is theirs by intent and is
+ * left exactly where it is, and any other newer file is moved to `.narrowbit/rewind-trash/<stamp>/` (inside
+ * the self-ignored state folder, so it isn't snapshotted or committed) — the undo still works, and a wrong
+ * guess costs a `mv`, not the file.
  */
-export function restoreCheckpoint(root: string, commit: string): { ok: boolean; message: string } {
+export function restoreCheckpoint(root: string, commit: string): { ok: boolean; message: string; movedTo?: string; kept?: string[] } {
   if (git(root, ["cat-file", "-e", `${commit}^{commit}`]).code !== 0) return { ok: false, message: "that checkpoint no longer exists (the repository may have been garbage-collected)" };
   const now = snapshotTree(root);
   const before = new Set(git(root, ["ls-tree", "-r", "--name-only", commit]).out.split("\n").filter(Boolean));
   const after = now ? new Set(git(root, ["ls-tree", "-r", "--name-only", now]).out.split("\n").filter(Boolean)) : new Set<string>();
+  const staged = new Set(git(root, ["diff", "--cached", "--name-only"]).out.split("\n").filter(Boolean));
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const trash = join(root, ".narrowbit", "rewind-trash", stamp);
+  const moved: string[] = [];
+  const kept: string[] = [];
   for (const f of after) {
     if (before.has(f)) continue;
+    if (staged.has(f)) {
+      kept.push(f);
+      continue;
+    }
+    const from = join(root, f);
+    if (!existsSync(from)) continue;
+    const to = join(trash, f);
     try {
-      unlinkSync(join(root, f));
+      mkdirSync(dirname(to), { recursive: true });
+      try {
+        renameSync(from, to);
+      } catch {
+        copyFileSync(from, to); // e.g. a different filesystem; only remove the original once the copy exists
+        unlinkSync(from);
+      }
+      moved.push(f);
     } catch {
-      /* already gone, or a race with the filesystem — either way the goal (it's not there) is met */
+      /* couldn't move it: leaving the file in place is the safe failure */
+      kept.push(f);
     }
   }
   const dir = mkdtempSync(join(tmpdir(), "nb-ckpt-restore-"));
@@ -106,5 +128,8 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-  return { ok: true, message: `restored ${before.size} file(s)` };
+  const notes = [`restored ${before.size} file(s)`];
+  if (moved.length) notes.push(`moved ${moved.length} newer file(s) to ${join(".narrowbit", "rewind-trash", stamp)} instead of deleting them`);
+  if (kept.length) notes.push(`left ${kept.length} newer file(s) in place (staged, or could not be moved): ${kept.slice(0, 5).join(", ")}`);
+  return { ok: true, message: notes.join("; "), movedTo: moved.length ? trash : undefined, kept: kept.length ? kept : undefined };
 }

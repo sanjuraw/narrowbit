@@ -937,6 +937,56 @@ describe("CLI: `narrowbit agent`'s \"files changed\" summary", () => {
   });
 });
 
+describe("a result that no check confirmed is labelled as such (finishing is still allowed)", () => {
+  // Found by an independent review: when verify reports "no checks", the runtime rightly stops asking for
+  // verification (a repo with nothing configured must still be able to finish) — but the task then ended
+  // plain DONE, reading as if it had been checked.
+  const edits = [JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "hi" }), JSON.stringify({ action: "verify" }), JSON.stringify({ action: "done", summary: "changed it" })];
+
+  test("edits + a repo with no verify command configured: DONE, but labelled NOT verified with the reason", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude(edits);
+    try {
+      const r = await runTask(p, "say hi", { claudeBin: fake.bin, boss: false, maxSteps: 8 });
+      assert.equal(r.outcome, "done", "still allowed to finish");
+      assert.match(r.summary, /^changed it/);
+      assert.match(r.summary, /NOT verified — this repo has no verify command configured/);
+      assert.ok(readEvents(p, r.taskId).some((e) => /finished with edits but no check ran/.test(e.summary)));
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("declined checks read as not verified too, and say why", async () => {
+    const { root, p } = tinyRepo();
+    const cfg = loadConfig(p);
+    cfg.verify.test = 'node -e "process.exit(0)"';
+    (await dist("config.js")).saveConfig(p, cfg);
+    const fake = fakeClaude(edits);
+    try {
+      const r = await runTask(p, "say hi", { claudeBin: fake.bin, boss: false, maxSteps: 8, approve: async () => false });
+      assert.match(r.summary, /NOT verified — no configured check could run \(a tool isn't installed, or the commands were declined\)/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("a check that really ran (pass or fail) means no label; a question with no edits never gets one", async () => {
+    const a = tinyRepo();
+    const cfg = loadConfig(a.p);
+    cfg.verify.test = 'node -e "process.exit(0)"';
+    (await dist("config.js")).saveConfig(a.p, cfg);
+    const fakeA = fakeClaude(edits);
+    const b = tinyRepo();
+    const fakeB = fakeClaude([JSON.stringify({ action: "done", summary: "the answer" }), JSON.stringify({ action: "done", summary: "the answer" })]);
+    try {
+      const ra = await runTask(a.p, "say hi", { claudeBin: fakeA.bin, boss: false, maxSteps: 8, approve: async () => true });
+      assert.doesNotMatch(ra.summary, /NOT verified/, "the configured test command ran and passed");
+      const rb = await runTask(b.p, "what does a.txt say?", { claudeBin: fakeB.bin, boss: false, maxSteps: 6 });
+      assert.doesNotMatch(rb.summary, /NOT verified/, "nothing was edited, so there is nothing to verify");
+    } finally {
+      for (const r of [a.root, b.root]) rmSync(r, { recursive: true, force: true });
+      for (const f of [fakeA, fakeB]) rmSync(f.dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("CLI: `narrowbit agent` says so when commands were not run", () => {
   // Found by a final CLI walk-through: with no terminal to ask, verify's checks are (correctly) declined
   // since the approval-gate fix — but the run still ended "DONE", exit 0, with only one easy-to-miss line
@@ -1997,6 +2047,27 @@ describe("rewind: checkpoints of the working tree", () => {
       assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "hello\n", "the task's own change was reverted");
       const stillStaged = execFileSync("git", ["diff", "--name-only", "--cached"], { cwd: root, encoding: "utf8" }).trim();
       assert.equal(stillStaged, "unrelated.txt", "the user's unrelated staged file is still staged after rewind");
+      // An independent review pointed out the assertion above only proved the file stayed *staged*: rewind
+      // was still deleting it from disk (leaving a staged entry with no file behind it).
+      assert.equal(readFileSync(join(root, "unrelated.txt"), "utf8"), "the user's own work, staged before rewind\n", "and it is still on disk, untouched");
+      assert.deepEqual(r.kept, ["unrelated.txt"]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a file created after the checkpoint is moved aside, never deleted — the user's own untracked work survives a rewind", async () => {
+    const { checkpointNow, listCheckpoints, restoreCheckpoint } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    try {
+      checkpointNow(p, "rt-w", 0, "start");
+      mkdirSync(join(root, "notes"), { recursive: true });
+      writeFileSync(join(root, "notes", "mine.txt"), "written by the user in another editor while the task ran\n");
+      const r = restoreCheckpoint(root, listCheckpoints(p, "rt-w")[0].commit);
+      assert.ok(r.ok, r.message);
+      assert.ok(!existsSync(join(root, "notes", "mine.txt")), "it is out of the working tree, so the rewind still 'undoes' newer files");
+      assert.ok(r.movedTo, "and the result says where it went");
+      assert.equal(readFileSync(join(r.movedTo, "notes", "mine.txt"), "utf8"), "written by the user in another editor while the task ran\n", "recoverable, byte for byte, with its folder structure");
+      assert.match(r.message, /moved 1 newer file\(s\) to \.narrowbit\/rewind-trash\/.* instead of deleting/);
+      assert.ok(!execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).includes("rewind-trash"), "the recovery folder is inside the self-ignored state dir, so it never shows up as a change");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
