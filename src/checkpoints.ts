@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Paths } from "./config.js";
 import { appendEvent, readEvents } from "./events.js";
+import { gitArgs } from "./util.js";
 
 /**
  * Rewind: a snapshot of the working tree (tracked + untracked, respecting .gitignore) taken after every
@@ -21,7 +22,7 @@ function git(root: string, args: string[], env?: Record<string, string>): { code
   // See util.ts's sh() for why every git invocation here needs this: ownership mismatches (a shared Mac, a
   // folder that predates Narrowbit) otherwise make every checkpoint silently fail — snapshotTree() below
   // would just see "not a usable git repo" and quietly skip rewind entirely, no error surfaced anywhere.
-  const r = spawnSync("git", ["-c", `safe.directory=${root}`, ...args], { cwd: root, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env, maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync("git", gitArgs(root, args), { cwd: root, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env, maxBuffer: 64 * 1024 * 1024 });
   return { code: r.status ?? 1, out: (r.stdout ?? r.stderr ?? "").trim() };
 }
 
@@ -85,12 +86,30 @@ export function listCheckpoints(p: Paths, taskId: string): Checkpoint[] {
  * the self-ignored state folder, so it isn't snapshotted or committed) — the undo still works, and a wrong
  * guess costs a `mv`, not the file.
  */
+/** Recovery folders are for undoing a mistaken rewind, not an archive: drop ones older than two weeks.
+ * Only folders named like the timestamps restoreCheckpoint itself creates are ever removed. */
+export function pruneRewindTrash(root: string, maxAgeDays = 14, nowMs = Date.now()): string[] {
+  const base = join(root, ".narrowbit", "rewind-trash");
+  if (!existsSync(base)) return [];
+  const removed: string[] = [];
+  for (const name of readdirSync(base)) {
+    const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(name);
+    if (!m) continue;
+    const at = Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`);
+    if (!Number.isFinite(at) || nowMs - at < maxAgeDays * 86_400_000) continue;
+    rmSync(join(base, name), { recursive: true, force: true });
+    removed.push(name);
+  }
+  return removed;
+}
+
 export function restoreCheckpoint(root: string, commit: string): { ok: boolean; message: string; movedTo?: string; kept?: string[] } {
   if (git(root, ["cat-file", "-e", `${commit}^{commit}`]).code !== 0) return { ok: false, message: "that checkpoint no longer exists (the repository may have been garbage-collected)" };
   const now = snapshotTree(root);
   const before = new Set(git(root, ["ls-tree", "-r", "--name-only", commit]).out.split("\n").filter(Boolean));
   const after = now ? new Set(git(root, ["ls-tree", "-r", "--name-only", now]).out.split("\n").filter(Boolean)) : new Set<string>();
   const staged = new Set(git(root, ["diff", "--cached", "--name-only"]).out.split("\n").filter(Boolean));
+  pruneRewindTrash(root);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const trash = join(root, ".narrowbit", "rewind-trash", stamp);
   const moved: string[] = [];

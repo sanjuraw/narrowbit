@@ -3,6 +3,7 @@ import { accessSync, constants, existsSync, mkdirSync, readFileSync, rmSync, wri
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gitArgs } from "./util.js";
 
 /**
  * Self-update from GitHub for a source install (a git clone that `npm link` points at): fetch, compare
@@ -36,7 +37,7 @@ export interface UpdateInfo {
 }
 
 function git(args: string[], timeoutMs = 20_000) {
-  const r = spawnSync("git", ["-c", `safe.directory=${INSTALL_ROOT}`, ...args], { cwd: INSTALL_ROOT, encoding: "utf8", timeout: timeoutMs, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+  const r = spawnSync("git", gitArgs(INSTALL_ROOT, args), { cwd: INSTALL_ROOT, encoding: "utf8", timeout: timeoutMs, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
   return { code: r.status ?? 1, out: (r.stdout ?? "").trim(), err: (r.stderr ?? "").trim() };
 }
 
@@ -138,7 +139,7 @@ async function compute(): Promise<UpdateInfo> {
 function exec(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number; out: string }> {
   return new Promise((resolveP) => {
     let out = "";
-    const child = spawn(cmd, cmd === "git" ? ["-c", `safe.directory=${INSTALL_ROOT}`, ...args] : args, { cwd: INSTALL_ROOT, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cmd, cmd === "git" ? gitArgs(INSTALL_ROOT, args) : args, { cwd: INSTALL_ROOT, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, stdio: ["ignore", "pipe", "pipe"] });
     const timer = setTimeout(() => child.kill(), timeoutMs);
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (out += d));

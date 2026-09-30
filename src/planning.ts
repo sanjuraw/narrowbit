@@ -1,11 +1,12 @@
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { paths, type Paths } from "./config.js";
 import { appendEvent, fold, readEvents } from "./events.js";
 import { initProject } from "./project.js";
+import { gitArgs } from "./util.js";
 import type { ModelCallOptions, ModelCallResult } from "./providers/claude-cli.js";
 
 /**
@@ -93,8 +94,26 @@ export function draftGoal(taskId: string): string | null {
  * optional: given one, the project is seeded with that draft's digest as its first task; omitted, it's just
  * an empty folder to open, the same "choose a folder" action whether or not you'd been discussing it first.
  */
+/**
+ * Folders too broad to turn into a project: making one git-inits it and commits *everything* inside, so
+ * pointing the folder picker one level too high (the disk root, /Users, ~/Documents) would sweep up
+ * unrelated files — including private ones — into a repository the agent then works in.
+ */
+export function tooBroadForProject(dir: string): string | null {
+  const d = resolve(dir);
+  const home = resolve(homedir());
+  if (d === sep || /^[A-Za-z]:\\?$/.test(d)) return "that's the top of the disk";
+  if (d === home || home.startsWith(d + sep)) return "that's your home folder or one of the folders that contains it";
+  if (dirname(d) === sep) return "that's a system-level folder";
+  const TOP = ["Desktop", "Documents", "Downloads", "Library", "Pictures", "Music", "Movies", "Public", "Applications", "Dropbox", "iCloud Drive", "OneDrive"];
+  if (dirname(d) === home && TOP.some((n) => n.toLowerCase() === basename(d).toLowerCase())) return `that's your whole ${basename(d)} folder`;
+  return null;
+}
+
 export function createProjectFromDraft(taskId: string | undefined, targetPath: string): { root: string; seedTask: string } {
   const root = resolve(targetPath);
+  const broad = tooBroadForProject(root);
+  if (broad) throw new Error(`Refusing to make ${root} a project — ${broad}, and it would commit everything inside it. Pick or create a folder just for this project.`);
   // An existing folder with files in it (a hand-made scaffold, a downloaded template, whatever) is just as
   // valid a starting point as an empty one — git-initing it and committing what's already there versions
   // it, it doesn't touch or discard anything, so there's no reason to refuse it the way an empty-only check
@@ -104,7 +123,7 @@ export function createProjectFromDraft(taskId: string | undefined, targetPath: s
   // See util.ts's sh() for why: a folder that predates Narrowbit (or a shared Mac with more than one
   // account) is very often owned by a different user than whichever one is running this, and git refuses
   // to touch a repository it doesn't own — silently, from here, since spawnSync doesn't throw on its own.
-  const git = (...args: string[]) => spawnSync("git", ["-c", `safe.directory=${root}`, ...args], { cwd: root, encoding: "utf8" });
+  const git = (...args: string[]) => spawnSync("git", gitArgs(root, args), { cwd: root, encoding: "utf8" });
   const init = git("init", "-q", "-b", "main");
   if (init.status !== 0) throw new Error(`git init failed: ${(init.stderr ?? "").trim() || "unknown error"}`);
   if (hadFiles) {
@@ -121,7 +140,7 @@ export function createProjectFromDraft(taskId: string | undefined, targetPath: s
     // any more than Claude Code would. Fall back to a placeholder identity for just this one bootstrap
     // commit, same as isolate.ts's own internal snapshots; real commits you make later still use whatever
     // identity git is actually configured with.
-    commit = spawnSync("git", ["-c", `safe.directory=${root}`, "-c", "user.name=narrowbit", "-c", "user.email=narrowbit@localhost", "-c", "commit.gpgsign=false", ...commitArgs], { cwd: root, encoding: "utf8" });
+    commit = spawnSync("git", [...gitArgs(root, []), "-c", "user.name=narrowbit", "-c", "user.email=narrowbit@localhost", "-c", "commit.gpgsign=false", ...commitArgs], { cwd: root, encoding: "utf8" });
   }
   if (commit.status !== 0) throw new Error(`git commit failed: ${(commit.stderr ?? "").trim() || "unknown error"}`);
   initProject(paths(root), { index: false });

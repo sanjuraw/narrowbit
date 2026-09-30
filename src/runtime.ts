@@ -308,6 +308,24 @@ export function capSummary(text: string, capTokens = 800): string {
  * constantly (checkpoints, status, diffs), so a single edit there is arbitrary code execution that never
  * passes through command approval. Reads are refused too: `.git/config` can hold credentials in remote URLs.
  */
+/** Files that define what a build/test command runs: edit one, and `npm test` / `pytest` / `make` now runs
+ * something the user never saw when they approved that command text. */
+const SCRIPT_FILES = new Set(["package.json", "pyproject.toml", "setup.py", "setup.cfg", "tox.ini", "noxfile.py", "conftest.py", "pytest.ini", "makefile", "gnumakefile", "justfile", "taskfile.yml", "taskfile.yaml", "rakefile", "cargo.toml", "build.rs", ".npmrc", "deno.json", "deno.jsonc", "bunfig.toml"]);
+
+/** A warning for the approval prompt when this task's own edits change what `command` does, else undefined.
+ * Covers script-defining files (package.json and friends) and any edited file the command names directly. */
+export function scriptWarning(command: string, edited: Iterable<string>): string | undefined {
+  const hits: string[] = [];
+  // Named as a whole path word, not a substring: an edit to test.js must not flag `node latest.js`.
+  const named = (word: string) => word.length > 2 && new RegExp(`(^|[\\s/'"=])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s'";&|)])`).test(command);
+  for (const f of edited) {
+    const base = f.split("/").pop() ?? f;
+    if (SCRIPT_FILES.has(base.toLowerCase()) || named(f) || named(base)) hits.push(f);
+  }
+  if (!hits.length) return undefined;
+  return `The agent edited ${hits.slice(0, 4).join(", ")}${hits.length > 4 ? ` and ${hits.length - 4} more` : ""} during this task, which can change what this command actually runs — check the diff before allowing it.`;
+}
+
 export function isGitInternal(relPath: string): boolean {
   return relPath.split(/[\\/]+/).some((seg) => seg.toLowerCase() === ".git");
 }
@@ -374,7 +392,10 @@ export interface RuntimeOptions {
   log?: (line: string) => void;
   /** Asked before every `run` action. Resolving false refuses the command and tells the model so;
    * unset means commands run without asking (benchmarks, trusted CLI use). */
-  approve?: (command: string) => Promise<boolean>;
+  /** Asked before a shell command (or connector call) runs. `warning` is set when the agent itself changed a file
+   * that decides what this command does (see scriptWarning) — the approver should then ask again even if the
+   * user earlier allowed the same command text for the whole task. */
+  approve?: (command: string, warning?: string) => Promise<boolean>;
   /** Puts the model's question to the user and resolves with their answer (null = nobody can answer).
    * Unset in benchmarks and non-interactive runs: the model is told to make its best assumption instead. */
   ask?: (question: string, options: string[]) => Promise<string | null>;
@@ -525,6 +546,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // still finish; this is the separate, honest question "did anything check these edits?" — used to label
   // the result, not to block it.
   let checkedSinceEdit = false;
+  // Repo-relative paths this task has edited, so an approval can say when a command's own definition changed.
+  const editedPaths = new Set<string>();
+  const approveWithContext: RuntimeOptions["approve"] = opts.approve ? (command) => opts.approve!(command, scriptWarning(command, editedPaths)) : undefined;
   let lastVerifyHead = "";
   const doneChallenges = new Set<string>();
 
@@ -888,7 +912,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       });
       let resultText: string;
       try {
-        resultText = await executeAction(p, taskId, decision, opts.approve, opts.ask, asks, gate);
+        resultText = await executeAction(p, taskId, decision, approveWithContext, opts.ask, asks, gate);
       } catch (e: any) {
         resultText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
@@ -903,6 +927,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       const editRefused = decision.action === "edit" && !resultText.startsWith("edited ");
       if (decision.action === "edit" && !editRefused) {
         editsApplied++;
+        if (decision.path) editedPaths.add(relative(p.root, resolve(p.root, String(decision.path))).split("\\").join("/"));
         editedSinceVerify = true;
         checkedSinceEdit = false;
         checkpointNow(p, taskId, steps, resultText.startsWith("edited ") ? resultText.slice(0, 100) : `edit ${decision.path ?? ""}`);

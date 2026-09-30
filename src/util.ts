@@ -14,6 +14,19 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3.6);
 }
 
+/**
+ * Arguments for every git command Narrowbit runs itself. Besides `safe.directory` (see sh() below), this switches off
+ * the settings git would otherwise *execute* from a repository's own config on an ordinary, non-interactive call:
+ * `core.fsmonitor` (runs on status/diff/add — i.e. constantly, with nobody doing anything) and, for diffs, external
+ * diff programs and textconv filters. A hostile `.git/config` (a folder unpacked from an archive, say) can't run code
+ * through Narrowbit's own git calls this way. Clean/smudge filters can't be switched off without breaking real tools
+ * (git-lfs, git-crypt), so those are handled by asking before opening a repo that defines them (trust.ts).
+ */
+export function gitArgs(root: string, args: string[]): string[] {
+  const rest = args[0] === "diff" ? ["diff", "--no-ext-diff", "--no-textconv", ...args.slice(1)] : args;
+  return ["-c", `safe.directory=${root}`, "-c", "core.fsmonitor=false", ...rest];
+}
+
 export function sh(cmd: string, args: string[], cwd: string, input?: string): { code: number; stdout: string; stderr: string } {
   // Git refuses to touch a repository it doesn't own (a real safety feature — protects against another
   // user planting a malicious repo you'd cd into) — but on a shared Mac, or a project folder that existed
@@ -23,7 +36,7 @@ export function sh(cmd: string, args: string[], cwd: string, input?: string): { 
   // banner, no clue anything is wrong, the whole git-aware half of the UI just vanishes. Narrowbit is only
   // ever asked to operate on a folder the user explicitly pointed it at, so it's reasonable to trust that
   // one folder for its own commands, scoped to this single invocation — not a persistent config change.
-  const realArgs = cmd === "git" ? ["-c", `safe.directory=${cwd}`, ...args] : args;
+  const realArgs = cmd === "git" ? gitArgs(cwd, args) : args;
   const r = spawnSync(cmd, realArgs, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, input });
   return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }

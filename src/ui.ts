@@ -42,6 +42,7 @@ import { acknowledgeUpdateNotes, applyUpdate, checkUpdate, pendingUpdateNotes, r
 import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
 import { sh } from "./util.js";
+import { trustRepo, untrustedReason } from "./trust.js";
 
 /**
  * `narrowbit ui`: the app. A local HTTP server (127.0.0.1 only) that drives the same runTask()
@@ -56,7 +57,7 @@ type StreamEvent =
   | { type: "start"; task: string; continueTask: string | null; selection: string; lead: boolean }
   | { type: "log"; line: string }
   | { type: "event"; event: Event }
-  | { type: "approval"; id: string; command: string }
+  | { type: "approval"; id: string; command: string; warning?: string }
   | { type: "approval_resolved"; id: string; allowed: boolean }
   | { type: "question"; id: string; question: string; options: string[] }
   | { type: "question_resolved"; id: string; answer: string | null }
@@ -244,6 +245,9 @@ export interface UiOptions {
 export function startUi(opts: UiOptions) {
   const token = randomBytes(24).toString("hex");
   let root: string | null = opts.root && existsSync(opts.root) ? repoRootOf(opts.root) : (loadRecent()[0] ?? null);
+  // Don't silently reopen (and run git in) a repo whose filter programs were never trusted; it opens from the
+  // folder picker instead, which asks first.
+  if (root && untrustedReason(root)) root = null;
   // A folder opened by cwd/CLI at launch (not through /api/repo) wasn't otherwise recorded — record it now,
   // so leaving it later (Start without a folder, or "New task" going rootless) still finds it in recents.
   if (root) saveRecent(root);
@@ -466,11 +470,13 @@ export function startUi(opts: UiOptions) {
         return new Promise<string | null>((res) => thisRun.questions.set(id, res));
       },
       approve: askBeforeCommands
-        ? (command) => {
-            if (thisRun.allowed.has(command)) return Promise.resolve(true);
+        ? (command, warning) => {
+            // "Allow for this task" covered the command as it was then. If the agent has since changed what the
+            // command runs (warning set), that permission no longer describes it: ask again.
+            if (thisRun.allowed.has(command) && !warning) return Promise.resolve(true);
             if (thisRun.controller.signal.aborted) return Promise.resolve(false);
             const id = `a${++approvalSeq}`;
-            emit({ type: "approval", id, command });
+            emit(warning ? { type: "approval", id, command, warning } : { type: "approval", id, command });
             return new Promise<boolean>((res) => thisRun.pending.set(id, res));
           }
         : undefined,
@@ -638,6 +644,11 @@ export function startUi(opts: UiOptions) {
           let seedTask: string | undefined;
           if (looksLikeProject) {
             r = repoRootOf(dir);
+            const u = untrustedReason(r);
+            if (u) {
+              if (body.trust !== true) return json(res, 409, { error: "untrusted", message: u.message, risks: u.risks, path: r });
+              trustRepo(r, u.risks);
+            }
           } else {
             const taskId = typeof body.taskId === "string" && /^pl-[\w-]+$/.test(body.taskId) ? body.taskId : undefined;
             try {
@@ -928,6 +939,7 @@ export function startUi(opts: UiOptions) {
           }
           const maxSteps = Math.min(100, Math.max(1, Number(body.maxSteps) || 20));
           // Attachments are named by the id /api/attach returned; anything else is ignored, so a page can't point the agent at other files.
+          if (!root) return json(res, 400, { error: "open a repository first" });
           const attachments = (Array.isArray(body.attachments) ? body.attachments : [])
             .filter((a: unknown): a is string => typeof a === "string" && /^[0-9a-f]{8}-[\w.\- ]+$/.test(a))
             .map((a: string) => join(attachmentDir(root!), a))

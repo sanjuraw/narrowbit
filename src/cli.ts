@@ -32,6 +32,7 @@ import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
 import { fmtNum, now, sh } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
+import { trustRepo, untrustedReason } from "./trust.js";
 
 interface Args {
   _: string[];
@@ -86,6 +87,7 @@ const HELP = `narrowbit — a local, context-managed coding agent
       [--provider <name>] [--model X | --explore X --execute X --escalate X]
       [--effort low|medium|high|xhigh|max] [--max-steps N] [--force] [--dry-run]
       [--allow-commands]   run shell commands without asking (default: ask before each one)
+      [--trust]            open a repo whose own git config runs filter programs (asked once per repo)
       [--scout provider:model|none] research first on this model (default: the saved setting)
       [--review-only]         skip the plan call, still review the diff before "done" (cheaper than full lead mode)
       [--approve-plan]        with lead mode, ask you to approve the plan (or ask for changes) before work starts
@@ -160,6 +162,19 @@ function requireProject(p: Paths, force: boolean) {
   }
 }
 
+/** Refuse to run git in a repo whose own config names filter programs the user hasn't trusted (see trust.ts). */
+function requireTrust(root: string, args: { flags: Record<string, unknown> }): boolean {
+  const u = untrustedReason(root);
+  if (!u) return true;
+  if (args.flags.trust) {
+    trustRepo(root, u.risks);
+    process.stderr.write(`narrowbit: trusting ${root} (its git filter programs were accepted; you'll be asked again if they change)\n`);
+    return true;
+  }
+  process.stderr.write(`narrowbit: ${u.message}\nIf you trust it, re-run with --trust.\n`);
+  return false;
+}
+
 function requireInit(p: Paths) {
   if (!existsSync(p.db)) {
     process.stderr.write(`narrowbit: not initialised in ${p.root} — run \`narrowbit init\`\n`);
@@ -206,6 +221,7 @@ export async function main(argv: string[]): Promise<number> {
   switch (cmd) {
     case "init": {
       requireProject(p, !!args.flags.force);
+      if (!requireTrust(root, args)) return 2;
       const { stats } = initProject(p, { index: !args.flags["no-index"] });
       out(`initialised ${relative(process.cwd(), p.nb) || p.nb}`);
       const cfg = loadConfig(p);
@@ -425,6 +441,7 @@ export async function main(argv: string[]): Promise<number> {
     }
     case "agent": {
       requireInit(p);
+      if (!requireTrust(root, args)) return 2;
       let text = pos.join(" ");
       if (!text && !args.flags.skill) {
         process.stderr.write('usage: narrowbit agent "<task>" [--skill <name>] [--provider <name>] [--model X | --explore X --execute X --escalate X] [--effort medium] [--max-steps N] [--force] [--dry-run]\n');
@@ -484,10 +501,18 @@ export async function main(argv: string[]): Promise<number> {
       out(`${modelsLine}\n`);
       // The agent runs shell commands, and it reads files that can contain instructions aimed at it, so
       // like the app the terminal asks first. --allow-commands opts out (scripts, or a repo you trust).
-      let allowAll = !!args.flags["allow-commands"];
+      const allowFlag = !!args.flags["allow-commands"];
+      let allowTask = false;
       const notRun: string[] = [];
-      const approve = async (command: string): Promise<boolean> => {
-        if (allowAll) return true;
+      const approve = async (command: string, warning?: string): Promise<boolean> => {
+        if (allowFlag) {
+          // The user opted out of prompts entirely; still say when the agent changed what a command runs.
+          if (warning) process.stderr.write(`      ! ${warning}\n`);
+          return true;
+        }
+        // "[a]lways for this task" covered commands as they were; a changed definition is asked about again.
+        if (allowTask && !warning) return true;
+        if (warning) process.stderr.write(`      ⚠ ${warning}\n`);
         if (!process.stdin.isTTY) {
           process.stderr.write(`      ! not run (no terminal to ask): ${command}   — pass --allow-commands to let the agent run commands unattended\n`);
           notRun.push(command);
@@ -496,7 +521,7 @@ export async function main(argv: string[]): Promise<number> {
         const rl = createInterface({ input: process.stdin, output: process.stderr });
         const a = (await rl.question(`      run \`${command}\`? [y]es / [n]o / [a]lways for this task: `)).trim().toLowerCase();
         rl.close();
-        if (a === "a") allowAll = true;
+        if (a === "a") allowTask = true;
         const yes = a === "y" || a === "a";
         if (!yes) notRun.push(command);
         return yes;
