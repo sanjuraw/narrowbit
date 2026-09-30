@@ -301,10 +301,22 @@ export function capSummary(text: string, capTokens = 800): string {
 }
 
 /** Refuse any path that would escape the repo root. */
+/**
+ * True for anything inside a `.git` directory at any depth (nested repos and submodules included), in any
+ * letter case — macOS's default filesystem treats `.GIT/config` as `.git/config`. Git executes settings from
+ * there (`core.fsmonitor`, `core.hooksPath`, hooks) on the very next git command, and Narrowbit runs git
+ * constantly (checkpoints, status, diffs), so a single edit there is arbitrary code execution that never
+ * passes through command approval. Reads are refused too: `.git/config` can hold credentials in remote URLs.
+ */
+export function isGitInternal(relPath: string): boolean {
+  return relPath.split(/[\\/]+/).some((seg) => seg.toLowerCase() === ".git");
+}
+
 export function safeAbsPath(p: Paths, path: string): string | null {
   const abs = resolve(p.root, path);
   const rel = relative(p.root, abs);
   if (rel.startsWith("..") || resolve(p.root) === abs) return null;
+  if (isGitInternal(rel)) return null;
   // Judge by where the path really lands, not how it is spelled: a symlink inside the repo can point
   // anywhere, and read/edit follow it. Check the deepest part that already exists (an edit may create
   // a new file); a dangling symlink is refused outright, since writing through it creates its target.
@@ -323,7 +335,8 @@ export function safeAbsPath(p: Paths, path: string): string | null {
   }
   try {
     const back = relative(realpathSync(p.root), realpathSync(probe));
-    return back.startsWith("..") || isAbsolute(back) ? null : abs;
+    // Also judged by where it really lands: a symlink `x -> .git` would otherwise spell `x/config`.
+    return back.startsWith("..") || isAbsolute(back) || isGitInternal(back) ? null : abs;
   } catch {
     return null;
   }
@@ -1055,6 +1068,11 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
     }
     case "read": {
       const path = String(d.path ?? "");
+      if (isGitInternal(path)) {
+        const text = `read ${path}: refused — files inside .git are git's own internals, not part of the task`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
+        return text;
+      }
       const abs = safeAbsPath(p, path);
       if (!abs || !existsSync(abs)) {
         const text = `read ${path}: file not found`;
@@ -1120,6 +1138,11 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       }
       if (/^\.narrowbit(ignore$|\/)/.test(relative(p.root, abs ?? ""))) {
         const text = `edit ${path}: refused — that's Narrowbit's own file, not part of the task`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
+        return text;
+      }
+      if (isGitInternal(path) || (!abs && isGitInternal(relative(p.root, resolve(p.root, path))))) {
+        const text = `edit ${path}: refused — files inside .git are git's own internals, not part of the task (and git would execute some of them)`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
         return text;
       }

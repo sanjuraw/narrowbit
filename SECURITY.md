@@ -12,9 +12,15 @@ how to reproduce it, and the version shown in the app (sidebar footer, or Models
   provider you choose, to GitHub for update checks, and to any connector (MCP server) you add.
 - **The agent edits real files and runs commands.** The app asks before every shell command, and the
   terminal does too unless you pass `--allow-commands`. File reads and edits are confined to the
-  project folder, including through symlinks. Files the agent reads can contain instructions aimed at it
-  (prompt injection): review the diff before committing, and don't point it at code you don't trust with
-  `--allow-commands`.
+  project folder, including through symlinks, and never reach inside `.git` (git executes some of those
+  files, so an edit there would be a command that bypasses approval). Files the agent reads can contain
+  instructions aimed at it (prompt injection): review the diff before committing, and don't point it at
+  code you don't trust with `--allow-commands`.
+- **Known limits.** Approving a command approves its name, not what it runs: the agent can edit a script
+  (for example `package.json`'s `test`) before asking to run it, so check the diff before approving a
+  command whose script it touched. Opening a folder runs git in it straight away, so a folder with a
+  hostile `.git/config` (one unpacked from an archive rather than freshly cloned) can run code on open —
+  only open folders you trust.
 - **Secrets.** API keys are stored in `~/.narrowbit/keys.json` and connector environment variables in
   `~/.narrowbit/connectors.json`, both mode 0600, and never sent to the app page. Text the agent stores
   or re-reads is redacted for known secret formats. Redaction is pattern-based and can miss unusual formats.

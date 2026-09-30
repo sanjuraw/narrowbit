@@ -937,6 +937,76 @@ describe("CLI: `narrowbit agent`'s \"files changed\" summary", () => {
   });
 });
 
+describe("the agent can't touch .git — an edit there is code execution without approval", () => {
+  // Found by an internal security audit: edits were refused only for .narrowbit*, so a model (e.g. one
+  // prompt-injected by a repo file) could add `core.fsmonitor = "<cmd>"` to .git/config; git ran it on the
+  // very next git call Narrowbit made itself (the post-edit checkpoint), with no approval ever asked.
+  test("the exploit: an edit that plants core.fsmonitor in .git/config is refused, and nothing runs", async () => {
+    const { root, p } = tinyRepo();
+    const cfg = readFileSync(join(root, ".git/config"), "utf8");
+    const marker = join(tmpdir(), `nb-pwned-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const fake = fakeClaude([
+      JSON.stringify({ action: "edit", path: ".git/config", old: cfg, new: cfg + `[core]\n\tfsmonitor = "touch ${marker}; echo"\n` }),
+      JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "hi" }),
+      JSON.stringify({ action: "done", summary: "done" }),
+    ]);
+    let asked = 0;
+    try {
+      const r = await runTask(p, "tidy up", { claudeBin: fake.bin, boss: false, maxSteps: 6, approve: async () => { asked++; return false; } });
+      assert.equal(readFileSync(join(root, ".git/config"), "utf8"), cfg, ".git/config is untouched");
+      assert.ok(!existsSync(marker), "the planted command never ran (the later edit's checkpoint ran git again, so it would have)");
+      assert.ok(readEvents(p, r.taskId).some((e) => /edit \.git\/config: refused — files inside \.git/.test(e.summary)));
+      assert.equal(asked, 0);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); if (existsSync(marker)) rmSync(marker); }
+  });
+
+  test("every spelling is covered: another case, a new hook file, a nested repo, a symlink into .git, and reads", async () => {
+    const { root, p } = tinyRepo();
+    symlinkSync(".git", join(root, "sneaky"));
+    mkdirSync(join(root, "vendor", "lib", ".git"), { recursive: true });
+    writeFileSync(join(root, "vendor", "lib", ".git", "config"), "[core]\n");
+    const before = readFileSync(join(root, ".git/config"), "utf8");
+    // One attempt per turn: a refused edit stops the rest of its batch (by design), so batching them would
+    // leave the later attempts untried and prove nothing about them.
+    const fake = fakeClaude([
+      JSON.stringify({ action: "edit", path: ".GIT/config", old: "[core]", new: "[core]\n\thooksPath = /tmp" }),
+      JSON.stringify({ action: "edit", path: ".git/hooks/pre-commit", old: "", new: "#!/bin/sh\necho pwned\n" }),
+      JSON.stringify({ action: "edit", path: "vendor/lib/.git/config", old: "[core]", new: "[core]\n\tfsmonitor = x" }),
+      JSON.stringify({ action: "edit", path: "sneaky/config", old: "[core]", new: "[core]\n\tfsmonitor = x" }),
+      JSON.stringify({ action: "read", path: ".git/config" }),
+      JSON.stringify({ action: "done", summary: "done" }),
+    ]);
+    try {
+      const r = await runTask(p, "look around", { claudeBin: fake.bin, boss: false, maxSteps: 8 });
+      assert.equal(readFileSync(join(root, ".git/config"), "utf8"), before);
+      assert.ok(!existsSync(join(root, ".git", "hooks", "pre-commit")));
+      assert.equal(readFileSync(join(root, "vendor", "lib", ".git", "config"), "utf8"), "[core]\n");
+      const refusals = readEvents(p, r.taskId).filter((e) => /refused/.test(e.summary ?? "")).map((e) => e.summary);
+      assert.ok(refusals.some((x) => /^read \.git\/config: refused/.test(x)), "reading .git is refused too (remote URLs can hold credentials)");
+      assert.ok(refusals.length >= 5, `every attempt refused, got: ${refusals.join(" | ")}`);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("ordinary look-alikes stay editable: .gitignore, .github/, a file named x.git", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([
+      JSON.stringify([
+        { action: "edit", path: ".gitignore", old: "", new: "dist/\n" },
+        { action: "edit", path: ".github/workflows/ci.yml", old: "", new: "on: push\n" },
+        { action: "edit", path: "x.git", old: "", new: "ok\n" },
+      ]),
+      JSON.stringify({ action: "verify" }),
+      JSON.stringify({ action: "done", summary: "done" }),
+    ]);
+    try {
+      await runTask(p, "add files", { claudeBin: fake.bin, boss: false, maxSteps: 5 });
+      assert.equal(readFileSync(join(root, ".gitignore"), "utf8"), "dist/\n");
+      assert.equal(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8"), "on: push\n");
+      assert.equal(readFileSync(join(root, "x.git"), "utf8"), "ok\n");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
 describe("a result that no check confirmed is labelled as such (finishing is still allowed)", () => {
   // Found by an independent review: when verify reports "no checks", the runtime rightly stops asking for
   // verification (a repo with nothing configured must still be able to finish) — but the task then ended
