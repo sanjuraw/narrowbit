@@ -148,7 +148,7 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
     rmSync(dir, { recursive: true, force: true });
   }
   const notes = [`restored ${before.size} file(s)`];
-  if (moved.length) notes.push(`moved ${moved.length} newer file(s) to ${join(".narrowbit", "rewind-trash", stamp)} instead of deleting them`);
+  if (moved.length) notes.push(`moved ${moved.length} newer file(s) to ${join(".narrowbit", "rewind-trash", stamp)} instead of deleting them (kept there for 14 days)`);
   if (kept.length) notes.push(`left ${kept.length} newer file(s) in place (staged, or could not be moved): ${kept.slice(0, 5).join(", ")}`);
   return { ok: true, message: notes.join("; "), movedTo: moved.length ? trash : undefined, kept: kept.length ? kept : undefined };
 }
@@ -229,7 +229,7 @@ export function discardTask(root: string, start: string, end: string): DiscardPl
     }
   }
   const parts = [`put back ${plan.restore.length} file(s) the task changed`];
-  if (plan.remove.length) parts.push(`moved ${plan.remove.length} file(s) it created to ${join(".narrowbit", "rewind-trash")}`);
+  if (plan.remove.length) parts.push(`moved ${plan.remove.length} file(s) it created to ${join(".narrowbit", "rewind-trash")} (kept there for 14 days)`);
   if (plan.skipped.length) parts.push(`left ${plan.skipped.length} file(s) alone because they changed again after the task`);
   return { ...plan, ok: true, message: parts.join("; "), movedTo };
 }

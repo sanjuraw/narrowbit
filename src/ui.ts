@@ -1,8 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { attachmentDir, attachmentKind, saveAttachment } from "./attachments.js";
 import { suggestFiles } from "./mentions.js";
 import { ensureDirs, loadConfig, paths, saveConfig, type AgentConfig, type Paths } from "./config.js";
@@ -1010,7 +1011,7 @@ export function startUi(opts: UiOptions) {
           const r = restoreCheckpoint(targetRoot, target.commit);
           if (!r.ok) return json(res, 500, { error: r.message });
           appendEvent(p, id, { actor: "user", type: "checkpoint", summary: `rewound to: ${target.summary}`, meta: { rewoundTo: target.id } });
-          return json(res, 200, { ok: true, message: r.message });
+          return json(res, 200, { ok: true, message: r.message, movedTo: r.movedTo });
         }
         case "/api/stop": {
           if (!run?.running) return json(res, 200, { ok: true });
@@ -1050,6 +1051,17 @@ export function startUi(opts: UiOptions) {
           const c = sh("git", ["commit", "-m", message], root);
           if (c.code !== 0) return json(res, 500, { error: (c.stderr || c.stdout).trim() || "git commit failed" });
           return json(res, 200, { ok: true, head: sh("git", ["rev-parse", "--short", "HEAD"], root).stdout.trim() });
+        }
+        case "/api/reveal-recovered": {
+          // Show a rewind/discard recovery folder in Finder. Only ever a folder under this project's
+          // .narrowbit/rewind-trash — the page can't use this to open anything else.
+          if (!root) return json(res, 400, { error: "no repository open" });
+          const base = join(root, ".narrowbit", "rewind-trash");
+          const want = resolve(String(body.path ?? ""));
+          if (!existsSync(want) || !existsSync(base) || !realpathSync(want).startsWith(realpathSync(base) + "/")) return json(res, 400, { error: "that isn't a recovery folder" });
+          const r = spawnSync("open", [want], { encoding: "utf8" });
+          if (r.status !== 0) return json(res, 500, { error: (r.stderr || "couldn't open it").trim() });
+          return json(res, 200, { ok: true });
         }
         case "/api/discard": {
           // Undo one task, and only that task: the files that differ between its first checkpoint (before it

@@ -39,6 +39,10 @@ export function readIsolated(p: Paths, taskId: string): Marker | null {
 }
 
 const GIT = ["-c", "user.name=narrowbit", "-c", "user.email=narrowbit@localhost", "-c", "commit.gpgsign=false"];
+/** For Narrowbit's own bookkeeping git calls (creating the copy, its snapshot commit): no repository hooks. They'd run
+ * the repo's programs (post-checkout, pre-commit…) without the command approval every other command needs. The user's
+ * own Commit, in their own folder, still runs hooks exactly as a terminal would. */
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 
 /** Creates the worktree for a task (or returns the existing one, for follow-ups). Throws with a plain message if it can't. */
 export function ensureIsolated(p: Paths, taskId: string): Marker {
@@ -49,7 +53,7 @@ export function ensureIsolated(p: Paths, taskId: string): Marker {
   if (!/^rt-[\w-]+$/.test(taskId)) throw new Error("bad task id");
   const dir = worktreeDir(p, taskId);
   mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
-  const add = sh("git", ["worktree", "add", "--detach", dir, "HEAD"], root);
+  const add = sh("git", [...NO_HOOKS, "worktree", "add", "--detach", dir, "HEAD"], root);
   if (add.code !== 0) throw new Error(`Couldn't create the separate copy: ${add.stderr.trim().split("\n").pop()}`);
 
   // Bring across everything uncommitted so the agent sees the folder as it is right now.
@@ -80,7 +84,7 @@ export function ensureIsolated(p: Paths, taskId: string): Marker {
     }
   }
   sh("git", ["add", "-A", "--", ".", ":(exclude)node_modules"], dir);
-  sh("git", [...GIT, "commit", "-q", "--allow-empty", "-m", "narrowbit snapshot"], dir);
+  sh("git", [...GIT, ...NO_HOOKS, "commit", "-q", "--allow-empty", "--no-verify", "-m", "narrowbit snapshot"], dir);
   const snapshot = sh("git", ["rev-parse", "HEAD"], dir).stdout.trim();
   const marker: Marker = { dir, snapshot };
   mkdirSync(join(p.runtime, taskId), { recursive: true, mode: 0o700 });
@@ -88,16 +92,26 @@ export function ensureIsolated(p: Paths, taskId: string): Marker {
   return marker;
 }
 
-/** Everything the agent changed in the copy, as a patch against its snapshot. */
+/** Everything the agent changed in the copy, as a patch against its snapshot. Throws rather than returning an empty
+ * patch when staging or diffing fails (an index.lock, say): "no changes" would let the caller delete the copy and lose
+ * the agent's work. */
 export function isolatedPatch(m: Marker): string {
-  sh("git", ["add", "-A", "--", ".", ":(exclude)node_modules"], m.dir);
-  return sh("git", ["diff", "--cached", "--binary", m.snapshot], m.dir).stdout;
+  const add = sh("git", ["add", "-A", "--", ".", ":(exclude)node_modules"], m.dir);
+  if (add.code !== 0) throw new Error(`couldn't read the separate copy's changes (${add.stderr.trim().split("\n").pop() || "git add failed"}) — nothing was applied and the copy is kept`);
+  const diff = sh("git", ["diff", "--cached", "--binary", m.snapshot], m.dir);
+  if (diff.code !== 0) throw new Error(`couldn't read the separate copy's changes (${diff.stderr.trim().split("\n").pop() || "git diff failed"}) — nothing was applied and the copy is kept`);
+  return diff.stdout;
 }
 
 export function applyIsolated(p: Paths, taskId: string): { ok: boolean; message: string; files: number } {
   const m = readIsolated(p, taskId);
   if (!m) return { ok: false, message: "That separate copy no longer exists.", files: 0 };
-  const patch = isolatedPatch(m);
+  let patch: string;
+  try {
+    patch = isolatedPatch(m);
+  } catch (e: any) {
+    return { ok: false, message: String(e?.message ?? e), files: 0 };
+  }
   if (!patch.trim()) return { ok: true, message: "The agent made no changes.", files: 0 };
   const stat = sh("git", ["apply", "--numstat"], p.root, patch);
   const check = sh("git", ["apply", "--check", "--binary"], p.root, patch);

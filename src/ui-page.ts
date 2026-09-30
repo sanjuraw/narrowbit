@@ -826,6 +826,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   }
   $("ghCreateGo").onclick = ghCreateGo;
   $("ghRepoName").addEventListener("keydown", function (e) { if (e.key === "Enter") ghCreateGo(); });
+  // Rewind and Discard move newer files aside rather than deleting them; this is how the user gets them back.
+  function recoveredButton(path) {
+    return el("button", { cls: "link", text: "Show recovered files", onclick: function () {
+      api("/api/reveal-recovered", { path: path }).catch(function (e) { banner("bad", e.message); });
+    } });
+  }
   function showToast(text) { var n = el("div", { cls: "notice", text: text }); add(n); }
   // One merged, recency-sorted list across every recent project plus rootless drafts (like Claude.ai's
   // single chat list) rather than only ever showing whichever one project happens to be open — each row
@@ -1920,7 +1926,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         return el("span", { cls: "ckpt-confirm" }, el("span", { text: "Undo everything after this?" }),
           el("button", { cls: "danger", text: "Rewind", onclick: function () {
             api("/api/rewind", { task: view.taskId, checkpoint: e.id }).then(function (r) {
-              showToast("Rewound — " + r.message);
+              if (r.movedTo) add(el("div", { cls: "notice" }, "Rewound — " + r.message + " ", recoveredButton(r.movedTo)));
+              else showToast("Rewound — " + r.message);
             }).catch(function (er) { banner("bad", er.message); });
           } }),
           el("button", { cls: "link", text: "Cancel", onclick: function () { row.replaceChild(askBtn, row.lastChild); } }));
@@ -2163,6 +2170,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         api("/api/discard", { task: id }).then(function (r) {
           banner("", null); show(discardPlan, false);
           finishCard(card, r.message.charAt(0).toUpperCase() + r.message.slice(1) + ".");
+          if (r.movedTo) card.appendChild(recoveredButton(r.movedTo));
           load();
         }).catch(function (e) { disarm(); banner("bad", e.message); });
       } });

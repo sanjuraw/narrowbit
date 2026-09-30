@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, lstatSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { DEFAULT_IGNORE, type Paths } from "./config.js";
 import { sh } from "./util.js";
@@ -86,7 +86,7 @@ export function listFiles(p: Paths): string[] {
         const rel = relative(p.root, abs).split(sep).join("/");
         if (ig.ignores(ent.isDirectory() ? rel + "/" : rel)) continue;
         if (ent.isDirectory()) walk(abs);
-        else if (ent.isFile()) files.push(rel);
+        else if (ent.isFile() && !ent.isSymbolicLink()) files.push(rel);
       }
     };
     walk(p.root);
@@ -95,7 +95,10 @@ export function listFiles(p: Paths): string[] {
     .filter((f) => !ig.ignores(f) && existsSync(join(p.root, f)))
     .filter((f) => {
       try {
-        return statSync(join(p.root, f)).isFile();
+        // lstat, not stat: a symlink is never indexed. Following one would let the index (and so symbol lookup and
+        // search) read a file outside the project — the same escape the agent's own read guard refuses. A link to a
+        // file inside the project loses nothing: its target is indexed under its own path.
+        return lstatSync(join(p.root, f)).isFile();
       } catch {
         return false;
       }

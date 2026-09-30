@@ -1328,6 +1328,11 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     assert.doesNotMatch(readFileSync(join(repo, "package.json"), "utf8"), /renamed-by-task/, "the task's edit is undone");
     assert.ok(!existsSync(join(repo, "added.txt")) && existsSync(done.movedTo), "its new file is moved aside, not deleted");
     assert.equal(readFileSync(join(repo, "mine.txt"), "utf8"), "tracked, mine — edited after the task\n", "the old Discard would have reverted this to HEAD");
+    assert.match(done.message, /kept there for 14 days/, "says how long recovered files are kept");
+    for (const bad of ["/etc", join(repo, "mine.txt"), join(repo, ".narrowbit"), join(done.movedTo, "..", "..", "..")]) {
+      const r = await fetch(`${app.base}/api/reveal-recovered`, { method: "POST", headers: H, body: JSON.stringify({ path: bad }) });
+      assert.equal(r.status, 400, `refuses to open ${bad} — only recovery folders`);
+    }
   });
 
   test("a repo whose git config defines its own filter program is only opened after an explicit 'trust'", async () => {

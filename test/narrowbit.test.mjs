@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeFixture } from "./fixture.mjs";
 
@@ -934,6 +934,76 @@ describe("CLI: `narrowbit agent`'s \"files changed\" summary", () => {
       assert.doesNotMatch(out, /scratch-notes\.txt/);
       assert.doesNotMatch(out, /narrowbitignore/);
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("fourth Codex review: lfs look-alikes, hooks on isolation, the index and symlinks, Apply losing work", () => {
+  test("only git-lfs's own exact filter commands are exempt from the trust check — not anything that starts with git-lfs", async () => {
+    const { gitConfigRisks } = await dist("trust.js");
+    const { root } = tinyRepo();
+    try {
+      const set = (k, v) => execFileSync("git", ["config", k, v], { cwd: root });
+      set("filter.lfs.clean", "git-lfs clean -- %f");
+      set("filter.lfs.smudge", "git-lfs smudge -- %f");
+      set("filter.lfs.process", "git-lfs filter-process");
+      assert.deepEqual(gitConfigRisks(root), [], "the real git-lfs setup is not flagged");
+      set("filter.lfs.clean", "git-lfs clean -- %f; touch /tmp/x");
+      assert.deepEqual(gitConfigRisks(root).map((r) => r.key), ["filter.lfs.clean"], "a git-lfs prefix followed by more shell is flagged");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("starting an isolated run doesn't run the repo's hooks (post-checkout, pre-commit)", async () => {
+    const { ensureIsolated, discardIsolated } = await dist("isolate.js");
+    const { root, p } = tinyRepo();
+    const m1 = join(tmpdir(), `nb-hook-co-${process.pid}-${Date.now()}`), m2 = m1 + "-commit";
+    try {
+      writeFileSync(join(root, ".git", "hooks", "post-checkout"), `#!/bin/sh\ntouch ${m1}\n`, { mode: 0o755 });
+      writeFileSync(join(root, ".git", "hooks", "pre-commit"), `#!/bin/sh\ntouch ${m2}\n`, { mode: 0o755 });
+      writeFileSync(join(root, "wip.txt"), "uncommitted, so the snapshot really commits something\n");
+      ensureIsolated(p, "rt-hooks-1");
+      assert.ok(!existsSync(m1), "post-checkout didn't run when the copy was created");
+      assert.ok(!existsSync(m2), "pre-commit didn't run for the internal snapshot commit");
+      discardIsolated(p, "rt-hooks-1");
+      execFileSync("git", ["worktree", "add", "--detach", join(tmpdir(), `nb-ctl-${process.pid}-${Date.now()}`), "HEAD"], { cwd: root, stdio: "ignore" });
+      assert.ok(existsSync(m1), "control: plain git worktree add does run it, so the test is live");
+    } finally { rmSync(root, { recursive: true, force: true }); for (const f of [m1, m2]) if (existsSync(f)) rmSync(f); }
+  });
+
+  test("the index never follows a symlink, so symbol lookup and search can't return a file from outside the project", async () => {
+    const { listFiles } = await dist("files.js");
+    const { root, p } = tinyRepo();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-out-")));
+    try {
+      writeFileSync(join(outside, "secret.ts"), "export function confidentialOutsideThing() { return 'NB-OUTSIDE-7731'; }\n");
+      symlinkSync(join(outside, "secret.ts"), join(root, "linked.ts"));
+      writeFileSync(join(root, "inside.ts"), "export function insideThing() { return 1; }\n");
+      assert.ok(!listFiles(p).includes("linked.ts"), "the symlink isn't listed for indexing");
+      assert.ok(listFiles(p).includes("inside.ts"));
+      nb(root, "index");
+      const found = nb(root, "search", "confidentialOutsideThing") + nb(root, "symbol", "confidentialOutsideThing");
+      assert.doesNotMatch(found, /NB-OUTSIDE-7731|confidentialOutsideThing\(\)/, "nothing from outside the project comes back");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  test("Apply keeps the separate copy and reports an error when it can't read the changes — it never says 'no changes' and deletes them", async () => {
+    const { ensureIsolated, applyIsolated, readIsolated } = await dist("isolate.js");
+    const { root, p } = tinyRepo();
+    try {
+      const m = ensureIsolated(p, "rt-lock-1");
+      writeFileSync(join(m.dir, "a.txt"), "the agent's work\n");
+      const gitdir = execFileSync("git", ["-C", m.dir, "rev-parse", "--git-dir"], { encoding: "utf8" }).trim();
+      const lock = join(isAbsolute(gitdir) ? gitdir : join(m.dir, gitdir), "index.lock");
+      writeFileSync(lock, "");
+      const r = applyIsolated(p, "rt-lock-1");
+      assert.equal(r.ok, false, "a failed stage is an error, not 'The agent made no changes'");
+      assert.match(r.message, /copy is kept/);
+      rmSync(lock);
+      assert.ok(readIsolated(p, "rt-lock-1"), "the copy still exists");
+      assert.equal(readFileSync(join(m.dir, "a.txt"), "utf8"), "the agent's work\n", "and the agent's edit is still in it");
+      const again = applyIsolated(p, "rt-lock-1");
+      assert.ok(again.ok && again.files === 1, "once the lock is gone, Apply works");
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "the agent's work\n");
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
 

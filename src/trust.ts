@@ -12,6 +12,8 @@ import { gitArgs } from "./util.js";
  * filter could even commit decrypted secrets. So a repo that defines its own filter program is only opened after
  * the user says they trust it — the same idea as VS Code's workspace trust, scoped to this one real risk.
  */
+const GIT_LFS = /^git-lfs (clean -- %f|smudge( --skip)? -- %f|filter-process( --skip)?)$/;
+
 export interface GitRisk {
   key: string;
   value: string;
@@ -29,7 +31,9 @@ export function gitConfigRisks(root: string): GitRisk[] {
     const value = nl < 0 ? "" : entry.slice(nl + 1);
     if (!/^filter\..+\.(clean|smudge|process)$/.test(key)) continue;
     // git-lfs is ubiquitous and installed by the user themselves; flagging it would train everyone to click through.
-    if (/^git-lfs(\s|$)/.test(value.trim())) continue;
+    // Only the exact commands `git lfs install` writes are exempt — a prefix match let `git-lfs clean -- %f; <anything>`
+    // through, and git runs the whole value through the shell.
+    if (GIT_LFS.test(value.trim())) continue;
     if (!value.trim()) continue;
     risks.push({ key, value });
   }
