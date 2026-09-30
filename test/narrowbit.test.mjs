@@ -937,6 +937,44 @@ describe("CLI: `narrowbit agent`'s \"files changed\" summary", () => {
   });
 });
 
+describe("CLI: `narrowbit agent` says so when commands were not run", () => {
+  // Found by a final CLI walk-through: with no terminal to ask, verify's checks are (correctly) declined
+  // since the approval-gate fix — but the run still ended "DONE", exit 0, with only one easy-to-miss line
+  // mid-run saying the tests never ran. The summary now says the result is not verified.
+  const setup = async () => {
+    const { root, p } = tinyRepo();
+    nb(root, "index");
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "x", scripts: { test: "true" } }));
+    const cfg = loadConfig(p);
+    cfg.verify.test = 'node -e "process.exit(0)"';
+    (await dist("config.js")).saveConfig(p, cfg);
+    const fake = fakeClaude([
+      JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "hi" }),
+      JSON.stringify({ action: "verify" }),
+      JSON.stringify({ action: "done", summary: "changed it" }),
+    ]);
+    return { root, fake };
+  };
+
+  test("without a terminal (and without --allow-commands) the summary flags the unverified result", async () => {
+    const { root, fake } = await setup();
+    try {
+      const out = nb(root, "agent", "say hi", "--claude-bin", fake.bin, "--no-boss", "--max-steps", "8");
+      assert.match(out, /note: 1 command\(s\) were not run/);
+      assert.match(out, /NOT verified/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("with --allow-commands the checks run and there is no such note", async () => {
+    const { root, fake } = await setup();
+    try {
+      const out = nb(root, "agent", "say hi", "--claude-bin", fake.bin, "--no-boss", "--allow-commands", "--max-steps", "8");
+      assert.doesNotMatch(out, /were not run/);
+      assert.match(out, /^DONE/m);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
 describe("ask action", () => {
   test("the model's question reaches the user, and their answer comes back into the loop", async () => {
     const { root, p } = tinyRepo();

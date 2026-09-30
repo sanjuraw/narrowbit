@@ -62,7 +62,7 @@ const VALUE_FLAGS = new Set([
   "max-steps", "attach", "scout", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description", "env",
 ]);
 
-const HELP = `narrowbit — minimum sufficient context for coding agents
+const HELP = `narrowbit — a local, context-managed coding agent
 
   narrowbit init                      set up .narrowbit/ and index the repository
   narrowbit index [--force]           incremental re-index (files, symbols, imports, tests)
@@ -485,17 +485,21 @@ export async function main(argv: string[]): Promise<number> {
       // The agent runs shell commands, and it reads files that can contain instructions aimed at it, so
       // like the app the terminal asks first. --allow-commands opts out (scripts, or a repo you trust).
       let allowAll = !!args.flags["allow-commands"];
+      const notRun: string[] = [];
       const approve = async (command: string): Promise<boolean> => {
         if (allowAll) return true;
         if (!process.stdin.isTTY) {
           process.stderr.write(`      ! not run (no terminal to ask): ${command}   — pass --allow-commands to let the agent run commands unattended\n`);
+          notRun.push(command);
           return false;
         }
         const rl = createInterface({ input: process.stdin, output: process.stderr });
         const a = (await rl.question(`      run \`${command}\`? [y]es / [n]o / [a]lways for this task: `)).trim().toLowerCase();
         rl.close();
         if (a === "a") allowAll = true;
-        return a === "y" || a === "a";
+        const yes = a === "y" || a === "a";
+        if (!yes) notRun.push(command);
+        return yes;
       };
       const ask = async (question: string, options: string[]): Promise<string | null> => {
         if (!process.stdin.isTTY) return null;
@@ -548,6 +552,9 @@ export async function main(argv: string[]): Promise<number> {
       out(`usage: ~${fmtNum(totalTok)} tokens, ~$${totalCost.toFixed(3)} notional (subscription usage — nothing is billed per token)`);
       if (result && args.flags.isolate && readIsolated(p, result.taskId)) out(`\nmade in a separate copy — nothing in your folder changed yet.\n  bring the changes over:  narrowbit apply ${result.taskId}\n  throw them away:         narrowbit discard ${result.taskId}`);
       out(`task: ${result.taskId}  (full log: .narrowbit/runtime/${result.taskId}/events.jsonl)`);
+      // A declined command (including verify's own checks) means the agent could not confirm its work; say so
+      // here, next to the DONE line, instead of leaving it as one easy-to-miss line mid-run.
+      if (notRun.length) out(`note: ${notRun.length} command(s) were not run (${[...new Set(notRun)].slice(0, 3).join("; ")}) — this result is NOT verified by them. Re-run with --allow-commands, or approve them at the prompt.`);
       if (result.outcome !== "done" && changed.length) out(`tip: review the diff before trusting this — the task did not report a clean completion.`);
       return result.outcome === "done" ? 0 : result.outcome === "blocked" ? 1 : 2;
     }
