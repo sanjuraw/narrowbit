@@ -937,6 +937,44 @@ describe("CLI: `narrowbit agent`'s \"files changed\" summary", () => {
   });
 });
 
+describe("models are discovered automatically, Claude included", () => {
+  test("Claude's model ids are read from the installed Claude Code itself (cached), folding away dated and cloud variants", async () => {
+    const { claudeCliModels } = await dist("providers/models.js");
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "nb-cc-")));
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-home-")));
+    const oldHome = process.env.HOME;
+    try {
+      const bin = join(dir, "claude");
+      writeFileSync(bin, "\0junk claude-sonnet-6 x claude-sonnet-6-20270101 claude-opus-6-1 claude-opus-6-1-v1 claude-haiku-4-5-20251001 claude-sonnet-3-7 claude-sonnet-4 claude-fable-6\0");
+      process.env.HOME = home;
+      const ids = claudeCliModels(bin).sort();
+      assert.deepEqual(ids, ["claude-fable-6", "claude-haiku-4-5", "claude-opus-6-1", "claude-sonnet-6"], "a brand-new model shows up from the CLI alone; snapshots, -v1 variants and old families are folded away");
+      writeFileSync(bin, "claude-sonnet-7");
+      const later = claudeCliModels(bin);
+      assert.deepEqual(later, ["claude-sonnet-7"], "an updated CLI (new size/mtime) is re-read rather than served from cache");
+    } finally { process.env.HOME = oldHome; rmSync(dir, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test("the Claude menu: aliases say what they point at, newest first, and models newer than the CLI are kept but marked", async () => {
+    const { claudeModelList } = await dist("providers/models.js");
+    const { models, labels, outdated } = claudeModelList(["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5", "claude-opus-4-8"]);
+    assert.deepEqual(models.slice(0, 4), ["haiku", "sonnet", "opus", "fable"]);
+    assert.match(labels.sonnet, /currently Sonnet 5\)/, "the alias reflects what this Claude Code knows");
+    assert.ok(models.indexOf("claude-opus-5-5") < models.indexOf("claude-opus-5") && models.indexOf("claude-opus-5") < models.indexOf("claude-opus-4-8"), "newest first within a family");
+    assert.ok(outdated.includes("claude-sonnet-5-5"), "a model Narrowbit knows but the CLI doesn't is kept, not hidden");
+    assert.match(labels["claude-sonnet-5-5"], /newer than your Claude Code/);
+    assert.doesNotMatch(labels["claude-opus-4-8"], /newer than/);
+  });
+
+  test("version comparison for the 'update available' hints", async () => {
+    const { isNewerVersion } = await dist("providers/models.js");
+    assert.equal(isNewerVersion("2.1.278", "2.1.285"), true);
+    assert.equal(isNewerVersion("0.156.1", "0.159.2"), true);
+    assert.equal(isNewerVersion("2.1.285", "2.1.285"), false);
+    assert.equal(isNewerVersion("2.2.0", "2.1.999"), false);
+  });
+});
+
 describe("fourth Codex review: lfs look-alikes, hooks on isolation, the index and symlinks, Apply losing work", () => {
   test("only git-lfs's own exact filter commands are exempt from the trust check — not anything that starts with git-lfs", async () => {
     const { gitConfigRisks } = await dist("trust.js");

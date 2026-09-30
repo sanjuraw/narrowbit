@@ -1,5 +1,9 @@
 import type { AgentConfig } from "../config.js";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { sh } from "../util.js";
+import { spawnSync } from "node:child_process";
 import { getKey } from "../keys.js";
 
 /**
@@ -243,20 +247,162 @@ export interface ModelList {
 }
 
 /**
- * Claude Code has no command that lists models, so the current lineup is kept here. The aliases
- * always resolve to the newest model of that family, so they stay correct when this list goes
- * stale; the full ids pin an exact version. Update this when Anthropic ships a new model.
+ * Claude models Narrowbit knows about, as a floor: shown even if the installed Claude Code is too old to list them
+ * (a newer model still works when pinned — the CLI just warns it doesn't recognise the name). Everything the
+ * installed Claude Code knows is added automatically on top (claudeCliModels), so this list only needs touching for a
+ * model newer than the user's CLI.
  */
-const CLAUDE_MODELS: [string, string][] = [
-  ["haiku", "Haiku (latest — currently Haiku 4.5)"],
-  ["sonnet", "Sonnet (latest — currently Sonnet 5)"],
-  ["opus", "Opus (latest — currently Opus 5.5)"],
-  ["fable", "Fable (latest — currently Fable 5.1)"],
-  ["claude-haiku-4-5-20251001", "Haiku 4.5 — fast, lowest cost"],
-  ["claude-sonnet-5", "Sonnet 5 — balanced everyday coding"],
-  ["claude-opus-5-5", "Opus 5.5 — strongest for hard problems"],
+const CLAUDE_KNOWN: [string, string][] = [
   ["claude-fable-5-1", "Fable 5.1"],
+  ["claude-opus-5-5", "Opus 5.5 — strongest for hard problems"],
+  ["claude-sonnet-5-5", "Sonnet 5.5 — balanced everyday coding"],
+  ["claude-sonnet-5", "Sonnet 5 — previous version"],
+  ["claude-haiku-4-5", "Haiku 4.5 — fast, lowest cost"],
 ];
+const FAMILIES = ["fable", "opus", "sonnet", "haiku"] as const;
+const FAMILY_NAME: Record<string, string> = { fable: "Fable", opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" };
+
+interface ClaudeId { id: string; family: string; major: number; minor: number }
+
+function parseClaudeId(id: string): ClaudeId | null {
+  const m = /^claude-(fable|opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?$/.exec(id);
+  return m ? { id, family: m[1]!, major: Number(m[2]), minor: m[3] ? Number(m[3]) : 0 } : null;
+}
+const versionOf = (c: ClaudeId) => `${c.major}${c.minor ? "." + c.minor : ""}`;
+
+function claudeBinPath(): string | null {
+  const named = process.env.NARROWBIT_CLAUDE ?? "claude";
+  const found = named.includes("/") ? named : sh("sh", ["-c", `command -v ${named}`], process.cwd()).stdout.trim();
+  if (!found || !existsSync(found)) return null;
+  try {
+    return realpathSync(found);
+  } catch {
+    return found;
+  }
+}
+
+/**
+ * The Claude model ids the installed Claude Code knows. It has no list command, but its own program contains every id
+ * it accepts, so they're read from there — a new model shows up in Narrowbit as soon as Claude Code is updated, with no
+ * Narrowbit release. Dated snapshots and cloud-vendor variants are folded away, and very old families are skipped.
+ * Cached against the binary's path, size and modification time, so the ~1s scan only reruns after an update.
+ */
+export function claudeCliModels(bin: string | null = claudeBinPath()): string[] {
+  if (!bin) return [];
+  let st;
+  try {
+    st = statSync(bin);
+  } catch {
+    return [];
+  }
+  const cacheFile = join(homedir(), ".narrowbit", "cache", "claude-models.json");
+  const key = `${bin}|${st.size}|${st.mtimeMs}`;
+  try {
+    const c = JSON.parse(readFileSync(cacheFile, "utf8"));
+    if (c.key === key && Array.isArray(c.ids)) return c.ids;
+  } catch {
+    /* no cache yet */
+  }
+  const text = readFileSync(bin).toString("latin1");
+  const seen = new Set<string>();
+  for (const m of text.matchAll(/claude-(fable|opus|sonnet|haiku)-(\d{1,2})(?:-(\d{1,2}))?(?:-(\d{8}))?(?![\w-])/g)) {
+    const c = parseClaudeId(`claude-${m[1]}-${m[2]}${m[3] ? "-" + m[3] : ""}`);
+    if (!c || c.major < 4 || (c.major === 4 && c.minor < 5)) continue;
+    seen.add(c.id);
+  }
+  const ids = [...seen];
+  try {
+    mkdirSync(dirname(cacheFile), { recursive: true, mode: 0o700 });
+    writeFileSync(cacheFile, JSON.stringify({ key, ids }), { mode: 0o600 });
+  } catch {
+    /* cache is optional */
+  }
+  return ids;
+}
+
+/** Newest published version of an npm package, cached for 12 hours (checked with a 5s limit; null when offline). */
+export function latestNpmVersion(pkg: string, nowMs = Date.now()): string | null {
+  const cacheFile = join(homedir(), ".narrowbit", "cache", "npm-latest.json");
+  let cache: Record<string, { v: string | null; at: number }> = {};
+  try {
+    cache = JSON.parse(readFileSync(cacheFile, "utf8"));
+  } catch {
+    /* none yet */
+  }
+  const hit = cache[pkg];
+  if (hit && nowMs - hit.at < 12 * 3600_000) return hit.v;
+  const r = spawnSync("npm", ["view", pkg, "version"], { encoding: "utf8", timeout: 5000 });
+  const v = r.status === 0 && /^\d+\.\d+\.\d+/.test(r.stdout.trim()) ? r.stdout.trim() : null;
+  cache[pkg] = { v, at: nowMs };
+  try {
+    mkdirSync(dirname(cacheFile), { recursive: true, mode: 0o700 });
+    writeFileSync(cacheFile, JSON.stringify(cache), { mode: 0o600 });
+  } catch {
+    /* cache is optional */
+  }
+  return v;
+}
+
+/** True when `latest` is a newer x.y.z than `installed`. */
+export function isNewerVersion(installed: string, latest: string): boolean {
+  const a = installed.match(/\d+/g)?.map(Number) ?? [];
+  const b = latest.match(/\d+/g)?.map(Number) ?? [];
+  for (let i = 0; i < 3; i++) if ((b[i] ?? 0) !== (a[i] ?? 0)) return (b[i] ?? 0) > (a[i] ?? 0);
+  return false;
+}
+
+/** " — 1.2.3 is available: <how>" when the installed CLI is behind its npm release, else "". */
+function updateHint(pkg: string, installed: string, how: string): string {
+  const latest = installed ? latestNpmVersion(pkg) : null;
+  return latest && isNewerVersion(installed, latest) ? ` — ${latest} is available: ${how}` : "";
+}
+
+/** The installed Claude Code's version, read from its npm package.json next to the binary — without running the CLI.
+ * "" when that isn't how it was installed (no update hint is shown then). */
+function claudeVersion(bin: string): string {
+  for (let d = dirname(bin), i = 0; i < 4; i++, d = dirname(d)) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf8"));
+      if (pkg?.name === "@anthropic-ai/claude-code" && typeof pkg.version === "string") return pkg.version;
+    } catch {
+      /* keep walking up */
+    }
+  }
+  return "";
+}
+
+/** The Claude menu: aliases first (they follow whatever the installed CLI treats as newest), then exact ids, newest
+ * first within each family. `cliIds` is claudeCliModels(); injectable for tests. */
+export function claudeModelList(cliIds: string[]): { models: string[]; labels: Record<string, string>; outdated: string[] } {
+  const known = new Map(CLAUDE_KNOWN);
+  const cli = new Set(cliIds);
+  const all = new Map<string, ClaudeId>();
+  for (const id of [...cliIds, ...known.keys()]) {
+    const c = parseClaudeId(id);
+    if (c) all.set(id, c);
+  }
+  const sorted = [...all.values()].sort((a, b) => FAMILIES.indexOf(a.family as any) - FAMILIES.indexOf(b.family as any) || b.major - a.major || b.minor - a.minor);
+  const labels: Record<string, string> = {};
+  const models: string[] = [];
+  const outdated: string[] = [];
+  for (const fam of ["haiku", "sonnet", "opus", "fable"]) {
+    const newestCli = sorted.find((c) => c.family === fam && cli.has(c.id));
+    const newestAny = sorted.find((c) => c.family === fam);
+    if (!newestAny) continue;
+    models.push(fam);
+    labels[fam] = newestCli
+      ? `${FAMILY_NAME[fam]} (latest your Claude Code knows — currently ${FAMILY_NAME[fam]} ${versionOf(newestCli)})`
+      : `${FAMILY_NAME[fam]} (latest)`;
+  }
+  for (const c of sorted) {
+    models.push(c.id);
+    const base = known.get(c.id) ?? `${FAMILY_NAME[c.family]} ${versionOf(c)}`;
+    const newer = cliIds.length > 0 && !cli.has(c.id);
+    if (newer) outdated.push(c.id);
+    labels[c.id] = newer ? `${base} — newer than your Claude Code (works; update Claude Code for full support)` : base;
+  }
+  return { models, labels, outdated };
+}
 
 /**
  * Models a provider can use. Claude Code has no catalog command, so these are the aliases its
@@ -264,8 +410,17 @@ const CLAUDE_MODELS: [string, string][] = [
  * locally (`codex debug models`, no login needed); API and local servers list theirs at /models.
  */
 export async function availableModels(provider: ProviderName, agent?: AgentConfig): Promise<ModelList> {
-  if (provider === "claude")
-    return { models: CLAUDE_MODELS.map(([id]) => id), free: [], labels: Object.fromEntries(CLAUDE_MODELS), note: "Claude Code aliases (always the newest of each family) and exact model ids" };
+  if (provider === "claude") {
+    const bin = claudeBinPath();
+    const cliIds = claudeCliModels(bin);
+    const list = claudeModelList(cliIds);
+    const version = bin ? claudeVersion(bin) : "";
+    const hint = updateHint("@anthropic-ai/claude-code", version, "run `claude update` so its newest models appear here and the sonnet/opus defaults move to them");
+    const note = !cliIds.length
+      ? "Claude Code's model list couldn't be read; showing the models Narrowbit knows about"
+      : `from your Claude Code (${version || "installed"})${list.outdated.length ? `, plus newer models it doesn't know yet (${list.outdated.join(", ")})` : ""}${hint || " — new models appear here when Claude Code is updated"}`;
+    return { models: list.models, free: [], labels: list.labels, note };
+  }
   if (provider === "codex") {
     const r = sh(process.env.NARROWBIT_CODEX ?? "codex", ["debug", "models"], process.cwd());
     try {
@@ -275,7 +430,9 @@ export async function availableModels(provider: ProviderName, agent?: AgentConfi
       const labels = Object.fromEntries(shown.map((m) => [m.slug, [m.display_name, m.description].filter(Boolean).join(" — ")]));
       const version = sh(process.env.NARROWBIT_CODEX ?? "codex", ["--version"], process.cwd()).stdout.trim();
       // The catalog ships with the CLI, so an old CLI lists old models.
-      return { models: shown.map((m) => m.slug as string), free: [], labels, note: `from the installed Codex CLI (${version || "unknown version"}) — update the CLI to see newer models` };
+      const v = version.match(/\d+\.\d+\.\d+/)?.[0] ?? "";
+      const hint = updateHint("@openai/codex", v, "run `npm install -g @openai/codex` to see its newest models");
+      return { models: shown.map((m) => m.slug as string), free: [], labels, note: `from the installed Codex CLI (${version || "unknown version"})${hint || " — new models appear here when the CLI is updated"}` };
     } catch {
       return { models: [], free: [], labels: {}, note: "`codex debug models` unavailable — is the Codex CLI installed?" };
     }

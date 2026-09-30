@@ -1298,7 +1298,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     $("planApprovalChk").closest(".trow").classList.toggle("dim", !S.lead);
     var notes = [];
     if (P.unavailable) notes.push(P.unavailable);
-    if (list && !list.models.length) notes.push(list.note);
+    // An empty list explains itself; otherwise only surface the note when it's news the user can act on
+    // (a CLI update that brings newer models), not the routine "from <provider>" line.
+    if (list && (!list.models.length || / is available: /.test(list.note || ""))) notes.push(list.note);
     if (S.selectionError) notes.push(S.selectionError);
     $("providerNote").textContent = notes.join(" "); show($("providerNote"), notes.length > 0);
     var t = S.selection.tiers, lbl = S.providers[S.selection.provider].label;
