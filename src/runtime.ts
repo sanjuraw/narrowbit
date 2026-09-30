@@ -1034,6 +1034,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   }
   if (outcome === "max_steps") log(`[${steps}] hit the step budget (${maxSteps}) without finishing`);
   const failure = outcome === "error" ? classifyModelError(summary) : null;
+  // The folder as the task left it. With the start checkpoint this bounds exactly what the task changed —
+  // including what its commands changed, not just its edits — so Discard can undo the task and nothing else.
+  checkpointNow(p, taskId, steps + 1, "end of task");
   appendEvent(p, taskId, { actor: "system", type: "decision", summary: `outcome: ${outcome}`, meta: { outcome, summary, steps, ...(failure ? { errorKind: failure.kind, resets: failure.resets } : {}) } });
   store.close();
   return { taskId, outcome, summary, steps, actionCounts, compactions };

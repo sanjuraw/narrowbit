@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, copyFileSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync, copyFileSync, lstatSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import type { Paths } from "./config.js";
 import { sh } from "./util.js";
 
@@ -17,10 +17,22 @@ interface Marker {
 
 const markerFile = (p: Paths, taskId: string) => join(p.runtime, taskId, "isolated.json");
 
+const worktreeDir = (p: Paths, taskId: string) => join(p.nb, "worktrees", taskId);
+
+/**
+ * The marker is a file on disk, so it's only believed where it points at the one place Narrowbit itself puts a
+ * task's copy (`.narrowbit/worktrees/<taskId>`). Discard deletes that folder recursively: a marker edited to point
+ * anywhere else (by anything that can write to .narrowbit) must not be able to aim that deletion.
+ */
 export function readIsolated(p: Paths, taskId: string): Marker | null {
+  if (!/^rt-[\w-]+$/.test(taskId)) return null;
   try {
     const m = JSON.parse(readFileSync(markerFile(p, taskId), "utf8")) as Marker;
-    return existsSync(m.dir) ? m : null;
+    if (typeof m?.dir !== "string" || typeof m?.snapshot !== "string" || !/^[0-9a-f]{40}$/.test(m.snapshot)) return null;
+    const expected = worktreeDir(p, taskId);
+    if (resolve(m.dir) !== resolve(expected) || !existsSync(m.dir)) return null;
+    if (realpathSync(m.dir) !== join(realpathSync(p.nb), "worktrees", taskId)) return null; // no symlinked worktrees dir either
+    return { dir: expected, snapshot: m.snapshot };
   } catch {
     return null;
   }
@@ -34,7 +46,8 @@ export function ensureIsolated(p: Paths, taskId: string): Marker {
   if (existing) return existing;
   const root = p.root;
   if (sh("git", ["rev-parse", "HEAD"], root).code !== 0) throw new Error("Isolated mode needs a git repository with at least one commit.");
-  const dir = join(p.nb, "worktrees", taskId);
+  if (!/^rt-[\w-]+$/.test(taskId)) throw new Error("bad task id");
+  const dir = worktreeDir(p, taskId);
   mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
   const add = sh("git", ["worktree", "add", "--detach", dir, "HEAD"], root);
   if (add.code !== 0) throw new Error(`Couldn't create the separate copy: ${add.stderr.trim().split("\n").pop()}`);
@@ -47,9 +60,12 @@ export function ensureIsolated(p: Paths, taskId: string): Marker {
     if (f.startsWith(".narrowbit/") || f === ".narrowbitignore") continue;
     try {
       const src = join(root, f);
-      if (!statSync(src).isFile()) continue;
+      const st = lstatSync(src);
       mkdirSync(dirname(join(dir, f)), { recursive: true });
-      copyFileSync(src, join(dir, f));
+      // A symlink stays a symlink. Copying through it (what copyFileSync does) would turn, say, a link to
+      // ~/.ssh/id_ed25519 into a plain file holding the key, which the agent's symlink guard could no longer see.
+      if (st.isSymbolicLink()) symlinkSync(readlinkSync(src), join(dir, f));
+      else if (st.isFile()) copyFileSync(src, join(dir, f));
     } catch {
       /* unreadable file: skip it */
     }

@@ -362,13 +362,17 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     assert.match(page.$("input").value, /CLI tool|language|Python/i, "the discussion was seeded into the composer, not auto-sent");
   });
 
-  test("choosing a folder that already has files (but no git yet) versions them instead of refusing", async () => {
+  test("choosing a folder that already has files (but no git yet) versions them — after showing them and asking", async () => {
     const target = join(home, "Projects", "hand-made-scaffold");
     mkdirSync(target, { recursive: true });
     writeFileSync(join(target, "notes.txt"), "an idea I sketched out before opening Narrowbit\n");
     page.$("crumb").click();
     page.$("repoPath").value = target;
     page.$("openRepo").click();
+    await page.until(() => page.$("createHere"), "the question before committing the folder's existing files");
+    assert.match(page.$("repoErr").textContent, /notes\.txt/, "the files that would be committed are listed");
+    assert.ok(!existsSync(join(target, ".git")), "nothing happens until the user says yes");
+    page.$("createHere").click();
     await page.until(() => page.$("crumbName") && page.$("crumbName").textContent.indexOf("hand-made-scaffold") === 0, "the app to switch into the new project");
     assert.ok(existsSync(join(target, ".git")), "a real git repo was created");
     assert.match(execFileSync("git", ["log", "--format=%s"], { cwd: target }).toString(), /Initial commit/);
@@ -1199,7 +1203,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "bye\n");
     const t = await (await fetch(`${app.base}/api/task/${taskId}`, { headers: H })).json();
     const checkpoints = t.events.filter((e) => e.type === "checkpoint" && e.actor === "system");
-    assert.equal(checkpoints.length, 2, "one before the task, one after the edit");
+    assert.equal(checkpoints.length, 3, "one before the task, one after the edit, one as the task left the folder");
     const r = await fetch(`${app.base}/api/rewind`, { method: "POST", headers: H, body: JSON.stringify({ task: taskId, checkpoint: checkpoints[0].id }) });
     assert.equal(r.status, 200, await r.clone().text());
     assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "hi\n", "rewinding to the first checkpoint undid the edit");
@@ -1274,6 +1278,56 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     await fetch(`${app.base}/api/approve`, { method: "POST", headers: H, body: JSON.stringify({ id: second.id, decision: "deny" }) });
     await waitFor((e) => e.type === "finished", "the task to finish");
     ctl.abort();
+  });
+
+  test("a folder that already has files isn't committed as a project until the user has seen them and said yes", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const full = fresh("hasfiles"), empty = fresh("empty");
+    try {
+      writeFileSync(join(full, "notes.md"), "private notes\n"); mkdirSync(join(full, "sub")); writeFileSync(join(full, "sub", "x.txt"), "x\n");
+      const r1 = await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: full }) });
+      assert.equal(r1.status, 409);
+      const j = await r1.json();
+      assert.equal(j.error, "confirm-create");
+      assert.equal(j.count, 2);
+      assert.ok(!existsSync(join(full, ".git")), "nothing was git-initialised just by asking");
+      const r2 = await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: full, confirmCreate: true }) });
+      assert.equal(r2.status, 200, "an explicit yes creates it");
+      assert.ok(existsSync(join(full, ".git")));
+      assert.equal((await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: empty }) })).status, 200, "an empty folder needs no question");
+      await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    } finally { rmSync(full, { recursive: true, force: true }); rmSync(empty, { recursive: true, force: true }); }
+  });
+
+  test("Discard previews exactly what it will do, then undoes only the task — an edit made after it survives", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    git("checkout", "-q", "--", "."); git("clean", "-qfd", "--", ".");
+    writeFileSync(join(repo, "mine.txt"), "tracked, mine\n"); git("add", "-A"); git("commit", "-qm", "mine");
+    fakeClaudeIn(fakeDir, [
+      { action: "edit", path: "package.json", old: '"name": "x"', new: '"name": "renamed-by-task"' },
+      { action: "edit", path: "added.txt", old: "", new: "task file\n" },
+      { action: "done", summary: "done" },
+    ]);
+    const started = await fetch(`${app.base}/api/run`, { method: "POST", headers: H, body: JSON.stringify({ task: "rename the package", askBeforeCommands: false }) });
+    assert.equal(started.status, 200, await started.clone().text());
+    let taskId = null;
+    for (let i = 0; i < 200 && !taskId; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      const st = await (await fetch(`${app.base}/api/state`, { headers: H })).json();
+      const h = st.history.find((x) => /rename the package/.test(x.goal));
+      if (h && !st.running) taskId = h.id;
+    }
+    assert.ok(taskId, "the task finished");
+    writeFileSync(join(repo, "mine.txt"), "tracked, mine — edited after the task\n");
+    const pv = await (await fetch(`${app.base}/api/discard`, { method: "POST", headers: H, body: JSON.stringify({ task: taskId, preview: true }) })).json();
+    assert.deepEqual({ restore: pv.restore, remove: pv.remove, skipped: pv.skipped }, { restore: ["package.json"], remove: ["added.txt"], skipped: [] });
+    assert.match(readFileSync(join(repo, "package.json"), "utf8"), /renamed-by-task/, "a preview changes nothing");
+    const done = await (await fetch(`${app.base}/api/discard`, { method: "POST", headers: H, body: JSON.stringify({ task: taskId }) })).json();
+    assert.ok(done.ok, JSON.stringify(done));
+    assert.doesNotMatch(readFileSync(join(repo, "package.json"), "utf8"), /renamed-by-task/, "the task's edit is undone");
+    assert.ok(!existsSync(join(repo, "added.txt")) && existsSync(done.movedTo), "its new file is moved aside, not deleted");
+    assert.equal(readFileSync(join(repo, "mine.txt"), "utf8"), "tracked, mine — edited after the task\n", "the old Discard would have reverted this to HEAD");
   });
 
   test("a repo whose git config defines its own filter program is only opened after an explicit 'trust'", async () => {

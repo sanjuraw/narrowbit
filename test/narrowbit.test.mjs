@@ -1,7 +1,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -933,6 +933,90 @@ describe("CLI: `narrowbit agent`'s \"files changed\" summary", () => {
       assert.match(out, /files changed: \(none\)/);
       assert.doesNotMatch(out, /scratch-notes\.txt/);
       assert.doesNotMatch(out, /narrowbitignore/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("third Codex review: isolation copies and markers, and a Discard that undoes only the task", () => {
+  test("isolated mode keeps an untracked symlink a symlink — it never copies what it points to", async () => {
+    const { ensureIsolated, discardIsolated } = await dist("isolate.js");
+    const { root, p } = tinyRepo();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-secret-")));
+    writeFileSync(join(outside, "id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY----- not really\n");
+    symlinkSync(join(outside, "id_ed25519"), join(root, "notes.txt"));
+    try {
+      const m = ensureIsolated(p, "rt-sym-1");
+      const copy = join(m.dir, "notes.txt");
+      assert.ok(lstatSync(copy).isSymbolicLink(), "still a symlink in the copy, so the agent's symlink guard applies there too");
+      assert.ok(!execFileSync("git", ["-C", m.dir, "show", `${m.snapshot}:notes.txt`], { encoding: "utf8" }).includes("PRIVATE KEY"), "the key's contents were never copied into the snapshot");
+      discardIsolated(p, "rt-sym-1");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  test("a tampered isolation marker can't aim Discard's recursive delete anywhere else", async () => {
+    const { readIsolated, discardIsolated } = await dist("isolate.js");
+    const { root, p } = tinyRepo();
+    const victim = realpathSync(mkdtempSync(join(tmpdir(), "nb-victim-")));
+    writeFileSync(join(victim, "important.txt"), "keep me\n");
+    try {
+      mkdirSync(join(p.runtime, "rt-evil-1"), { recursive: true });
+      writeFileSync(join(p.runtime, "rt-evil-1", "isolated.json"), JSON.stringify({ dir: victim, snapshot: "0".repeat(40) }));
+      assert.equal(readIsolated(p, "rt-evil-1"), null, "a marker pointing outside .narrowbit/worktrees/<task> isn't believed");
+      discardIsolated(p, "rt-evil-1");
+      assert.equal(readFileSync(join(victim, "important.txt"), "utf8"), "keep me\n", "and nothing outside was deleted");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(victim, { recursive: true, force: true }); }
+  });
+
+  test("Discard puts back only what the task changed: your edits before and after it, and to its files since, survive", async () => {
+    const { checkpointNow, listCheckpoints, planDiscard, discardTask } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    const w = (f, t) => { mkdirSync(dirname(join(root, f)), { recursive: true }); writeFileSync(join(root, f), t); };
+    const r = (f) => readFileSync(join(root, f), "utf8");
+    try {
+      w("b.txt", "b\n"); w("c.txt", "c\n"); w("d.txt", "d\n");
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], { cwd: root });
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "more"], { cwd: root });
+      w("b.txt", "b — my uncommitted edit from before the task\n");      // yours, before
+      checkpointNow(p, "rt-d", 0, "before any changes");
+      w("a.txt", "hello from the task\n");                             // task edits
+      w("d.txt", "task changed d\n");
+      w("new/made.txt", "created by the task\n");                      // task creates
+      w("new/also.txt", "also created by the task\n");
+      checkpointNow(p, "rt-d", 9, "end of task");
+      w("c.txt", "c — my edit after the task\n");                      // yours, after, other file
+      w("d.txt", "task changed d, then I changed it more\n");         // yours, after, the task's file
+      w("new/also.txt", "I kept working on this one\n");
+      const cps = listCheckpoints(p, "rt-d");
+      const plan = planDiscard(root, cps[0].commit, cps[cps.length - 1].commit);
+      assert.deepEqual(plan.restore, ["a.txt"]);
+      assert.deepEqual(plan.remove, ["new/made.txt"]);
+      assert.deepEqual(plan.skipped.sort(), ["d.txt", "new/also.txt"]);
+      const res = discardTask(root, cps[0].commit, cps[cps.length - 1].commit);
+      assert.ok(res.ok, res.message);
+      assert.equal(r("a.txt"), "hello\n", "the task's edit is undone");
+      assert.equal(r("b.txt"), "b — my uncommitted edit from before the task\n", "restored to the task's start, not to HEAD: your earlier edit stays");
+      assert.equal(r("c.txt"), "c — my edit after the task\n", "a file the task never touched isn't looked at");
+      assert.equal(r("d.txt"), "task changed d, then I changed it more\n", "a task file you changed since is left alone");
+      assert.equal(r("new/also.txt"), "I kept working on this one\n");
+      assert.ok(!existsSync(join(root, "new/made.txt")), "the untouched new file is gone from the tree");
+      assert.equal(readFileSync(join(res.movedTo, "new/made.txt"), "utf8"), "created by the task\n", "moved aside, not deleted");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("the runtime records an end-of-task checkpoint, so Discard covers what the task's commands changed too", async () => {
+    const { listCheckpoints } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([
+      JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "hi" }),
+      JSON.stringify({ action: "run", command: "echo generated > gen.txt" }),
+      JSON.stringify({ action: "done", summary: "done" }),
+    ]);
+    try {
+      const res = await runTask(p, "say hi", { claudeBin: fake.bin, boss: false, maxSteps: 6, approve: async () => true });
+      const cps = listCheckpoints(p, res.taskId);
+      assert.match(cps[cps.length - 1].summary, /end of task/);
+      const files = execFileSync("git", ["-C", root, "diff-tree", "-r", "--name-only", cps[0].commit, cps[cps.length - 1].commit], { encoding: "utf8" });
+      assert.match(files, /gen\.txt/, "a file a command wrote is part of what the task changed");
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 });
@@ -2209,7 +2293,7 @@ describe("rewind: checkpoints of the working tree", () => {
     try {
       const r = await runTask(p, "say hi", { claudeBin: fake.bin, boss: false, maxSteps: 8 });
       const cps = listCheckpoints(p, r.taskId);
-      assert.equal(cps.length, 2, "one at start, one after the real edit — none for the refused one");
+      assert.equal(cps.length, 3, "one at start, one after the real edit, one at the end — none for the refused one");
       assert.match(cps[1].summary, /hi/i.test(readFileSync(join(root, "a.txt"), "utf8")) ? /edited a\.txt/ : /edit a\.txt/);
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });

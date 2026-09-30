@@ -256,6 +256,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 .approval { border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line)); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); border-radius: 12px; padding: 12px 14px; margin: 10px 0; box-shadow: var(--shadow); }
 .trust-detail { white-space: pre-wrap; font-size: 12px; max-height: 12em; overflow: auto; }
+.discard-plan { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--bad, #c0392b) 8%, transparent); font-size: 13px; }
+.discard-plan > div + div { margin-top: 4px; }
 .approval-warn { margin: 6px 0 2px; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--bad, #c0392b) 12%, transparent); color: var(--bad, #c0392b); font-size: 13px; }
 .approval .ah { font-weight: 600; }
 .approval pre { margin: 8px 0 10px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; white-space: pre-wrap; word-break: break-all; font: 12.5px var(--mono); }
@@ -837,7 +839,11 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       apply(st);
       openSession(r.id);
       closeSide();
-    }).catch(function (e) { banner("bad", e.message); });
+    }).catch(function (e) {
+      // A question the folder dialog knows how to ask (trust this repo?) — ask it there instead of a dead-end banner.
+      if (e.status === 409 && e.data && (e.data.error === "untrusted" || e.data.error === "confirm-create")) { closeSide(); openRepoPicker(true); $("repoPath").value = r.projectRoot; openRepo(r.projectRoot); return; }
+      banner("bad", e.message);
+    });
   }
   function renderSessions() {
     var box = clear($("sessions"));
@@ -2128,13 +2134,37 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       var firstAsk = document.querySelector("#items .bubble");
       var msg = el("input", { type: "text", placeholder: "Commit message", value: ($("title").textContent || (firstAsk ? firstAsk.textContent : "")).split("\n")[0].slice(0, 72) });
       var armed = null;
+      // Discard undoes this task only. The first click asks the server what that means right now and shows it —
+      // exactly which files go back, which move aside, which are left alone — and only the second click acts.
+      var discardPlan = el("div", { cls: "discard-plan hidden" });
+      var disarm = function () { armed = null; discard.classList.remove("armed"); discard.textContent = "Discard"; show(discardPlan, false); };
+      var listLine = function (label, files) {
+        if (!files.length) return null;
+        return el("div", null, el("strong", { text: label + " (" + files.length + "): " }), el("span", { cls: "mono", text: files.slice(0, 8).join(", ") + (files.length > 8 ? ", …" : "") }));
+      };
       var discard = el("button", { cls: "danger", text: "Discard", onclick: function () {
-        if (!armed) { discard.classList.add("armed"); discard.textContent = "Click again to discard"; armed = setTimeout(function () { armed = null; discard.classList.remove("armed"); discard.textContent = "Discard"; }, 4000); return; }
+        if (!armed) {
+          api("/api/discard", { task: id, preview: true }).then(function (pl) {
+            clear(discardPlan);
+            if (!pl.restore.length && !pl.remove.length) {
+              discardPlan.appendChild(el("div", { text: pl.skipped.length ? "Nothing to undo: every file this task changed has changed again since, so it's left as it is." : "Nothing to undo — this task left no changes." }));
+              show(discardPlan, true);
+              return;
+            }
+            [listLine("Put back as before the task", pl.restore), listLine("Move to .narrowbit/rewind-trash (created by the task)", pl.remove), listLine("Leave alone (changed again after the task)", pl.skipped)]
+              .forEach(function (n) { if (n) discardPlan.appendChild(n); });
+            show(discardPlan, true);
+            discard.classList.add("armed"); discard.textContent = "Click again to discard";
+            armed = setTimeout(disarm, 8000);
+          }).catch(function (e) { banner("bad", e.message); });
+          return;
+        }
         clearTimeout(armed); armed = null;
         api("/api/discard", { task: id }).then(function (r) {
-          var t = "Reverted " + r.restored.length + " file(s)" + (r.deleted.length ? ", removed " + r.deleted.length + " new file(s)" : "") + (r.kept.length ? "; left " + r.kept.length + " untracked file(s) this task didn't create" : "") + ".";
-          banner("", null); finishCard(card, t); load();
-        }).catch(function (e) { banner("bad", e.message); });
+          banner("", null); show(discardPlan, false);
+          finishCard(card, r.message.charAt(0).toUpperCase() + r.message.slice(1) + ".");
+          load();
+        }).catch(function (e) { disarm(); banner("bad", e.message); });
       } });
       var commit = el("button", { cls: "primary", text: "Commit", onclick: function () {
         if (!msg.value.trim()) { msg.focus(); return; }
@@ -2155,6 +2185,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       } });
       msg.addEventListener("keydown", function (e) { if (e.key === "Enter") commit.click(); });
       card.appendChild(el("div", { cls: "commit" }, msg, commit, discard));
+      card.appendChild(discardPlan);
       if (d.skipped && d.skipped.length) card.appendChild(el("div", { cls: "cmsg", text: "Not included (untracked before this task): " + d.skipped.join(", ") }));
       follow(function () { slot.appendChild(card); });
     }).catch(function () {});
@@ -2199,9 +2230,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   // One action for opening an existing folder or starting a new one there (an empty or not-yet-created
   // path is created rather than refused — see /api/repo) — mid-draft, it's seeded with the discussion so
   // far, the same "you stay in control" pattern as everywhere else: it fills the composer, never sends.
-  function openRepo(path, trust) {
+  function openRepo(path, trust, confirmCreate) {
     var body = { path: path };
     if (trust) body.trust = true;
+    if (confirmCreate) body.confirmCreate = true;
     if (S && !S.root && view && view.taskId) body.taskId = view.taskId;
     api("/api/repo", body).then(function (st) {
       if (es) { es.close(); es = null; }
@@ -2221,8 +2253,21 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
           el("div", { text: "Do you trust this repository?" }),
           el("pre", { cls: "trust-detail", text: e.data.message }),
           el("div", { cls: "btns" },
-            el("button", { cls: "primary", id: "trustOpen", onclick: function () { openRepo(e.data.path || path, true); } }, "Trust and open"),
+            el("button", { cls: "primary", id: "trustOpen", onclick: function () { openRepo(e.data.path || path, true, confirmCreate); } }, "Trust and open"),
             el("button", { id: "trustCancel", onclick: function () { clear(n); show(n, false); } }, "Cancel"))));
+        show(n, true);
+        return;
+      }
+      if (e.status === 409 && e.data && e.data.error === "confirm-create") {
+        // Not a project yet but not empty either: starting one here commits everything in it. Show what's there
+        // and make that an explicit choice rather than a side effect of opening a folder.
+        clear(n);
+        n.appendChild(el("div", { cls: "trust-q" },
+          el("div", { text: "This folder isn't a project yet. Starting one here will commit the " + e.data.count + " file(s) already in it:" }),
+          el("pre", { cls: "trust-detail", text: e.data.files.join("\n") + (e.data.count > e.data.files.length ? "\n… and " + (e.data.count - e.data.files.length) + " more" : "") }),
+          el("div", { cls: "btns" },
+            el("button", { cls: "primary", id: "createHere", onclick: function () { openRepo(e.data.path || path, trust, true); } }, "Create project here"),
+            el("button", { id: "createCancel", onclick: function () { clear(n); show(n, false); } }, "Cancel"))));
         show(n, true);
         return;
       }

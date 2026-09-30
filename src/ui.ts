@@ -10,7 +10,7 @@ import { getConnector, listConnectors, publicConnector, removeConnector, saveCon
 import { completeSignIn, signOut, startSignIn } from "./oauth.js";
 import { applyIsolated, discardIsolated, readIsolated } from "./isolate.js";
 import { listCheckpoints, restoreCheckpoint } from "./checkpoints.js";
-import { createProjectFromDraft, draftsPaths, planningReply } from "./planning.js";
+import { createProjectFromDraft, draftsPaths, planningReply, tooBroadForProject } from "./planning.js";
 import { findSkills } from "./skillimport.js";
 import { appendEvent, fold, readEvents, type Event } from "./events.js";
 import { changedSince, createGithubRepo, githubIdentity, gitState, pushBranch, remoteInfo } from "./git.js";
@@ -37,12 +37,13 @@ import {
   type ProviderName,
   parseScout,
 } from "./providers/models.js";
-import { providerCallFor, runTask, safeAbsPath } from "./runtime.js";
+import { providerCallFor, runTask } from "./runtime.js";
 import { acknowledgeUpdateNotes, applyUpdate, checkUpdate, pendingUpdateNotes, readVersion } from "./update.js";
 import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
 import { sh } from "./util.js";
 import { trustRepo, untrustedReason } from "./trust.js";
+import { discardTask, planDiscard } from "./checkpoints.js";
 
 /**
  * `narrowbit ui`: the app. A local HTTP server (127.0.0.1 only) that drives the same runTask()
@@ -650,6 +651,18 @@ export function startUi(opts: UiOptions) {
               trustRepo(r, u.risks);
             }
           } else {
+            // Making a project of a folder that already has files git-inits it and commits everything in it. That
+            // is only done once the user has seen what's there and said yes; an empty or new folder needs no question.
+            const broad = tooBroadForProject(dir);
+            if (broad) return json(res, 400, { error: `Refusing to make ${dir} a project — ${broad}, and it would commit everything inside it. Pick or create a folder just for this project.` });
+            if (existsSync(dir) && body.confirmCreate !== true) {
+              const entries = readdirSync(dir).filter((n) => n !== ".DS_Store");
+              if (entries.length) {
+                const tracked = sh("git", ["ls-files", "--others", "--exclude-standard"], dir);
+                const files = tracked.code === 0 ? tracked.stdout.split("\n").filter(Boolean) : entries;
+                return json(res, 409, { error: "confirm-create", path: dir, count: files.length, files: files.slice(0, 25) });
+              }
+            }
             const taskId = typeof body.taskId === "string" && /^pl-[\w-]+$/.test(body.taskId) ? body.taskId : undefined;
             try {
               const created = createProjectFromDraft(taskId, dir);
@@ -1039,24 +1052,22 @@ export function startUi(opts: UiOptions) {
           return json(res, 200, { ok: true, head: sh("git", ["rev-parse", "--short", "HEAD"], root).stdout.trim() });
         }
         case "/api/discard": {
+          // Undo one task, and only that task: the files that differ between its first checkpoint (before it
+          // changed anything) and its last (as it left the folder), each only if still exactly as the task left
+          // it. The old version restored every dirty file to HEAD — wiping the user's own edits made before or
+          // after the task — and deleted new files outright. `preview: true` returns the plan without touching
+          // anything, so the confirmation can show exactly what will happen.
           if (!root) return json(res, 400, { error: "no repository open" });
           if (run?.running) return json(res, 409, { error: "wait for the task to finish" });
-          const p = paths(root);
-          const g = gitState(root);
-          const tracked = [...new Set([...g.dirty, ...g.staged])].filter((f) => !f.startsWith(".narrowbit/"));
-          if (tracked.length) {
-            const r = sh("git", ["restore", "--source=HEAD", "--staged", "--worktree", "--", ...tracked], root);
-            if (r.code !== 0) return json(res, 500, { error: r.stderr.trim() || "git restore failed" });
-          }
-          // Only delete new files the task created (per its recorded baseline); anything else untracked is the user's.
-          const baseline = untrackedAtStart(p, typeof body.task === "string" ? body.task : null) ?? (run && run.root === root ? run.untrackedBefore : null);
-          const created = baseline ? g.untracked.filter((f) => !baseline.has(f) && !f.startsWith(".narrowbit/") && f !== ".narrowbitignore") : [];
-          for (const f of created) {
-            const abs = safeAbsPath(p, f);
-            if (abs) unlinkSync(abs);
-          }
-          const kept = g.untracked.filter((f) => !created.includes(f) && !f.startsWith(".narrowbit/"));
-          return json(res, 200, { ok: true, restored: tracked, deleted: created, kept });
+          const taskId = typeof body.task === "string" && /^rt-[\w-]+$/.test(body.task) ? body.task : null;
+          if (!taskId) return json(res, 400, { error: "which task? (discard undoes one task's changes)" });
+          const cps = listCheckpoints(paths(root), taskId);
+          if (cps.length < 2) return json(res, 409, { error: "This task has no record of its changes to undo (it made none, or it predates change tracking). Use Rewind, or git, to revert by hand." });
+          const start = cps[0].commit, end = cps[cps.length - 1].commit;
+          if (body.preview === true) return json(res, 200, { preview: true, ...planDiscard(root, start, end) });
+          const r = discardTask(root, start, end);
+          if (!r.ok) return json(res, 500, { error: r.message });
+          return json(res, 200, r);
         }
       }
       return json(res, 404, { error: "not found" });

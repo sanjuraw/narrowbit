@@ -152,3 +152,84 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
   if (kept.length) notes.push(`left ${kept.length} newer file(s) in place (staged, or could not be moved): ${kept.slice(0, 5).join(", ")}`);
   return { ok: true, message: notes.join("; "), movedTo: moved.length ? trash : undefined, kept: kept.length ? kept : undefined };
 }
+
+export interface DiscardPlan {
+  /** Files the task changed that are exactly as it left them: put back to how they were when it started. */
+  restore: string[];
+  /** Files the task created that are exactly as it left them: moved to the recovery folder, not deleted. */
+  remove: string[];
+  /** Files the task changed that have changed again since (by you, or anything else): left alone. */
+  skipped: string[];
+}
+
+function blobAt(root: string, commit: string, file: string): string | null {
+  const r = git(root, ["rev-parse", "--verify", "--quiet", `${commit}:${file}`]);
+  return r.code === 0 && r.out ? r.out : null;
+}
+
+function blobNow(root: string, file: string): string | null {
+  if (!existsSync(join(root, file))) return null;
+  const r = git(root, ["hash-object", "--", file]);
+  return r.code === 0 && r.out ? r.out : null;
+}
+
+/**
+ * What undoing one task would touch, worked out only from that task's own checkpoints: the files that differ
+ * between its first checkpoint (before it changed anything) and its last one (as it left the folder). A file is
+ * only touched if it is still exactly as the task left it; anything changed again since is reported, not reverted.
+ * Nothing the task didn't change is ever looked at — so edits made before the task, after it, or to other files
+ * are all safe, unlike restoring every dirty file to HEAD.
+ */
+export function planDiscard(root: string, start: string, end: string): DiscardPlan {
+  const names = git(root, ["diff-tree", "-r", "--name-only", "-z", "--no-renames", start, end]).out.split("\0").filter(Boolean);
+  const plan: DiscardPlan = { restore: [], remove: [], skipped: [] };
+  for (const f of names) {
+    if (f.startsWith(".narrowbit/") || f === ".narrowbitignore") continue;
+    const before = blobAt(root, start, f);
+    const after = blobAt(root, end, f);
+    if (blobNow(root, f) !== after) plan.skipped.push(f);
+    else if (before) plan.restore.push(f);
+    else plan.remove.push(f);
+  }
+  return plan;
+}
+
+export function discardTask(root: string, start: string, end: string): DiscardPlan & { ok: boolean; message: string; movedTo?: string } {
+  const plan = planDiscard(root, start, end);
+  let movedTo: string | undefined;
+  if (plan.remove.length) {
+    pruneRewindTrash(root);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const trash = join(root, ".narrowbit", "rewind-trash", stamp);
+    for (const f of plan.remove) {
+      const to = join(trash, f);
+      try {
+        mkdirSync(dirname(to), { recursive: true });
+        try {
+          renameSync(join(root, f), to);
+        } catch {
+          copyFileSync(join(root, f), to);
+          unlinkSync(join(root, f));
+        }
+        movedTo = trash;
+      } catch {
+        /* couldn't move it: leaving it in place is the safe failure */
+      }
+    }
+  }
+  if (plan.restore.length) {
+    const dir = mkdtempSync(join(tmpdir(), "nb-discard-"));
+    try {
+      const env = { GIT_INDEX_FILE: join(dir, "index") };
+      if (git(root, ["read-tree", start], env).code !== 0) return { ...plan, ok: false, message: "couldn't read the task's starting checkpoint" };
+      const co = git(root, ["checkout-index", "-f", "--", ...plan.restore], env);
+      if (co.code !== 0) return { ...plan, ok: false, message: co.out.split("\n").pop() || "the restore failed" };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  const parts = [`put back ${plan.restore.length} file(s) the task changed`];
+  if (plan.remove.length) parts.push(`moved ${plan.remove.length} file(s) it created to ${join(".narrowbit", "rewind-trash")}`);
+  if (plan.skipped.length) parts.push(`left ${plan.skipped.length} file(s) alone because they changed again after the task`);
+  return { ...plan, ok: true, message: parts.join("; "), movedTo };
+}
