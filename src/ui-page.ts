@@ -478,8 +478,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
           <button class="primary" id="locateBtn">Locate folder…</button>
         </div>
         <div class="setup hidden" id="setupCard">
-          <strong>Narrowbit isn't set up in this repository yet.</strong>
-          <p class="muted" style="margin:6px 0 12px">This creates a local <span class="mono">.narrowbit/</span> folder (git-ignored) and indexes the code. Nothing leaves your Mac.</p>
+          <strong id="setupTitle">Narrowbit isn't set up in this repository yet.</strong>
+          <p class="muted" style="margin:6px 0 12px" id="setupText">This creates a local <span class="mono">.narrowbit/</span> folder (git-ignored) and indexes the code. Nothing leaves your Mac.</p>
           <button class="primary" id="initBtn">Set up Narrowbit here</button>
         </div>
         <div id="items"></div>
@@ -750,6 +750,11 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     run.active = S.running; if (S.running) run.taskId = S.runningTask;
     renderSessions(); renderSettings(); renderComposer(); renderSkills(); renderMemory(); renderConnectors(); renderGetStarted();
     show($("setupCard"), !S.initialized);
+    // A folder this account can't write to can't hold Narrowbit's notes: say whose it is instead of offering a button that fails.
+    var ro = S.writable === false;
+    $("initBtn").classList.toggle("hidden", ro);
+    $("setupText").textContent = ro ? "This folder belongs to " + (S.owner || "another user") + " and this account can't write to it, so Narrowbit can't keep its notes there. Open a folder you own (a copy of the project works), or ask the owner to give you write access." : "This creates a local .narrowbit/ folder (git-ignored) and indexes the code. Nothing leaves your Mac.";
+    $("setupTitle").textContent = ro ? "This folder is read-only for you." : "Narrowbit isn't set up in this repository yet.";
     if (first) {
       if (S.running && S.runningTask) openSession(S.runningTask);
       else blankView();
@@ -1321,7 +1326,11 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         ub.disabled = true; ub.textContent = "Updating…";
         api("/api/update-cli", { provider: draft.provider }).then(function () {
           delete modelLists[draft.provider]; loadModelList(draft.provider); flash($("savedMsg"), "Updated — new models are loaded");
-        }).catch(function (e) { ub.disabled = false; ub.dataset.sure = ""; ub.textContent = "Update " + S.providers[draft.provider].label + " now"; flash($("savedMsg"), e.message); });
+        }).catch(function (e) {
+          ub.disabled = false; ub.dataset.sure = ""; ub.textContent = "Update " + S.providers[draft.provider].label + " now";
+          // stays on screen (a flash message disappears before it can be read)
+          var why = el("div", { cls: "note", id: "updateCliErr", style: "color:var(--bad);margin-top:6px", text: e.message }); upd.appendChild(why);
+        });
       };
       upd.appendChild(ub);
     }

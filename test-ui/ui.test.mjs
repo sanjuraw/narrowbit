@@ -5,7 +5,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -1030,6 +1030,44 @@ process.exit(1);
     await page.until(() => page.visible(page.$("pushPill")), "the ordinary push pill takes over once a remote exists");
     assert.ok(!page.visible(page.$("publishPill")), "nothing left to publish");
     assert.match(execFileSync("git", ["log", "-1"], { cwd: repo }).toString(), /init/, "nothing was pushed — nothing to compare against a real GitHub here, but the local log is untouched");
+  });
+});
+
+describe("a folder this account can't write to (another user's, on a shared Mac)", () => {
+  let home, repo, app, page;
+  before(async () => {
+    home = fresh("home");
+    repo = fresh("repo");
+    const git = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
+    git("init", "-q", "-b", "main"); git("config", "user.email", "t@t.t"); git("config", "user.name", "t");
+    writeFileSync(join(repo, "a.txt"), "hi\n"); git("add", "-A"); git("commit", "-qm", "init");
+    chmodSync(repo, 0o555); // readable, not writable
+    app = await startApp({ cwd: repo, home });
+    page = await openPage(app.url);
+    await page.until(() => !page.$("crumb").classList.contains("empty") && page.$("crumbName").textContent, "the repo pill");
+  });
+  after(() => {
+    page?.close();
+    app?.stop();
+    try { chmodSync(repo, 0o755); } catch {}
+    for (const d of [home, repo]) rmSync(d, { recursive: true, force: true, maxRetries: 1 });
+  });
+
+  test("the page says the folder is read-only for this account instead of offering a setup button that fails", async () => {
+    if (process.getuid && process.getuid() === 0) return; // root can write anywhere
+    const st = await fetch(`${app.base}/api/state`, { headers: { "x-narrowbit-token": app.token } }).then((r) => r.json());
+    assert.equal(st.writable, false);
+    await page.until(() => /read-only/.test(page.$("setupTitle").textContent), "the read-only notice");
+    assert.ok(page.$("initBtn").classList.contains("hidden"), "no Set up button");
+    assert.match(page.$("setupText").textContent, /can't write to it/);
+  });
+
+  test("a permission error from the server is explained, not shown as a raw EACCES", async () => {
+    if (process.getuid && process.getuid() === 0) return;
+    const r = await fetch(`${app.base}/api/init`, { method: "POST", headers: { "x-narrowbit-token": app.token, "content-type": "application/json" }, body: "{}" });
+    const j = await r.json();
+    assert.ok(!/EACCES/.test(j.error ?? ""), j.error);
+    assert.match(j.error ?? "", /can't write|write access|owner/i);
   });
 });
 

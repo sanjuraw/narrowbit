@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
@@ -182,6 +182,16 @@ function mergedHistory(root: string | null, limit = 40) {
     rows.push(...taskHistory(p, limit, { project: basename(r), root: r }));
   }
   return rows.sort((a, b) => b.last.localeCompare(a.last)).slice(0, limit);
+}
+
+/** "EACCES: permission denied, mkdir '/x/.narrowbit'" means nothing to most people; say what it is and what to do. */
+function friendlyFsError(e: any): string {
+  const msg = String(e?.message ?? e);
+  if (e?.code === "EACCES" || e?.code === "EPERM" || e?.code === "EROFS") {
+    const where = typeof e.path === "string" ? e.path.replace(/\/\.narrowbit(\/.*)?$/, "") : "";
+    return `This account can't write to ${where || "that folder"}, and Narrowbit keeps its notes in a .narrowbit folder inside the project. It probably belongs to another user on this Mac. Open a folder you own (a copy of the project works), or ask its owner to give you write access.`;
+  }
+  return msg;
 }
 
 /** Untracked files that existed before a task started (runtime.ts records them in its first event). */
@@ -372,6 +382,15 @@ export function startUi(opts: UiOptions) {
     }
     const p = paths(root);
     const initialized = existsSync(p.db);
+    // A folder another account owns (a shared Mac) can be opened but not written: Narrowbit keeps its notes in
+    // <folder>/.narrowbit, so say so up front instead of failing on the first task with a raw EACCES.
+    let writable = true;
+    try {
+      accessSync(initialized ? p.nb : root, fsConstants.W_OK);
+    } catch {
+      writable = false;
+    }
+    const owner = writable ? "" : sh("stat", ["-f", "%Su", root], root).stdout.trim();
     const g = gitState(root);
     const cfg = loadConfig(p);
     let selection;
@@ -389,6 +408,8 @@ export function startUi(opts: UiOptions) {
       name: basename(root),
       recent: loadRecent(),
       initialized,
+      writable,
+      owner,
       remote: g.isRepo ? remoteInfo(root) : { hasRemote: false, upstream: null, ahead: 0 },
       git: { isRepo: g.isRepo, branch: g.branch, head: g.head?.slice(0, 7) ?? null, changed: [...new Set([...g.dirty, ...g.staged])], untracked: g.untracked.filter((f) => !f.startsWith(".narrowbit/")) },
       verify: cfg.verify,
@@ -913,7 +934,7 @@ export function startUi(opts: UiOptions) {
           if (prov !== "codex" && prov !== "claude") return json(res, 400, { error: "only the Codex and Claude CLIs can be updated here" });
           if (run?.running) return json(res, 409, { error: "Stop the running task before updating." });
           const r = await updateCli(prov);
-          return json(res, r.ok ? 200 : 500, r.ok ? { ok: true, output: r.output } : { error: "The update failed: " + r.output.slice(-400) });
+          return json(res, r.ok ? 200 : 500, r.ok ? { ok: true, output: r.output } : { error: /EACCES|permission denied|EPERM/i.test(r.output) ? "The update couldn't be installed: this account has no permission to change the installed " + (prov === "codex" ? "Codex" : "Claude Code") + ", which was installed by another user on this Mac. Ask that user to run the update (" + (prov === "codex" ? "npm install -g @openai/codex" : "claude update") + "), or install your own copy." : "The update failed: " + r.output.slice(-400) });
         }
         case "/api/limits/refresh": {
           await Promise.all([refreshClaude(), refreshCodex()]);
@@ -1104,7 +1125,7 @@ export function startUi(opts: UiOptions) {
       }
       return json(res, 404, { error: "not found" });
     } catch (e: any) {
-      if (!res.headersSent) json(res, 500, { error: String(e?.message ?? e) });
+      if (!res.headersSent) json(res, 500, { error: friendlyFsError(e) });
     }
   });
 
