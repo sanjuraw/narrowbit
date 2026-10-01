@@ -80,6 +80,8 @@ interface Run {
   /** Commands the user allowed for the rest of this task. */
   allowed: Set<string>;
   running: boolean;
+  /** Messages typed while the task was working, handed to it before its next model call. */
+  queue: string[];
   /** Set by the app's "Compact now"; the loop takes it before its next call and starts a fresh session. */
   compactRequested: boolean;
   /** Untracked files that existed before the run — Discard never deletes these. */
@@ -475,6 +477,7 @@ export function startUi(opts: UiOptions) {
       questions: new Map(),
       allowed: new Set(),
       running: true,
+      queue: [],
       compactRequested: false,
       // A follow-up keeps the original task's baseline, so the first request's new files still count as its work.
       untrackedBefore: untrackedAtStart(p, continueTask) ?? new Set(g.untracked),
@@ -500,6 +503,8 @@ export function startUi(opts: UiOptions) {
       models: sel.tiers,
       effort: sel.effort,
       signal: thisRun.controller.signal,
+      takeMessages: () => thisRun.queue.splice(0),
+      hasMessages: () => thisRun.queue.length > 0,
       compactNow: () => {
         const r = thisRun.compactRequested;
         thisRun.compactRequested = false;
@@ -997,6 +1002,14 @@ export function startUi(opts: UiOptions) {
           const task = String(body.task ?? "").trim();
           if (!task) return json(res, 400, { error: "describe the task first" });
           const continueTask = typeof body.continueTask === "string" && /^rt-[\w-]+$/.test(body.continueTask) ? body.continueTask : null;
+          // The conversation is mid-task: the message is delivered to it before its next step (like a colleague's
+          // message arriving while you work), not refused.
+          const live = runOfTask(continueTask);
+          if (live) {
+            if (live.queue.length >= 5) return json(res, 409, { error: "that's a lot of messages waiting — give it a moment to catch up" });
+            live.queue.push(task.slice(0, 20_000));
+            return json(res, 200, { ok: true, queued: true });
+          }
           if (root && !body.force && !continueTask && body.isolate !== true && !rootBusy(root)) {
             const g = gitState(root);
             const changed = [...new Set([...g.dirty, ...g.staged])];

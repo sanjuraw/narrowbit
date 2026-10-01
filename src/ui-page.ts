@@ -1415,7 +1415,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   // ---------- composer ----------
   var input = $("input");
   function autosize() { input.style.height = "auto"; input.style.height = Math.min(240, input.scrollHeight) + "px"; }
-  input.addEventListener("input", autosize);
+  input.addEventListener("input", function () { autosize(); renderComposer(); });
   // "@" file mentions: typing @ opens a small popover of matching repo files (server-searched, debounced);
   // picking one inserts "@path/to/file" so the runtime can read it straight into the first prompt instead
   // of the model spending a turn finding it.
@@ -1485,7 +1485,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       .catch(function (e) { banner("bad", e.message); });
   };
   function renderComposer() {
-    var busy = viewingRun();
+    var typing = input.value.trim().length > 0;
+    var busy = !!(view && view.pendingNew && !view.taskId);   // a brand-new task that has no id yet can't take a message
     var P = S && S.providers && S.providers[S.selection.provider];
     // With no folder open there is no per-repo config to trust, so P.unavailable (which only reflects
     // whether a key/model is configured) isn't enough — fall back to the live readiness check, same
@@ -1494,12 +1495,14 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     // loadReadiness()'s own callback re-renders this once the real answer is in.
     var notReadyNoRoot = !!(S && !S.root && R && P && (P.unavailable || R.ready.indexOf(S.selection.provider) < 0));
     show($("compactBtn"), !!(view && view.taskId));
-    show($("stopBtn"), viewingRun());
-    show($("sendBtn"), !viewingRun());
+    // While the conversation is working, an empty box shows Stop; typing turns it into Send (the message is delivered
+    // to the agent before its next step).
+    show($("stopBtn"), viewingRun() && !typing);
+    show($("sendBtn"), !viewingRun() || typing);
     $("sendBtn").disabled = !S || (!!S.root && !S.initialized) || busy || !!(P && P.unavailable) || notReadyNoRoot;
     $("leadTog").checked = !!(S && S.lead);
     input.placeholder = view && view.taskId ? "Ask for a follow-up or a change…" : S && S.root ? "Describe a task…" : "What do you want to build? Let's talk it through…";
-    $("hint").textContent = !S ? "" : P && P.unavailable ? P.unavailable : notReadyNoRoot ? ((R[S.selection.provider] && R[S.selection.provider].detail) || "not signed in — pick a model that's ready") : !S.root ? "Enter to send · No folder needed yet — we'll create one when you're ready" : "Enter to send · Shift+Enter for a new line";
+    $("hint").textContent = !S ? "" : viewingRun() && typing ? "Enter to send — the agent gets it before its next step" : P && P.unavailable ? P.unavailable : notReadyNoRoot ? ((R[S.selection.provider] && R[S.selection.provider].detail) || "not signed in — pick a model that's ready") : !S.root ? "Enter to send · No folder needed yet — we'll create one when you're ready" : "Enter to send · Shift+Enter for a new line";
     if (S && S.root) show($("createProjectBar"), false);
   }
   var attached = [];
@@ -1573,6 +1576,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (!cont) { resetView(null); view.pendingNew = true; show($("welcome"), false); }
     api("/api/run", { task: text, force: !!force, continueTask: cont, maxSteps: Number($("maxSteps").value) || 20, askBeforeCommands: askOn(), isolate: $("isoTog").checked, attachments: attached.map(function (a) { return a.id; }) })
       .then(function (r) {
+        if (r && r.queued) { input.value = ""; autosize(); renderComposer(); return; }
         if (r && r.isolated) showToast("Another task is working in this folder, so this one runs in a separate copy. Apply its changes when it finishes.");
         attached = []; renderAttached();
         input.value = ""; autosize();
@@ -1880,6 +1884,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     }
     if (e.type === "decision" && e.actor === "user") {
       var text = m.goal || m.followUp || "";
+      // A message typed while the agent was working: just a bubble in the flow, not the start of a new turn.
+      if (m.midTask) { add(el("div", { cls: "msg-user" }, el("div", { cls: "bubble" }, rich(text)), userActions(text, e.at)), true); return; }
       (view.asks = view.asks || []).push(text);
       if (m.goal) $("title").textContent = m.goal;
       show($("welcome"), false);

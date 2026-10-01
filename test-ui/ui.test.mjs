@@ -1243,6 +1243,32 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     assert.equal(finA.outcome, "done");
     ctl.abort();
   });
+
+  test("a message sent while the task is working is queued and delivered, not refused", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const post = (path, b) => fetch(`${app.base}${path}`, { method: "POST", headers: H, body: JSON.stringify(b) });
+    rmSync(join(fakeDir, "count"), { force: true });
+    await post("/api/repo", { path: repo });
+    const events = [];
+    const ctl = new AbortController();
+    const stream = await fetch(`${app.base}/api/stream?t=${app.token}`, { signal: ctl.signal });
+    const reader = stream.body.getReader();
+    let buf = "";
+    (async () => { try { for (;;) { const { value, done } = await reader.read(); if (done) break; buf += new TextDecoder().decode(value); let i; while ((i = buf.indexOf("\n\n")) >= 0) { const chunk = buf.slice(0, i); buf = buf.slice(i + 2); const m = /^data: (.*)$/m.exec(chunk); if (m) events.push(JSON.parse(m[1])); } } } catch {} })();
+    const until = async (pred, what) => { for (let i = 0; i < 200; i++) { const hit = events.find(pred); if (hit) return hit; await new Promise((r) => setTimeout(r, 100)); } throw new Error("timed out: " + what); };
+    const a = await post("/api/run", { task: "task C: pick a colour", askBeforeCommands: false, force: true });
+    assert.equal(a.status, 200, await a.clone().text());
+    const q = await until((e) => e.type === "question" && /Which colour/.test(e.question), "C's question");
+    const taskC = q.task;
+    const m = await post("/api/run", { task: "actually, make it green", continueTask: taskC });
+    assert.equal(m.status, 200, await m.clone().text());
+    assert.equal((await m.json()).queued, true);
+    await post("/api/answer", { id: q.id, answer: "blue" });
+    await until((e) => e.type === "finished" && e.taskId === taskC, "C to finish");
+    const log = await (await fetch(`${app.base}/api/task/${taskC}`, { headers: H })).json();
+    assert.ok(log.events.some((e) => e.meta?.midTask && e.meta.followUp === "actually, make it green"), "the message is in the conversation");
+    ctl.abort();
+  });
 });
 
 describe("the agent asking the user a question in the app (stand-in model, no network)", () => {

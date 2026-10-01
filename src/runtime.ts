@@ -420,6 +420,9 @@ export interface RuntimeOptions {
   testFirst?: boolean;
   /** Polled before each model call's follow-up: return true to compact now (the app's "Compact now" button). */
   compactNow?: () => boolean;
+  /** Messages the user sent while the task was working: taken (and cleared) before each model call, and checked before "done". */
+  takeMessages?: () => string[];
+  hasMessages?: () => boolean;
   /** Work in a throwaway git worktree instead of the folder itself (isolate.ts); nothing changes the folder until applied. */
   isolate?: boolean;
   /** Every event appended for this task, as it happens (the app renders these). */
@@ -720,6 +723,16 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       log(`[${steps}] stopped by the user`);
       break;
     }
+    // Something the user typed while this was working: it reaches the model on its next call, like a message sent
+    // to a colleague mid-task, and the log shows it as their message.
+    const incoming = opts.takeMessages?.() ?? [];
+    if (incoming.length) {
+      for (const text of incoming) appendEvent(p, taskId, { actor: "user", type: "decision", summary: `message while working: ${text.slice(0, 120)}`, meta: { followUp: text, midTask: true } });
+      const block = `The user sent ${incoming.length === 1 ? "a new message" : "new messages"} while you were working:\n${incoming.map((t) => `> ${t}`).join("\n")}\n\nTake ${incoming.length === 1 ? "it" : "them"} into account — it may change or add to the task — then continue.\n\n`;
+      nextPrompt = block + nextPrompt;
+      nextParts = [part("task", "a message you sent while it worked", incoming.join("\n")), ...nextParts];
+      log(`[${steps}] new message from the user while working`);
+    }
     // Escalate only on signs of being stuck: repeated run/verify with no edit between them, or an
     // unusually long stretch without any edit. Counting every non-edit step (the first version)
     // put ordinary reading on Opus — on this repo's first real task, 5 plain reads/greps in a row
@@ -864,8 +877,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
 
       if (decision.action === "done") {
         let challenge: string | null = null;
+        if (opts.hasMessages?.()) challenge = "The user sent you a new message while you were working. Read it (it comes with your next prompt) and deal with it before finishing.";
         // A task about an attached file can be answered from the attachment itself, with no action first.
-        if (editsApplied === 0 && !opts.attachments?.length && !mentionBlock && !doneChallenges.has("no-edit")) {
+        else if (editsApplied === 0 && !opts.attachments?.length && !mentionBlock && !doneChallenges.has("no-edit")) {
           doneChallenges.add("no-edit");
           challenge = Object.keys(actionCounts).length === 0
             ? "You have not taken a single action yet — nothing has been read or changed, so the task cannot be complete. Start by reading the relevant file."
