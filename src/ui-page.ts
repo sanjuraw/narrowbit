@@ -223,6 +223,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .step.ok .sd { background: var(--ok); } .step.fail .sd { background: var(--bad); }
 @keyframes pulse { 50% { opacity: .35; } }
 .step .verb { font-weight: 500; flex: none; color: var(--text); }
+.step .sh.expandable::after { content: "›"; color: var(--faint); flex: none; transition: transform .12s; }
+.step.open .sh.expandable::after { transform: rotate(90deg); }
 .step .tgt.cmd { font-family: var(--mono); font-size: 12px; }
 .step .meta .chip, .step .meta .ctx-btn { opacity: 0; transition: opacity .12s; }
 .step .sh:hover .chip, .step .sh:hover .ctx-btn, .step .sh:focus-within .ctx-btn { opacity: 1; }
@@ -1766,7 +1768,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var head = el("div", { cls: "sh" }, el("span", { cls: "sd" }), el("span", { cls: "verb", text: VERB[m.action] || m.action }), el("span", { cls: "tgt" + (m.action === "run" || m.action === "grep" ? " cmd" : ""), text: target || "" }), meta);
     var box = el("div", { cls: "step run" }, head);
     var s = { box: box, head: head, meta: meta, prev: null, body: null, open: false };
-    head.onclick = function () { if (s.body) { s.open = !s.open; show(s.body, s.open); if (s.prev) show(s.prev, !s.open); } };
+    head.onclick = function () { if (s.body) { s.open = !s.open; show(s.body, s.open); s.box.classList.toggle("open", s.open); if (s.prev) show(s.prev, !s.open); } };
     return s;
   }
   // "Why is this in context?": everything the model was sent for the turn that chose this step, itemised.
@@ -1789,7 +1791,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     s.box.classList.remove("run");
     if (cls) s.box.classList.add(cls);
     if (preview) { s.prev = el("div", { cls: "prev", text: preview }); s.box.appendChild(s.prev); }
-    if (body) { s.body = body; body.classList.add("sb"); s.box.appendChild(body); s.open = !!open; show(body, s.open); if (s.prev) show(s.prev, !s.open); }
+    if (body) { s.head.classList.add("expandable"); s.body = body; body.classList.add("sb"); s.box.appendChild(body); s.open = !!open; show(body, s.open); if (s.prev) show(s.prev, !s.open); }
   }
   function pre(text) { return el("div", null, el("pre", { text: text })); }
   function diffBody(oldText, newText) {
@@ -1910,7 +1912,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (e.type === "edit" && s) {
       var d = diffBody(m.old, m.new);
       s.meta.insertBefore(el("span", null, el("span", { cls: "add", text: "+" + d.added }), " ", el("span", { cls: "rem", text: "−" + d.removed })), s.meta.firstChild);
-      attach(s, "ok", null, d.node, true);
+      attach(s, "ok", null, d.node, false);
       view.step = null; return;
     }
     if (e.type === "command" && s) {

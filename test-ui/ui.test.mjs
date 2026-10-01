@@ -445,6 +445,12 @@ describe("app page with a folder open", () => {
     appendEvent(p, "rt-ckpt-test", { actor: "system", type: "checkpoint", summary: "checkpoint after step 1: edited a.txt", meta: { step: 1, commit: "cafef00d" } });
     appendEvent(p, "rt-ckpt-test", { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: "changed it", steps: 1 } });
 
+    // A task with an applied edit: its diff should be tucked away until the step is opened.
+    appendEvent(p, "rt-edit-test", { actor: "user", type: "decision", summary: "task received", meta: { goal: "change the greeting" } });
+    appendEvent(p, "rt-edit-test", { actor: "model", type: "tool_call", summary: "edit a.txt", meta: { action: "edit", path: "a.txt", model: "haiku" } });
+    appendEvent(p, "rt-edit-test", { actor: "system", type: "edit", summary: "edited a.txt", meta: { old: "hi", new: "hello there" } });
+    appendEvent(p, "rt-edit-test", { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: "changed it", steps: 1 } });
+
     // A Claude usage reading from 40 minutes ago: stale, since Claude's number only updates as a side effect
     // of a real Claude call (unlike Codex's actively-refreshed one) — the app should flag it, not show it as current.
     mkdirSync(join(home, ".narrowbit"), { recursive: true });
@@ -757,6 +763,21 @@ describe("app page with a folder open", () => {
     const bug = [...page.w.document.querySelectorAll("#skillsList .skill")].find((b) => b.textContent === "Bug fix");
     bug.click();
     assert.match(page.$("input").value, /root cause/i);
+  });
+
+  test("an applied edit shows its file and +/- counts, with the diff folded until you open the step", async () => {
+    const sess = await page.until(() => [...page.w.document.querySelectorAll("#sessions .sess")].find((x) => /change the greeting/.test(x.textContent)), "the edit session");
+    sess.click();
+    // the finished turn folds its work into a "Worked…" group; open it to reach the step
+    const group = await page.until(() => page.w.document.querySelector("details.work"), "the work group");
+    group.open = true;
+    const step = await page.until(() => page.w.document.querySelector(".step .sh.expandable"), "the edit step");
+    const body = step.parentElement.querySelector(".sb");
+    assert.ok(body.classList.contains("hidden"), "the red/green diff is hidden by default");
+    step.click();
+    assert.ok(!body.classList.contains("hidden"), "clicking the step shows it");
+    step.click();
+    assert.ok(body.classList.contains("hidden"), "and clicking again hides it");
   });
 
   test("rewind: each checkpoint has a Rewind button; clicking it asks to confirm before restoring", async () => {
