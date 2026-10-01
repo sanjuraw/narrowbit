@@ -56,7 +56,7 @@ import { discardTask, planDiscard } from "./checkpoints.js";
  * Host header, so other web pages open in a browser can't drive it (CSRF / DNS rebinding).
  */
 
-type StreamEvent =
+type StreamEvent = (
   | { type: "start"; task: string; continueTask: string | null; selection: string; lead: boolean }
   | { type: "log"; line: string }
   | { type: "event"; event: Event }
@@ -65,9 +65,12 @@ type StreamEvent =
   | { type: "question"; id: string; question: string; options: string[] }
   | { type: "question_resolved"; id: string; answer: string | null }
   | { type: "finished"; outcome: string; summary: string; steps: number; taskId: string; changed: string[]; tokens: number; costUsd: number }
-  | { type: "failed"; error: string };
+  | { type: "failed"; error: string }
+) & { run?: string; task?: string | null };
 
 interface Run {
+  /** Identifies this run on the event stream (several can be live at once). */
+  id: string;
   root: string;
   events: StreamEvent[];
   controller: AbortController;
@@ -264,17 +267,26 @@ export function startUi(opts: UiOptions) {
   // A folder opened by cwd/CLI at launch (not through /api/repo) wasn't otherwise recorded — record it now,
   // so leaving it later (Start without a folder, or "New task" going rootless) still finds it in recents.
   if (root) saveRecent(root);
-  let run: Run | null = null;
+  // Several conversations can run at once (like the Claude app): one Run per live task, each with its own approvals,
+  // questions and stop. Two runs in the same folder would edit the same files, so a second one there is isolated.
+  const runs = new Map<string, Run>();
+  const runningRuns = () => [...runs.values()].filter((r) => r.running);
+  const runOfTask = (id: string | null | undefined) => (id ? runningRuns().find((r) => r.taskId === id) ?? null : null);
+  const rootBusy = (r: string | null = root) => !!r && runningRuns().some((x) => x.root === r);
+  const MAX_RUNS = 4;
   const clients = new Set<ServerResponse>();
   const modelCache = new Map<string, { at: number; list: ModelList }>();
 
   const preexisting = (taskId?: string | null) =>
-    (root ? untrackedAtStart(paths(root), taskId ?? run?.taskId ?? null) : null) ?? (run && run.root === root ? run.untrackedBefore : new Set<string>());
-  const emit = (e: StreamEvent) => {
-    if (!run) return;
-    run.events.push(e);
+    (root ? untrackedAtStart(paths(root), taskId ?? runningRuns().find((r) => r.root === root)?.taskId ?? null) : null) ?? (runOfTask(taskId)?.untrackedBefore ?? runningRuns().find((r) => r.root === root)?.untrackedBefore ?? new Set<string>());
+  const broadcast = (e: StreamEvent) => {
     const frame = `data: ${JSON.stringify(e)}\n\n`;
     for (const c of clients) c.write(frame);
+  };
+  const emit = (r: Run, e: StreamEvent) => {
+    const full = { ...e, run: r.id, task: r.taskId } as StreamEvent;
+    r.events.push(full);
+    broadcast(full);
   };
 
   // Found live: a project folder renamed out from under a running task made a background command's own
@@ -290,9 +302,9 @@ export function startUi(opts: UiOptions) {
   const onFatal = (label: string) => (err: unknown) => {
     const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
     process.stderr.write(`narrowbit ui: ${label}: ${msg}\n`);
-    if (run?.running) {
-      emit({ type: "failed", error: `Narrowbit hit an internal error and had to stop this task: ${err instanceof Error ? err.message : String(err)}` });
-      run.running = false;
+    for (const r of runningRuns()) {
+      emit(r, { type: "failed", error: `Narrowbit hit an internal error and had to stop this task: ${err instanceof Error ? err.message : String(err)}` });
+      r.running = false;
     }
   };
   process.on("uncaughtException", onFatal("uncaught exception"));
@@ -418,8 +430,9 @@ export function startUi(opts: UiOptions) {
       providers,
       phases: PHASES,
       efforts: EFFORT_LEVELS,
-      running: !!run?.running && run.root === root,
-      runningTask: run?.running && run.root === root ? run.taskId : null,
+      running: rootBusy(),
+      runningTask: runningRuns().find((r) => r.root === root)?.taskId ?? null,
+      runningTasks: runningRuns().map((r) => r.taskId).filter(Boolean),
       lead: effAgent(cfg)?.boss ?? false,
       fallback: effAgent(cfg)?.fallback ?? "",
       scout: effAgent(cfg)?.scout ?? "",
@@ -436,7 +449,11 @@ export function startUi(opts: UiOptions) {
 
   const startRun = (task: string, maxSteps: number, askBeforeCommands: boolean, continueTask: string | null, isolate = false, attachments: string[] = []): { status: number; body: unknown } => {
     if (!root) return { status: 400, body: { error: "open a repository first" } };
-    if (run?.running) return { status: 409, body: { error: "a task is already running" } };
+    if (continueTask && runOfTask(continueTask)) return { status: 409, body: { error: "this conversation is already working — wait for it, or stop it" } };
+    if (runningRuns().length >= MAX_RUNS) return { status: 409, body: { error: `${MAX_RUNS} tasks are already running — wait for one to finish or stop one` } };
+    // A second task in a folder that already has one running works in a separate copy, so the two can't edit the same files.
+    const sharesFolder = rootBusy(root);
+    if (sharesFolder) isolate = true;
     const p = paths(root);
     if (!existsSync(p.db)) return { status: 400, body: { error: "set up Narrowbit in this repository first" } };
     const g = gitState(root);
@@ -449,6 +466,7 @@ export function startUi(opts: UiOptions) {
     const reviewOnly = !!effAgent(cfg)?.reviewOnly;
     const planApproval = !!effAgent(cfg)?.planApproval;
     const thisRun: Run = {
+      id: randomBytes(4).toString("hex"),
       root,
       taskId: continueTask,
       events: [],
@@ -461,10 +479,10 @@ export function startUi(opts: UiOptions) {
       // A follow-up keeps the original task's baseline, so the first request's new files still count as its work.
       untrackedBefore: untrackedAtStart(p, continueTask) ?? new Set(g.untracked),
     };
-    run = thisRun;
+    runs.set(thisRun.id, thisRun);
     let approvalSeq = 0;
     let questionSeq = 0;
-    emit({ type: "start", task, continueTask, lead, selection: `${sel.tiers.explore} → ${sel.tiers.execute} → ${sel.tiers.escalate} · effort ${sel.effort}` });
+    emit(thisRun, { type: "start", task, continueTask, lead, selection: `${sel.tiers.explore} → ${sel.tiers.execute} → ${sel.tiers.escalate} · effort ${sel.effort}` });
     runTask(p, task, {
       scout: parseScout(effAgent(cfg)?.scout) ?? undefined,
       maxSteps,
@@ -476,7 +494,7 @@ export function startUi(opts: UiOptions) {
       isolate: isolate || !!(continueTask && readIsolated(p, continueTask)),
       onEvent: (event) => {
         thisRun.taskId = event.taskId;
-        emit({ type: "event", event });
+        emit(thisRun, { type: "event", event });
       },
       provider: sel.provider,
       models: sel.tiers,
@@ -489,8 +507,8 @@ export function startUi(opts: UiOptions) {
       },
       ask: (question, options) => {
         if (thisRun.controller.signal.aborted) return Promise.resolve(null);
-        const id = `q${++questionSeq}`;
-        emit({ type: "question", id, question, options });
+        const id = `${thisRun.id}-q${++questionSeq}`;
+        emit(thisRun, { type: "question", id, question, options });
         return new Promise<string | null>((res) => thisRun.questions.set(id, res));
       },
       approve: askBeforeCommands
@@ -499,8 +517,8 @@ export function startUi(opts: UiOptions) {
             // command runs (warning set), that permission no longer describes it: ask again.
             if (thisRun.allowed.has(command) && !warning) return Promise.resolve(true);
             if (thisRun.controller.signal.aborted) return Promise.resolve(false);
-            const id = `a${++approvalSeq}`;
-            emit(warning ? { type: "approval", id, command, warning } : { type: "approval", id, command });
+            const id = `${thisRun.id}-a${++approvalSeq}`;
+            emit(thisRun, warning ? { type: "approval", id, command, warning } : { type: "approval", id, command });
             return new Promise<boolean>((res) => thisRun.pending.set(id, res));
           }
         : undefined,
@@ -508,7 +526,7 @@ export function startUi(opts: UiOptions) {
       .then((result) => {
         const s = fold(result.taskId, readEvents(p, result.taskId));
         const roles = Object.values(s.ledgerByRole);
-        emit({
+        emit(thisRun, {
           type: "finished",
           outcome: result.outcome,
           summary: result.summary,
@@ -519,29 +537,32 @@ export function startUi(opts: UiOptions) {
           costUsd: roles.reduce((a, r) => a + r.costUsd, 0),
         });
       })
-      .catch((e) => emit({ type: "failed", error: String(e?.message ?? e) }))
+      .catch((e) => emit(thisRun, { type: "failed", error: String(e?.message ?? e) }))
       .finally(() => {
         thisRun.running = false;
+        setTimeout(() => runs.delete(thisRun.id), 60_000).unref();
       });
-    return { status: 200, body: { ok: true } };
+    return { status: 200, body: { ok: true, isolated: sharesFolder } };
   };
 
   const resolveApproval = (id: string, decision: "once" | "task" | "deny") => {
+    const run = [...runs.values()].find((x) => x.pending.has(id));
     const r = run?.pending.get(id);
     if (!run || !r) return false;
     run.pending.delete(id);
     const cmd = (run.events.find((e) => e.type === "approval" && e.id === id) as { command: string } | undefined)?.command;
     if (decision === "task" && cmd) run.allowed.add(cmd);
-    emit({ type: "approval_resolved", id, allowed: decision !== "deny" });
+    emit(run, { type: "approval_resolved", id, allowed: decision !== "deny" });
     r(decision !== "deny");
     return true;
   };
 
   const resolveQuestion = (id: string, answer: string | null) => {
+    const run = [...runs.values()].find((x) => x.questions.has(id));
     const r = run?.questions.get(id);
     if (!run || !r) return false;
     run.questions.delete(id);
-    emit({ type: "question_resolved", id, answer });
+    emit(run, { type: "question_resolved", id, answer });
     r(answer);
     return true;
   };
@@ -566,7 +587,7 @@ export function startUi(opts: UiOptions) {
         if (err) return page("Sign-in cancelled", "The service reported: " + err.replace(/[<>&"]/g, "") + ". You can close this tab.");
         try {
           const name = await completeSignIn(url.searchParams.get("state") ?? "", url.searchParams.get("code") ?? "");
-          emit({ type: "log", line: `${name}: signed in` });
+          broadcast({ type: "log", line: `${name}: signed in` });
           return page("Signed in", `Narrowbit is now connected to ${name.replace(/[<>&"]/g, "")}. You can close this tab and go back to the app.`);
         } catch (e: any) {
           return page("Sign-in failed", String(e.message).replace(/[<>&"]/g, ""));
@@ -581,8 +602,8 @@ export function startUi(opts: UiOptions) {
 
       if (route === "GET /api/stream") {
         res.writeHead(200, { ...SEC_HEADERS, "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
-        // Replay the current run so a reloaded window catches up, including open approvals.
-        if (run && run.root === root) for (const e of run.events) res.write(`data: ${JSON.stringify(e)}\n\n`);
+        // Replay every live run so a reloaded window catches up, including open approvals.
+        for (const r of runningRuns()) for (const e of r.events) res.write(`data: ${JSON.stringify(e)}\n\n`);
         clients.add(res);
         const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
         req.on("close", () => {
@@ -638,7 +659,10 @@ export function startUi(opts: UiOptions) {
         if (!root) return json(res, 400, { error: "no repository open" });
         const id = url.pathname.slice("/api/task/".length);
         if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
-        return json(res, 200, { id, events: readEvents(paths(root), id), running: !!run?.running && run.taskId === id });
+        const live = runOfTask(id);
+        // Approvals and questions this task is waiting on, so opening it from the sidebar shows what it needs from you.
+        const waiting = live ? live.events.filter((e) => (e.type === "approval" && live.pending.has(e.id)) || (e.type === "question" && live.questions.has(e.id))) : [];
+        return json(res, 200, { id, events: readEvents(paths(root), id), running: !!live, waiting });
       }
 
       // Planning drafts: conversations before any project exists (planning.ts). Work with no repository
@@ -659,7 +683,6 @@ export function startUi(opts: UiOptions) {
           // isn't already a project (new, empty, or with files already in it — a hand-made scaffold, a
           // downloaded template) is created (git init, add whatever's there, one commit) rather than
           // refused, so there's a single "choose a folder" flow instead of a separate create ceremony.
-          if (run?.running) return json(res, 409, { error: "stop the running task before switching repositories" });
           const dir = resolve(String(body.path ?? "").replace(/^~(?=$|\/)/, homedir()));
           if (dir === homedir()) return json(res, 400, { error: "refusing to use your home folder as a repository" });
           if (existsSync(dir) && !statSync(dir).isDirectory()) return json(res, 400, { error: `not a folder: ${dir}` });
@@ -696,7 +719,6 @@ export function startUi(opts: UiOptions) {
             }
           }
           root = r;
-          run = null;
           saveRecent(r);
           const st = state();
           return json(res, 200, seedTask ? { ...st, seedTask } : st);
@@ -705,9 +727,8 @@ export function startUi(opts: UiOptions) {
           // Leaving the current project back to the rootless planning screen — the only way there once
           // any folder has ever been opened, since the server otherwise reopens the last-used one at
           // launch and "New task" only resets the conversation, never the open folder.
-          if (run?.running) return json(res, 409, { error: "stop the running task before closing this project" });
+          if (rootBusy()) return json(res, 409, { error: "stop the running task before closing this project" });
           root = null;
-          run = null;
           return json(res, 200, state());
         }
         case "/api/plan": {
@@ -783,7 +804,7 @@ export function startUi(opts: UiOptions) {
         case "/api/push": {
           // An explicit click in the app is the only way this runs; nothing pushes automatically.
           if (!root) return json(res, 400, { error: "no repository open" });
-          if (run?.running) return json(res, 409, { error: "wait for the task to finish" });
+          if (rootBusy()) return json(res, 409, { error: "wait for the task in this folder to finish" });
           const r = pushBranch(root);
           if (!r.ok) {
             // A brand-new local project has no remote yet: offer to create one on GitHub (a separate, explicit
@@ -797,7 +818,7 @@ export function startUi(opts: UiOptions) {
           // Publishing is a separate, explicit action from creating the project — never automatic (see
           // planning.ts's createProjectFromDraft, which only ever does a local git init).
           if (!root) return json(res, 400, { error: "no repository open" });
-          if (run?.running) return json(res, 409, { error: "wait for the task to finish" });
+          if (rootBusy()) return json(res, 409, { error: "wait for the task in this folder to finish" });
           const name = String(body.name ?? "").trim();
           if (!/^[\w.-]+$/.test(name)) return json(res, 400, { error: "give this repo a name using only letters, numbers, - . and _" });
           const r = createGithubRepo(root, name, { private: body.private !== false });
@@ -809,7 +830,7 @@ export function startUi(opts: UiOptions) {
           if (!root) return json(res, 400, { error: "no repository open" });
           const id = String(body.id ?? "");
           if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad session id" });
-          if (run?.running && run.taskId === id) return json(res, 409, { error: "stop the running task first" });
+          if (runOfTask(id)) return json(res, 409, { error: "stop the running task first" });
           const dir = join(paths(root).runtime, id);
           if (!existsSync(dir)) return json(res, 404, { error: "no such session" });
           if (route === "POST /api/session/delete") {
@@ -918,7 +939,7 @@ export function startUi(opts: UiOptions) {
           return json(res, 200, { ok: true });
         }
         case "/api/update/apply": {
-          if (run?.running) return json(res, 409, { error: "Stop the running task before updating." });
+          if (runningRuns().length) return json(res, 409, { error: "Stop the running tasks before updating." });
           try {
             const r = await applyUpdate();
             json(res, 200, { ok: true, ...r, restarting: !!opts.restartOnUpdate });
@@ -932,7 +953,7 @@ export function startUi(opts: UiOptions) {
           // Updates the provider's own CLI (npm install -g @openai/codex / claude update) — the one place new models come from.
           const prov = String(body.provider ?? "");
           if (prov !== "codex" && prov !== "claude") return json(res, 400, { error: "only the Codex and Claude CLIs can be updated here" });
-          if (run?.running) return json(res, 409, { error: "Stop the running task before updating." });
+          if (runningRuns().length) return json(res, 409, { error: "Stop the running tasks before updating." });
           const r = await updateCli(prov);
           return json(res, r.ok ? 200 : 500, r.ok ? { ok: true, output: r.output } : { error: /EACCES|permission denied|EPERM/i.test(r.output) ? "The update couldn't be installed: this account has no permission to change the installed " + (prov === "codex" ? "Codex" : "Claude Code") + ", which was installed by another user on this Mac. Ask that user to run the update (" + (prov === "codex" ? "npm install -g @openai/codex" : "claude update") + "), or install your own copy." : "The update failed: " + r.output.slice(-400) });
         }
@@ -976,7 +997,7 @@ export function startUi(opts: UiOptions) {
           const task = String(body.task ?? "").trim();
           if (!task) return json(res, 400, { error: "describe the task first" });
           const continueTask = typeof body.continueTask === "string" && /^rt-[\w-]+$/.test(body.continueTask) ? body.continueTask : null;
-          if (root && !body.force && !continueTask && body.isolate !== true) {
+          if (root && !body.force && !continueTask && body.isolate !== true && !rootBusy(root)) {
             const g = gitState(root);
             const changed = [...new Set([...g.dirty, ...g.staged])];
             if (changed.length) return json(res, 409, { error: "dirty", files: changed });
@@ -1016,11 +1037,11 @@ export function startUi(opts: UiOptions) {
           if (!root) return json(res, 400, { error: "no repository open" });
           const id = String(body.task ?? "");
           if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
-          if (run?.running && run.taskId === id) {
-            run.compactRequested = true;
+          const live = runOfTask(id);
+          if (live) {
+            live.compactRequested = true;
             return json(res, 200, { ok: true, when: "after the model's current step" });
           }
-          if (run?.running) return json(res, 409, { error: "another task is running" });
           const p = paths(root);
           if (!readEvents(p, id).length) return json(res, 404, { error: "no such chat" });
           // An idle chat: mark it, so the next message starts a fresh session from the summary instead of resuming.
@@ -1029,7 +1050,7 @@ export function startUi(opts: UiOptions) {
         }
         case "/api/rewind": {
           if (!root) return json(res, 400, { error: "no repository open" });
-          if (run?.running) return json(res, 409, { error: "stop the running task first" });
+          if (rootBusy()) return json(res, 409, { error: "stop the running task in this folder first" });
           const id = String(body.task ?? "");
           if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
           const p = paths(root);
@@ -1044,17 +1065,20 @@ export function startUi(opts: UiOptions) {
           return json(res, 200, { ok: true, message: r.message, movedTo: r.movedTo, unsaved: r.unsaved });
         }
         case "/api/stop": {
-          if (!run?.running) return json(res, 200, { ok: true });
-          run.controller.abort();
-          for (const id of [...run.pending.keys()]) resolveApproval(id, "deny");
-          for (const id of [...run.questions.keys()]) resolveQuestion(id, null);
-          emit({ type: "log", line: "stopping after the current step…" });
+          // The conversation being viewed (body.task), else whatever is running in the open folder.
+          const targets = typeof body.task === "string" ? [runOfTask(body.task)].filter((r): r is Run => !!r) : runningRuns().filter((r) => r.root === root);
+          for (const run of targets) {
+            run.controller.abort();
+            for (const id of [...run.pending.keys()]) resolveApproval(id, "deny");
+            for (const id of [...run.questions.keys()]) resolveQuestion(id, null);
+            emit(run, { type: "log", line: "stopping after the current step…" });
+          }
           return json(res, 200, { ok: true });
         }
         case "/api/isolated/apply":
         case "/api/isolated/discard": {
           if (!root) return json(res, 400, { error: "no repository open" });
-          if (run?.running) return json(res, 409, { error: "wait for the task to finish" });
+          if (rootBusy()) return json(res, 409, { error: "wait for the task in this folder to finish" });
           const id = String(body.task ?? "");
           if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
           if (route === "POST /api/isolated/discard") { discardIsolated(paths(root), id); return json(res, 200, { ok: true, message: "Discarded the separate copy. Your folder was never touched." }); }
@@ -1065,7 +1089,7 @@ export function startUi(opts: UiOptions) {
         }
         case "/api/commit": {
           if (!root) return json(res, 400, { error: "no repository open" });
-          if (run?.running) return json(res, 409, { error: "wait for the task to finish" });
+          if (rootBusy()) return json(res, 409, { error: "wait for the task in this folder to finish" });
           const message = String(body.message ?? "").trim();
           if (!message) return json(res, 400, { error: "write a commit message" });
           const { files } = workingDiff(root, preexisting(typeof body.task === "string" ? body.task : null));
@@ -1103,7 +1127,7 @@ export function startUi(opts: UiOptions) {
           // after the task — and deleted new files outright. `preview: true` returns the plan without touching
           // anything, so the confirmation can show exactly what will happen.
           if (!root) return json(res, 400, { error: "no repository open" });
-          if (run?.running) return json(res, 409, { error: "wait for the task to finish" });
+          if (rootBusy()) return json(res, 409, { error: "wait for the task in this folder to finish" });
           const taskId = typeof body.task === "string" && /^rt-[\w-]+$/.test(body.task) ? body.task : null;
           if (!taskId) return json(res, 400, { error: "which task? (discard undoes one task's changes)" });
           const cps = listCheckpoints(paths(root), taskId);

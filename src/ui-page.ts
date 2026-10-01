@@ -676,7 +676,11 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   var draft = null;         // provider being edited in the drawer
   var modelLists = {};      // provider -> /api/models
   var es = null;            // run event stream
-  var run = { active: false, taskId: null };   // what the server is running
+  // Every conversation can run at once: 'tasks' is the set of live task ids (from the server), 'waiting' the ones
+  // stopped on an approval or a question that nobody is looking at.
+  var run = { tasks: {}, waiting: {} };
+  function isLive(id) { return !!(id && run.tasks[id]); }
+  function anyLive() { return Object.keys(run.tasks).length > 0; }
   var view = null;          // the conversation on screen
 
   // ---------- helpers ----------
@@ -753,7 +757,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       return;
     }
     if (!draft || draft.root !== S.root) draft = { root: S.root, provider: S.selection.provider, effort: S.selection.effort };
-    run.active = S.running; if (S.running) run.taskId = S.runningTask;
+    run.tasks = {}; (S.runningTasks || []).forEach(function (t) { run.tasks[t] = true; });
     renderSessions(); renderSettings(); renderComposer(); renderSkills(); renderMemory(); renderConnectors(); renderGetStarted();
     show($("setupCard"), !S.initialized);
     // A folder this account can't write to can't hold Narrowbit's notes: say whose it is instead of offering a button that fails.
@@ -852,7 +856,6 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (r.project === "Planning") { openDraft(r.id); closeSide(); return; }
     if (S && r.projectRoot === S.root) { openSession(r.id); closeSide(); return; }
     api("/api/repo", { path: r.projectRoot }).then(function (st) {
-      if (es) { es.close(); es = null; }
       draft = null; S = null; modelLists = {};
       apply(st);
       openSession(r.id);
@@ -868,12 +871,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var drafting = !(S && S.root);
     if (!S || !S.history || !S.history.length) { box.appendChild(el("div", { cls: "muted", style: "font-size:12.5px;padding:6px 10px", text: drafting ? "No conversations yet — describe what you want to build." : "No sessions yet." })); return; }
     S.history.forEach(function (r) {
-      var live = run.active && run.taskId === r.id;
+      var live = isLive(r.id), needs = !!run.waiting[r.id];
       var sameProject = r.project === "Planning" ? drafting : !!(S && r.projectRoot === S.root);
       var label = r.project && !sameProject ? r.project + " · " + r.goal : r.goal;
       var b = el("button", { cls: "sess" + (view && view.taskId === r.id ? " on" : ""), title: label, onclick: function () { switchToSession(r); } },
         el("div", { cls: "st" }, el("span", { cls: "dot o-" + (live ? "running" : r.outcome) }), el("span", { text: label })),
-        el("div", { cls: "sm", text: (live ? "running" : ago(r.last)) + (r.turns > 1 ? " · " + r.turns + " messages" : "") + " · " + fmt(r.tokens) + " tok" }));
+        el("div", { cls: "sm", text: (needs ? "needs your answer" : live ? "running" : ago(r.last)) + (r.turns > 1 ? " · " + r.turns + " messages" : "") + " · " + fmt(r.tokens) + " tok" }));
       var row = el("div", { cls: "sess-row" }, b);
       // Rename/delete act on whatever project is currently open — only offered for a row that's actually
       // in it, so a click can never silently rename or delete a session in some other project.
@@ -1475,14 +1478,14 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(false); }
   });
   input.addEventListener("blur", function () { setTimeout(closeMention, 150); });
-  function viewingRun() { return !!(view && run.active && (view.pendingNew || (view.taskId && run.taskId === view.taskId))); }
+  function viewingRun() { return !!(view && (view.pendingNew || isLive(view.taskId))); }
   $("compactBtn").onclick = function () {
     if (!view || !view.taskId) return;
     api("/api/compact", { task: view.taskId }).then(function (r) { flash($("savedMsg"), "Compacting " + r.when); showToast("Compact requested — takes effect " + r.when + ". Notes saved to project memory are kept and listed in the summary."); })
       .catch(function (e) { banner("bad", e.message); });
   };
   function renderComposer() {
-    var busy = run.active;
+    var busy = viewingRun();
     var P = S && S.providers && S.providers[S.selection.provider];
     // With no folder open there is no per-repo config to trust, so P.unavailable (which only reflects
     // whether a key/model is configured) isn't enough — fall back to the live readiness check, same
@@ -1496,7 +1499,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     $("sendBtn").disabled = !S || (!!S.root && !S.initialized) || busy || !!(P && P.unavailable) || notReadyNoRoot;
     $("leadTog").checked = !!(S && S.lead);
     input.placeholder = view && view.taskId ? "Ask for a follow-up or a change…" : S && S.root ? "Describe a task…" : "What do you want to build? Let's talk it through…";
-    $("hint").textContent = !S ? "" : busy && !viewingRun() ? "Another task is running — open it from the sidebar to watch or stop it." : P && P.unavailable ? P.unavailable : notReadyNoRoot ? ((R[S.selection.provider] && R[S.selection.provider].detail) || "not signed in — pick a model that's ready") : !S.root ? "Enter to send · No folder needed yet — we'll create one when you're ready" : "Enter to send · Shift+Enter for a new line";
+    $("hint").textContent = !S ? "" : P && P.unavailable ? P.unavailable : notReadyNoRoot ? ((R[S.selection.provider] && R[S.selection.provider].detail) || "not signed in — pick a model that's ready") : !S.root ? "Enter to send · No folder needed yet — we'll create one when you're ready" : "Enter to send · Shift+Enter for a new line";
     if (S && S.root) show($("createProjectBar"), false);
   }
   var attached = [];
@@ -1569,11 +1572,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     // be waiting for it.
     if (!cont) { resetView(null); view.pendingNew = true; show($("welcome"), false); }
     api("/api/run", { task: text, force: !!force, continueTask: cont, maxSteps: Number($("maxSteps").value) || 20, askBeforeCommands: askOn(), isolate: $("isoTog").checked, attachments: attached.map(function (a) { return a.id; }) })
-      .then(function () {
+      .then(function (r) {
+        if (r && r.isolated) showToast("Another task is working in this folder, so this one runs in a separate copy. Apply its changes when it finishes.");
         attached = []; renderAttached();
         input.value = ""; autosize();
         clearChanges();
-        run.active = true; run.taskId = cont;
+        if (cont) run.tasks[cont] = true;
         setWorking("Starting…");
         renderComposer();
       })
@@ -1591,7 +1595,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       });
   }
   $("sendBtn").onclick = function () { send(false); };
-  $("stopBtn").onclick = function () { api("/api/stop", {}).catch(function (e) { banner("bad", e.message); }); };
+  $("stopBtn").onclick = function () { api("/api/stop", { task: view && view.taskId ? view.taskId : undefined }).catch(function (e) { banner("bad", e.message); }); };
 
   function errorCard(m) {
     var head, body, actions = [];
@@ -1664,6 +1668,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (!view || view.taskId !== id) return;
       d.events.forEach(function (e) { renderEvent(e, true); });
       if (d.running) setWorking("Working…"); else loadChanges();
+      // A conversation that was waiting on you while you were elsewhere shows its question again.
+      (d.waiting || []).forEach(function (w) { if (w.type === "approval") onApproval(w); else if (w.type === "question") onQuestion(w); });
       scroller.scrollTop = scroller.scrollHeight;
       renderComposer();
     }).catch(function (e) { banner("bad", e.message); });
@@ -1962,7 +1968,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       var label = el("span", { cls: "ckpt-label", text: m.step === 0 ? "Before any changes" : "After this edit" });
       row.appendChild(label);
       var askBtn = el("button", { cls: "link", text: "Rewind here", onclick: function () {
-        if (run.active) { banner("warn", "Stop the task before rewinding."); return; }
+        if (anyLive()) { banner("warn", "Stop the running task before rewinding."); return; }
         row.replaceChild(confirmRow(), askBtn);
       } });
       function confirmRow() {
@@ -2057,33 +2063,39 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     es = new EventSource("/api/stream?t=" + encodeURIComponent(T));
     es.onmessage = function (msg) {
       var ev = JSON.parse(msg.data);
-      if (ev.type === "start") { run.active = true; run.taskId = ev.continueTask; renderComposer(); renderSessions(); return; }
+      if (ev.type === "start") { if (ev.continueTask) run.tasks[ev.continueTask] = true; renderComposer(); renderSessions(); return; }
       if (ev.type === "event") {
         var id = ev.event.taskId;
-        var newRun = run.taskId !== id;
-        run.taskId = id; run.active = true;
+        var newRun = !run.tasks[id];
+        run.tasks[id] = true;
         if (view && view.pendingNew && !view.taskId) { view.taskId = id; view.pendingNew = false; renderComposer(); }
         if (view && view.taskId === id) renderEvent(ev.event, false);
         if (newRun) load();
         return;
       }
-      var mine = !!(view && run.taskId && view.taskId === run.taskId);
+      // Everything else says which conversation it belongs to (ev.task); only the one on screen is drawn.
+      var mine = !!(view && ev.task && view.taskId === ev.task);
+      if (ev.type === "approval" || ev.type === "question") {
+        if (ev.task) { run.waiting[ev.task] = true; renderSessions(); }
+        if (!mine && native) native.postMessage({ type: "attention", text: ev.type === "approval" ? ev.command : ev.question });
+      }
+      if ((ev.type === "approval_resolved" || ev.type === "question_resolved") && ev.task) { delete run.waiting[ev.task]; renderSessions(); }
       if (ev.type === "approval" && mine) onApproval(ev);
       else if (ev.type === "approval_resolved" && mine) onApprovalResolved(ev);
       else if (ev.type === "question" && mine) onQuestion(ev);
       else if (ev.type === "question_resolved" && mine) onQuestionResolved(ev);
       else if (ev.type === "finished") {
-        run.active = false;
+        delete run.tasks[ev.taskId]; delete run.waiting[ev.taskId];
         var key = ev.taskId + ":" + ev.steps + ":" + ev.outcome;
         if (view && view.taskId === ev.taskId && !view.finished[key]) {
           view.finished[key] = true;
           view.working = null; placeWorking();
           loadChanges();
           if (native) native.postMessage({ type: "finished", text: ev.outcome + ": " + ev.summary });
-        }
+        } else if (native && !(view && view.taskId === ev.taskId)) native.postMessage({ type: "finished", text: ev.outcome + ": " + ev.summary });
         renderComposer(); load(); loadLimits();
       } else if (ev.type === "failed") {
-        run.active = false;
+        if (ev.task) { delete run.tasks[ev.task]; delete run.waiting[ev.task]; }
         if (view && (view.pendingNew || mine)) { view.working = null; placeWorking(); add(el("div", { cls: "notice bad", text: "The run failed: " + ev.error })); view.pendingNew = false; }
         renderComposer(); load();
       }

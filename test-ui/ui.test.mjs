@@ -1179,6 +1179,72 @@ describe("sidebar sessions are merged across recent projects, like Claude.ai's s
   });
 });
 
+describe("several conversations running at once, like the Claude app (stand-in model, no network)", () => {
+  let home, repo, repoB, fakeDir, app;
+  const gitIn = (dir, ...a) => execFileSync("git", a, { cwd: dir, stdio: "ignore" });
+  before(async () => {
+    home = fresh("home"); repo = fresh("repo"); repoB = fresh("repoB"); fakeDir = fresh("fake");
+    for (const d of [repo, repoB]) {
+      gitIn(d, "init", "-q", "-b", "main"); gitIn(d, "config", "user.email", "t@t.t"); gitIn(d, "config", "user.name", "t");
+      writeFileSync(join(d, "a.txt"), "hi\n"); gitIn(d, "add", "-A"); gitIn(d, "commit", "-qm", "init");
+      execFileSync(process.execPath, [BIN, "init"], { cwd: d, stdio: "ignore", env: { ...process.env, HOME: home } });
+    }
+    writeFileSync(join(fakeDir, "replies.json"), JSON.stringify([
+      JSON.stringify({ action: "ask", question: "Which colour?", options: ["red", "blue"] }), // task A waits here
+      JSON.stringify({ action: "done", summary: "finished" }),
+    ]));
+    writeFileSync(join(fakeDir, "claude"), `#!/usr/bin/env node
+const fs = require("fs"); const d = ${JSON.stringify(fakeDir)};
+const c = d + "/count"; const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
+const r = JSON.parse(fs.readFileSync(d + "/replies.json", "utf8")); const text = r[Math.min(n, r.length - 1)];
+const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+console.log(JSON.stringify({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
+`, { mode: 0o755 });
+    app = await startApp({ cwd: repo, home, env: { NARROWBIT_CLAUDE: join(fakeDir, "claude") } });
+  });
+  after(() => { app?.stop(); for (const d of [home, repo, repoB, fakeDir]) rmSync(d, { recursive: true, force: true }); });
+
+  test("a second task starts while the first waits, other folders can be opened meanwhile, and each run is answered on its own", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const post = (path, b) => fetch(`${app.base}${path}`, { method: "POST", headers: H, body: JSON.stringify(b) });
+    const state = () => fetch(`${app.base}/api/state`, { headers: H }).then((r) => r.json());
+    const events = [];
+    const ctl = new AbortController();
+    const stream = await fetch(`${app.base}/api/stream?t=${app.token}`, { signal: ctl.signal });
+    const reader = stream.body.getReader();
+    let buf = "";
+    (async () => { try { for (;;) { const { value, done } = await reader.read(); if (done) break; buf += new TextDecoder().decode(value); let i; while ((i = buf.indexOf("\n\n")) >= 0) { const chunk = buf.slice(0, i); buf = buf.slice(i + 2); const m = /^data: (.*)$/m.exec(chunk); if (m) events.push(JSON.parse(m[1])); } } } catch {} })();
+    const until = async (pred, what) => { for (let i = 0; i < 200; i++) { const hit = events.find(pred); if (hit) return hit; await new Promise((r) => setTimeout(r, 100)); } throw new Error("timed out: " + what); };
+
+    assert.equal((await post("/api/models", { provider: "claude", effort: "medium", tiers: { explore: "haiku", execute: "sonnet", escalate: "opus" }, lead: false })).status, 200);
+    const a = await post("/api/run", { task: "task A: choose a colour", askBeforeCommands: false });
+    assert.equal(a.status, 200, await a.clone().text());
+    const q = await until((e) => e.type === "question", "A's question");
+    assert.ok(q.run && q.task, "every stream event says which run and conversation it belongs to");
+    const taskA = q.task;
+
+    // A is waiting on the user. A second task in the same folder is allowed (it runs in a separate copy).
+    const b = await post("/api/run", { task: "task B: say hi", askBeforeCommands: false });
+    assert.equal(b.status, 200, await b.clone().text());
+    assert.equal((await b.json()).isolated, true, "a second task in a busy folder works in a separate copy");
+    const finB = await until((e) => e.type === "finished" && e.taskId !== taskA, "B to finish while A still waits");
+    assert.equal(finB.outcome, "done");
+    assert.ok((await state()).runningTasks.includes(taskA), "A is still running");
+
+    // Opening a different folder no longer needs the running task to stop.
+    const sw = await post("/api/repo", { path: repoB });
+    assert.equal(sw.status, 200, await sw.clone().text());
+    assert.ok((await state()).runningTasks.includes(taskA), "A keeps running after switching folders");
+
+    // The question is still answerable, and the run ends.
+    assert.equal((await post("/api/answer", { id: q.id, answer: "blue" })).status, 200);
+    const finA = await until((e) => e.type === "finished" && e.taskId === taskA, "A to finish");
+    assert.equal(finA.outcome, "done");
+    ctl.abort();
+  });
+});
+
 describe("the agent asking the user a question in the app (stand-in model, no network)", () => {
   let home, repo, fakeDir, app;
   const git = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
