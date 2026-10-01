@@ -121,6 +121,7 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .ckpt { display: flex; align-items: center; gap: 8px; padding: 2px 2px 2px 14px; font-size: 12px; color: var(--faint); opacity: .45; transition: opacity .12s; }
 .ckpt:hover, .ckpt:focus-within { opacity: 1; }
 .ckpt-label { font-family: inherit; }
+.blocked-tag { display: inline-block; font-size: 12px; font-weight: 600; color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); border-radius: 6px; padding: 1px 8px; margin: 14px 0 2px; }
 .ckpt-confirm { display: flex; align-items: center; gap: 6px; }
 .sess.on { background: var(--panel); box-shadow: var(--shadow); }
 .sess .st { display: flex; gap: 7px; align-items: center; font-size: 13px; }
@@ -1950,7 +1951,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       add(el("div", { cls: "final-wrap" }, el("div", { cls: "final" }, rich(answer)), el("div", { cls: "msg-actions" }, ansCopy, saveSk)));
       return;
     }
-    if (e.type === "blocker" && e.actor === "model") { add(el("div", { cls: "final", style: "color:var(--warn)" }, rich("Blocked: " + e.summary))); return; }
+    if (e.type === "blocker" && e.actor === "model") { add(el("div", { cls: "final-wrap" }, el("div", { cls: "blocked-tag", text: "Couldn't finish" }), el("div", { cls: "final" }, rich(String(e.summary).replace(/^Blocked:\s*/i, ""))))); return; }
     if (e.type === "decision" && typeof m.outcome === "string") {
       view.working = null; placeWorking();
       var LBL = { done: "Done", blocked: "Blocked", error: "Error", stopped: "Stopped", max_steps: "Step budget reached" };
@@ -1972,6 +1973,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (e.type === "handoff") { add(el("div", { cls: "divider", text: m.manual ? e.summary : "context compacted — continuing in a fresh session" })); return; }
     if (e.type === "checkpoint") {
       if (e.actor === "user") { add(el("div", { cls: "divider", text: e.summary })); return; }
+      if (/end of task/.test(e.summary)) return;   // bookkeeping for Discard; "after this edit" would be wrong for it
       var row = el("div", { cls: "ckpt" });
       var label = el("span", { cls: "ckpt-label", text: m.step === 0 ? "Before any changes" : "After this edit" });
       row.appendChild(label);
@@ -2002,6 +2004,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         : sm.indexOf("done rejected: ") === 0 ? "Not done yet — " + sm.slice(15)
         : /without an edit/.test(sm) ? "Spinning on the same failing check — nudged toward the implementation"
         : sm;
+      if (parse && Number(parse[1]) < 2) return;   // the first retry usually fixes itself; only say something if it keeps happening
       add(el("div", { cls: "notice" + (/model call failed/.test(sm) ? " bad" : parse ? "" : " warn") }, rich(txt)));
       return;
     }
