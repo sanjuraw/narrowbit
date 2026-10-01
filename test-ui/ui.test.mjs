@@ -157,6 +157,13 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.ok(st.providers.cloudflare.baseUrl.includes(id), "endpoint uses the saved id");
   });
 
+  test("the CLI update endpoint only ever updates Codex or Claude", async () => {
+    const post = (b) => fetch(`${app.base}/api/update-cli`, { method: "POST", headers: { "x-narrowbit-token": app.token, "content-type": "application/json" }, body: JSON.stringify(b) });
+    assert.equal((await post({ provider: "openrouter" })).status, 400);
+    assert.equal((await post({ provider: "npm install evil" })).status, 400);
+    assert.equal((await post({})).status, 400);
+  });
+
   test("after an update the app says what it brought, in detail, until it is dismissed", async () => {
     mkdirSync(join(home, ".narrowbit"), { recursive: true });
     const file = join(home, ".narrowbit", "last-update.json");

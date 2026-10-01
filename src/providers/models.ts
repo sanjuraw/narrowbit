@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileS
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { sh } from "../util.js";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { getKey } from "../keys.js";
 
 /**
@@ -320,6 +320,79 @@ export function claudeCliModels(bin: string | null = claudeBinPath()): string[] 
   return ids;
 }
 
+/**
+ * How many tokens of context a model can hold — what "95% full" is measured against. Discovered where the provider
+ * says so (Codex's catalog `context_window`; `context_length`/`max_model_len` from an API's /models list), remembered
+ * on disk, and otherwise a deliberately CONSERVATIVE guess: a window guessed too small only compacts a little early,
+ * one guessed too large overflows. The user can pin it with `agent.contextWindow` in .narrowbit/config.json.
+ */
+const WINDOW_CACHE = () => join(homedir(), ".narrowbit", "cache", "context-windows.json");
+let windowMem: Record<string, number> | null = null;
+
+function loadWindows(): Record<string, number> {
+  if (windowMem) return windowMem;
+  try {
+    windowMem = JSON.parse(readFileSync(WINDOW_CACHE(), "utf8"));
+  } catch {
+    windowMem = {};
+  }
+  return windowMem!;
+}
+
+export function rememberContextWindows(provider: string, windows: Record<string, number>): void {
+  const all = loadWindows();
+  let changed = false;
+  for (const [model, n] of Object.entries(windows)) {
+    if (Number.isFinite(n) && n >= 4096 && all[`${provider}|${model}`] !== n) {
+      all[`${provider}|${model}`] = n;
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  try {
+    mkdirSync(dirname(WINDOW_CACHE()), { recursive: true, mode: 0o700 });
+    writeFileSync(WINDOW_CACHE(), JSON.stringify(all), { mode: 0o600 });
+  } catch {
+    /* the cache is optional */
+  }
+}
+
+/** Heuristic windows by provider and model name — used only when nothing was discovered. */
+export function guessContextWindow(provider: string, model: string): number {
+  const m = model.toLowerCase();
+  if (/\[1m\]|-1m\b/.test(m)) return 1_000_000;
+  if (provider === "codex") return 272_000;
+  if (/gemini/.test(m)) return 1_000_000;
+  if (/claude|sonnet|opus|haiku|fable/.test(m) || provider === "claude") return 200_000;
+  if (/gpt-oss/.test(m)) return 128_000;
+  return 128_000;
+}
+
+export function contextWindowFor(provider: string, model: string, agent?: AgentConfig): number {
+  const pinned = (agent as { contextWindow?: number } | undefined)?.contextWindow;
+  if (typeof pinned === "number" && pinned >= 4096) return pinned;
+  const known = loadWindows()[`${provider}|${model}`];
+  if (known) return known;
+  if (provider === "codex") {
+    // One ~0.3s read of the Codex CLI's own catalog, then remembered.
+    const r = sh(process.env.NARROWBIT_CODEX ?? "codex", ["debug", "models"], process.cwd());
+    try {
+      const d = JSON.parse(r.stdout);
+      const list: any[] = Array.isArray(d) ? d : (d.models ?? []);
+      const found: Record<string, number> = {};
+      for (const x of list) if (typeof x?.slug === "string" && typeof x?.context_window === "number") found[x.slug] = x.context_window;
+      rememberContextWindows("codex", found);
+      if (found[model]) return found[model]!;
+    } catch {
+      /* fall through to the guess */
+    }
+  }
+  return guessContextWindow(provider, model);
+}
+
+/** Compact at this fraction of the window: the same 95% Codex's own catalog uses as its "effective" window. */
+export const COMPACT_AT = 0.95;
+
 /** Newest published version of an npm package, cached for 12 hours (checked with a 5s limit; null when offline). */
 export function latestNpmVersion(pkg: string, nowMs = Date.now()): string | null {
   const cacheFile = join(homedir(), ".narrowbit", "cache", "npm-latest.json");
@@ -355,6 +428,29 @@ export function isNewerVersion(installed: string, latest: string): boolean {
 function updateHint(pkg: string, installed: string, how: string): string {
   const latest = installed ? latestNpmVersion(pkg) : null;
   return latest && isNewerVersion(installed, latest) ? ` — ${latest} is available: ${how}` : "";
+}
+
+/** The command that updates a subscription CLI — only these two, fixed, never anything the page or a repo supplies. */
+export function updateCliCommand(provider: string): { cmd: string; args: string[] } | null {
+  if (provider === "codex") return { cmd: "npm", args: ["install", "-g", "@openai/codex"] };
+  if (provider === "claude") return { cmd: claudeBinPath() ?? "claude", args: ["update"] };
+  return null;
+}
+
+/** Run that update (3 minutes at most). Resolves with the tail of its output either way; never throws. */
+export function updateCli(provider: string): Promise<{ ok: boolean; output: string }> {
+  const c = updateCliCommand(provider);
+  if (!c) return Promise.resolve({ ok: false, output: "that provider has no CLI to update" });
+  return new Promise((resolve) => {
+    let out = "";
+    const child = spawn(c.cmd, c.args, { stdio: ["ignore", "pipe", "pipe"] });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 180_000);
+    const take = (d: Buffer) => { out = (out + d.toString()).slice(-1500); };
+    child.stdout.on("data", take);
+    child.stderr.on("data", take);
+    child.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, output: e.message }); });
+    child.on("close", (code) => { clearTimeout(timer); resolve({ ok: code === 0, output: out.trim() }); });
+  });
 }
 
 /** The installed Claude Code's version, read from its npm package.json next to the binary — without running the CLI.
@@ -428,6 +524,7 @@ export async function availableModels(provider: ProviderName, agent?: AgentConfi
       const list: any[] = Array.isArray(d) ? d : (d.models ?? []);
       const shown = list.filter((m) => m?.visibility !== "hide" && typeof m?.slug === "string");
       const labels = Object.fromEntries(shown.map((m) => [m.slug, [m.display_name, m.description].filter(Boolean).join(" — ")]));
+      rememberContextWindows("codex", Object.fromEntries(list.filter((m) => typeof m?.slug === "string" && typeof m?.context_window === "number").map((m) => [m.slug as string, m.context_window as number])));
       const version = sh(process.env.NARROWBIT_CODEX ?? "codex", ["--version"], process.cwd()).stdout.trim();
       // The catalog ships with the CLI, so an old CLI lists old models.
       const v = version.match(/\d+\.\d+\.\d+/)?.[0] ?? "";
@@ -476,6 +573,12 @@ export async function availableModels(provider: ProviderName, agent?: AgentConfi
     const models = [...new Set(ids.map((id) => id.replace(/^models\//, "")))].sort((a, b) => a.localeCompare(b));
     const labels: Record<string, string> = {};
     for (const m of list) if (m?.id && m?.name && m.name !== m.id) labels[String(m.id).replace(/^models\//, "")] = String(m.name);
+    const windows: Record<string, number> = {};
+    for (const m of list) {
+      const n = Number(m?.context_length ?? m?.max_model_len ?? m?.context_window ?? m?.max_context_length ?? m?.top_provider?.context_length);
+      if (m?.id && n > 0) windows[String(m.id).replace(/^models\//, "")] = n;
+    }
+    rememberContextWindows(provider, windows);
     return { models, free: free.sort((a, b) => a.localeCompare(b)), labels, note: `from ${label}` };
   } catch (e: any) {
     const down = PROVIDER_INFO[provider].kind === "local" ? ` — is ${label} running?` : "";

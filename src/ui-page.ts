@@ -554,6 +554,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       </div>
     </div>
     <div class="note hidden" id="providerNote"></div>
+    <div class="hidden" id="providerUpdate"></div>
     <div class="saved" id="savedMsg"></div>
 
     <h3>GitHub<small>Where "Push" sends your commits, and who it counts as</small></h3>
@@ -1303,6 +1304,20 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (list && (!list.models.length || / is available: /.test(list.note || ""))) notes.push(list.note);
     if (S.selectionError) notes.push(S.selectionError);
     $("providerNote").textContent = notes.join(" "); show($("providerNote"), notes.length > 0);
+    var upd = clear($("providerUpdate"));
+    var canUpdate = list && / is available: /.test(list.note || "") && (draft.provider === "codex" || draft.provider === "claude");
+    show($("providerUpdate"), !!canUpdate);
+    if (canUpdate) {
+      var ub = el("button", { id: "updateCliBtn", cls: "primary", text: "Update " + S.providers[draft.provider].label + " now" });
+      ub.onclick = function () {
+        if (ub.dataset.sure !== "1") { ub.dataset.sure = "1"; ub.textContent = "Click again to update (takes a minute)"; return; }
+        ub.disabled = true; ub.textContent = "Updating…";
+        api("/api/update-cli", { provider: draft.provider }).then(function () {
+          delete modelLists[draft.provider]; loadModelList(draft.provider); flash($("savedMsg"), "Updated — new models are loaded");
+        }).catch(function (e) { ub.disabled = false; ub.dataset.sure = ""; ub.textContent = "Update " + S.providers[draft.provider].label + " now"; flash($("savedMsg"), e.message); });
+      };
+      upd.appendChild(ub);
+    }
     var t = S.selection.tiers, lbl = S.providers[S.selection.provider].label;
     var line = lbl + " · " + (t.explore || "?") + " / " + (t.execute || "?") + " / " + (t.escalate || "?");
     $("settingsSub").textContent = line;
@@ -1930,6 +1945,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
             api("/api/rewind", { task: view.taskId, checkpoint: e.id }).then(function (r) {
               if (r.movedTo) add(el("div", { cls: "notice" }, "Rewound — " + r.message + " ", recoveredButton(r.movedTo)));
               else showToast("Rewound — " + r.message);
+              // The folder just changed under the Changes card and the git status: show the new state, not the old one.
+              loadChanges(); load();
             }).catch(function (er) { banner("bad", er.message); });
           } }),
           el("button", { cls: "link", text: "Cancel", onclick: function () { row.replaceChild(askBtn, row.lastChild); } }));
@@ -2146,6 +2163,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       // Discard undoes this task only. The first click asks the server what that means right now and shows it —
       // exactly which files go back, which move aside, which are left alone — and only the second click acts.
       var discardPlan = el("div", { cls: "discard-plan hidden" });
+      var includeReview = false;
       var disarm = function () { armed = null; discard.classList.remove("armed"); discard.textContent = "Discard"; show(discardPlan, false); };
       var listLine = function (label, files) {
         if (!files.length) return null;
@@ -2155,13 +2173,20 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         if (!armed) {
           api("/api/discard", { task: id, preview: true }).then(function (pl) {
             clear(discardPlan);
-            if (!pl.restore.length && !pl.remove.length) {
+            if (!pl.restore.length && !pl.remove.length && !pl.review.length) {
               discardPlan.appendChild(el("div", { text: pl.skipped.length ? "Nothing to undo: every file this task changed has changed again since, so it's left as it is." : "Nothing to undo — this task left no changes." }));
               show(discardPlan, true);
               return;
             }
-            [listLine("Put back as before the task", pl.restore), listLine("Move to .narrowbit/rewind-trash (created by the task)", pl.remove), listLine("Leave alone (changed again after the task)", pl.skipped)]
+            [listLine("Put back as before the task", pl.restore), listLine("Move aside (created by the agent's edits)", pl.remove), listLine("Leave alone (changed again after the task)", pl.skipped)]
               .forEach(function (n) { if (n) discardPlan.appendChild(n); });
+            includeReview = false;
+            if (pl.review.length) {
+              discardPlan.appendChild(listLine("Changed during the task, but not by the agent's edits — left alone", pl.review));
+              discardPlan.appendChild(el("label", { cls: "discard-include" }, el("input", { type: "checkbox", id: "discardInclude", onchange: function () { includeReview = this.checked; } }), " Also undo these (they may be a command's output — or your own edits)"));
+            }
+            discardPlan.appendChild(el("div", { text: "Copies of anything replaced are kept in .narrowbit/rewind-trash for 14 days." }));
+            if (!pl.restore.length && !pl.remove.length) { show(discardPlan, true); armed = setTimeout(disarm, 8000); discard.classList.add("armed"); discard.textContent = pl.review.length ? "Click again to undo the checked files" : "Click again to discard"; return; }
             show(discardPlan, true);
             discard.classList.add("armed"); discard.textContent = "Click again to discard";
             armed = setTimeout(disarm, 8000);
@@ -2169,7 +2194,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
           return;
         }
         clearTimeout(armed); armed = null;
-        api("/api/discard", { task: id }).then(function (r) {
+        api("/api/discard", { task: id, includeReview: includeReview }).then(function (r) {
           banner("", null); show(discardPlan, false);
           finishCard(card, r.message.charAt(0).toUpperCase() + r.message.slice(1) + ".");
           if (r.movedTo) card.appendChild(recoveredButton(r.movedTo));

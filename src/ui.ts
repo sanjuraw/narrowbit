@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { attachmentDir, attachmentKind, saveAttachment } from "./attachments.js";
 import { suggestFiles } from "./mentions.js";
@@ -43,6 +43,7 @@ import { acknowledgeUpdateNotes, applyUpdate, checkUpdate, pendingUpdateNotes, r
 import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
 import { sh } from "./util.js";
+import { updateCli } from "./providers/models.js";
 import { trustRepo, untrustedReason } from "./trust.js";
 import { discardTask, planDiscard } from "./checkpoints.js";
 
@@ -906,6 +907,14 @@ export function startUi(opts: UiOptions) {
             return json(res, 400, { error: e.message });
           }
         }
+        case "/api/update-cli": {
+          // Updates the provider's own CLI (npm install -g @openai/codex / claude update) — the one place new models come from.
+          const prov = String(body.provider ?? "");
+          if (prov !== "codex" && prov !== "claude") return json(res, 400, { error: "only the Codex and Claude CLIs can be updated here" });
+          if (run?.running) return json(res, 409, { error: "Stop the running task before updating." });
+          const r = await updateCli(prov);
+          return json(res, r.ok ? 200 : 500, r.ok ? { ok: true, output: r.output } : { error: "The update failed: " + r.output.slice(-400) });
+        }
         case "/api/limits/refresh": {
           await Promise.all([refreshClaude(), refreshCodex()]);
           return json(res, 200, readLimits());
@@ -1076,8 +1085,16 @@ export function startUi(opts: UiOptions) {
           const cps = listCheckpoints(paths(root), taskId);
           if (cps.length < 2) return json(res, 409, { error: "This task has no record of its changes to undo (it made none, or it predates change tracking). Use Rewind, or git, to revert by hand." });
           const start = cps[0].commit, end = cps[cps.length - 1].commit;
-          if (body.preview === true) return json(res, 200, { preview: true, ...planDiscard(root, start, end) });
-          const r = discardTask(root, start, end);
+          // Only files the agent's own edit actions changed count as the agent's. Anything else that differs between
+          // the task's first and last checkpoint (a command's output, or the user working at the same time) is shown,
+          // not reverted, unless the user explicitly includes it.
+          const agentPaths = new Set<string>();
+          for (const e of readEvents(paths(root), taskId)) {
+            if (e.type === "edit" && typeof e.meta?.path === "string") agentPaths.add(relative(root, resolve(root, e.meta.path)).split("\\").join("/"));
+          }
+          const opts = { agentPaths, includeReview: body.includeReview === true };
+          if (body.preview === true) return json(res, 200, { preview: true, ...planDiscard(root, start, end, opts) });
+          const r = discardTask(root, start, end, opts);
           if (!r.ok) return json(res, 500, { error: r.message });
           return json(res, 200, r);
         }

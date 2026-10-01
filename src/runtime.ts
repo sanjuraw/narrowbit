@@ -20,13 +20,13 @@ import { classifyModelError, isPermanentModelError } from "./errors.js";
 import { callModel, type ModelCallOptions, type ModelCallResult } from "./providers/claude-cli.js";
 import { callCodex } from "./providers/codex-cli.js";
 import { callAntigravity } from "./providers/antigravity-cli.js";
-import { DEFAULT_TIERS, resolveEndpoint, resolveSelection, unavailableReason, type ModelTiers, type ProviderName } from "./providers/models.js";
+import { COMPACT_AT, contextWindowFor, DEFAULT_TIERS, resolveEndpoint, resolveSelection, unavailableReason, type ModelTiers, type ProviderName } from "./providers/models.js";
 import { callOpenAICompat, hasSession } from "./providers/openai-compat.js";
 import { redact } from "./redact.js";
 import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
 import { termsOf } from "./terms.js";
-import { estimateTokens, sh, shortId } from "./util.js";
+import { estimateTokens, sh, shortId, isGitInternal, isNarrowbitOwn, realRel } from "./util.js";
 import { verify } from "./verify.js";
 
 /**
@@ -301,13 +301,6 @@ export function capSummary(text: string, capTokens = 800): string {
 }
 
 /** Refuse any path that would escape the repo root. */
-/**
- * True for anything inside a `.git` directory at any depth (nested repos and submodules included), in any
- * letter case — macOS's default filesystem treats `.GIT/config` as `.git/config`. Git executes settings from
- * there (`core.fsmonitor`, `core.hooksPath`, hooks) on the very next git command, and Narrowbit runs git
- * constantly (checkpoints, status, diffs), so a single edit there is arbitrary code execution that never
- * passes through command approval. Reads are refused too: `.git/config` can hold credentials in remote URLs.
- */
 /** Files that define what a build/test command runs: edit one, and `npm test` / `pytest` / `make` now runs
  * something the user never saw when they approved that command text. */
 const SCRIPT_FILES = new Set(["package.json", "pyproject.toml", "setup.py", "setup.cfg", "tox.ini", "noxfile.py", "conftest.py", "pytest.ini", "makefile", "gnumakefile", "justfile", "taskfile.yml", "taskfile.yaml", "rakefile", "cargo.toml", "build.rs", ".npmrc", "deno.json", "deno.jsonc", "bunfig.toml"]);
@@ -326,9 +319,7 @@ export function scriptWarning(command: string, edited: Iterable<string>): string
   return `The agent edited ${hits.slice(0, 4).join(", ")}${hits.length > 4 ? ` and ${hits.length - 4} more` : ""} during this task, which can change what this command actually runs — check the diff before allowing it.`;
 }
 
-export function isGitInternal(relPath: string): boolean {
-  return relPath.split(/[\\/]+/).some((seg) => seg.toLowerCase() === ".git");
-}
+export { isGitInternal };
 
 export function safeAbsPath(p: Paths, path: string): string | null {
   const abs = resolve(p.root, path);
@@ -518,7 +509,10 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   indexRepo(p, store);
   const maxSteps = opts.maxSteps ?? 20;
   const role = opts.role ?? "execution";
-  const compactThreshold = opts.compactThreshold ?? cfg.budget.max;
+  // Default: compact when the conversation fills 95% of the model's own context window (measured on the whole
+  // request, the provider's own overhead included, since that is what the window holds). An explicit
+  // `compactThreshold` keeps the old fixed-size meaning (tests, benchmarks, tuning for cost rather than fit).
+  const compactThreshold = opts.compactThreshold;
   const log = opts.log ?? (() => {});
   // Zero-cost when no connectors are configured (listConnectors() is a sync file read, no
   // subprocess spawned); otherwise one discovery call per connector at task start, not per turn —
@@ -663,7 +657,11 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     // way; resume only if those instructions are still the current ones.
     const lastCallAt = prior.lastIndexOf(last as Event);
     const compactedSince = prior.some((e, i) => i > lastCallAt && e.type === "handoff");
-    const resumable = !compactedSince && lastSession && last?.meta?.provider === provider && last?.meta?.instr === INSTRUCTIONS_ID && (provider === "claude" || hasSession(lastSession));
+    // A follow-up must not resume a conversation that is already at the edge of its window.
+    const lastCtx = Number(last?.meta?.contextTokens ?? 0);
+    const lastModel = String(last?.meta?.model ?? "");
+    const nearlyFull = lastCtx > 0 && lastCtx >= Math.floor(contextWindowFor(provider, lastModel, cfg.agent) * COMPACT_AT);
+    const resumable = !compactedSince && !nearlyFull && lastSession && last?.meta?.provider === provider && last?.meta?.instr === INSTRUCTIONS_ID && (provider === "claude" || hasSession(lastSession));
     if (resumable) {
       sessionId = lastSession;
       freshSessionPending = false;
@@ -789,7 +787,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         outputTokens: res.usage.output,
         costUsd: callCost,
       },
-      meta: { sessionId, sessionCost: totalCost, provider, instr: INSTRUCTIONS_ID, out: outputShape(res), context: { parts: nextParts, tokens: nextParts.reduce((a, x) => a + x.tokens, 0) } },
+      meta: { sessionId, model: turnModel, contextTokens: res.usage.input + res.usage.cacheCreate + res.usage.cacheRead, sessionCost: totalCost, provider, instr: INSTRUCTIONS_ID, out: outputShape(res), context: { parts: nextParts, tokens: nextParts.reduce((a, x) => a + x.tokens, 0) } },
     });
     if (res.isError) {
       appendEvent(p, taskId, { actor: "system", type: "blocker", summary: `model call failed: ${res.errorMessage ?? "unknown error"}` });
@@ -1002,7 +1000,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     // task compacted (lost its conversation) almost every step, re-read the same files and rarely reached an edit.
     if (wasFresh) providerOverhead = Math.max(0, contextTokens - sentEstimate);
     const manualCompact = !!opts.compactNow?.();
-    if (manualCompact || contextTokens - providerOverhead >= compactThreshold) {
+    const window = contextWindowFor(provider, turnModel, cfg.agent);
+    const autoCompact = compactThreshold !== undefined ? contextTokens - providerOverhead >= compactThreshold : contextTokens >= Math.floor(window * COMPACT_AT);
+    if (manualCompact || autoCompact) {
       const previousSessionId = sessionId;
       sessionId = randomUUID();
       freshSessionPending = true;
@@ -1012,8 +1012,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       appendEvent(p, taskId, {
         actor: manualCompact ? "user" : "system",
         type: "handoff",
-        summary: manualCompact ? `you compacted this chat after ${steps + 1} turn(s) — continuing in a fresh session` : `compacted after ${steps + 1} turn(s), ~${contextTokens} context tokens — starting a new session`,
-        meta: { previousSessionId, contextTokens, manual: manualCompact },
+        summary: manualCompact ? `you compacted this chat after ${steps + 1} turn(s) — continuing in a fresh session` : `compacted after ${steps + 1} turn(s) — context ${contextTokens} of ${window} tokens (${Math.round((contextTokens / window) * 100)}%), starting a new session`,
+        meta: { previousSessionId, contextTokens, window, manual: manualCompact },
       });
       log(`      ~ compacted (${contextTokens} context tokens) — new session`);
       nextParts = [part("digest", "summary after compacting the session", digest), ...resultParts, part("instructions", "Narrowbit's instructions (resent to the new session)", systemPrompt)];
@@ -1164,7 +1164,10 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path, testFirst: true } });
         return text;
       }
-      if (/^\.narrowbit(ignore$|\/)/.test(relative(p.root, abs ?? ""))) {
+      // Judged by what the path really is, not how it's spelled: a symlink (to the file, or to a directory above it)
+      // would otherwise reach .narrowbit/config.json — where the agent could change provider routing — or the ignore file.
+      const realOfAbs = abs ? realRel(p.root, abs) : null;
+      if (isNarrowbitOwn(relative(p.root, abs ?? "")) || (realOfAbs !== null && isNarrowbitOwn(realOfAbs))) {
         const text = `edit ${path}: refused — that's Narrowbit's own file, not part of the task`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
         return text;

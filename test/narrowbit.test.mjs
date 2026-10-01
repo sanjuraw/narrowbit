@@ -937,6 +937,116 @@ describe("CLI: `narrowbit agent`'s \"files changed\" summary", () => {
   });
 });
 
+describe("fifth Codex review: checkpoint hooks, symlinked protected paths and directories, Discard attribution", () => {
+  test("automatic checkpoints don't run the repo's reference-transaction hook", async () => {
+    const { checkpointNow } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    const m = join(tmpdir(), `nb-reftx-${process.pid}-${Date.now()}`);
+    try {
+      writeFileSync(join(root, ".git", "hooks", "reference-transaction"), `#!/bin/sh\ntouch ${m}\n`, { mode: 0o755 });
+      checkpointNow(p, "rt-hk", 0, "start");
+      assert.ok(!existsSync(m), "git update-ref (the checkpoint's pinning ref) must not run the repo's hook");
+      execFileSync("git", ["update-ref", "refs/test/x", "HEAD"], { cwd: root });
+      assert.ok(existsSync(m), "control: plain git does run it, so the test is live");
+    } finally { rmSync(root, { recursive: true, force: true }); if (existsSync(m)) rmSync(m); }
+  });
+
+  test("a symlink can't be used to edit Narrowbit's own config or ignore file", async () => {
+    const { root, p } = tinyRepo();
+    const cfgPath = join(root, ".narrowbit", "config.json");
+    const before = readFileSync(cfgPath, "utf8");
+    const old = before.match(/"version": \d+/)?.[0];
+    assert.ok(old, "sanity: the config has a version line to edit");
+    writeFileSync(join(root, ".narrowbitignore"), "# mine\n");
+    symlinkSync(".narrowbit/config.json", join(root, "settings.json"));
+    symlinkSync(".narrowbit", join(root, "tools"));
+    symlinkSync(".narrowbitignore", join(root, "ignore.txt"));
+    const fake = fakeClaude([
+      JSON.stringify({ action: "edit", path: "settings.json", old, new: '"version": 9' }),
+      JSON.stringify({ action: "edit", path: "tools/config.json", old, new: '"version": 9' }),
+      JSON.stringify({ action: "edit", path: "ignore.txt", old: "# mine", new: "# pwned" }),
+      JSON.stringify({ action: "done", summary: "done" }),
+    ]);
+    try {
+      const r = await runTask(p, "tidy", { claudeBin: fake.bin, boss: false, maxSteps: 8 });
+      assert.equal(readFileSync(cfgPath, "utf8"), before, "config untouched");
+      assert.equal(readFileSync(join(root, ".narrowbitignore"), "utf8"), "# mine\n", "ignore file untouched");
+      const refused = readEvents(p, r.taskId).filter((e) => /Narrowbit's own file/.test(e.summary ?? ""));
+      assert.equal(refused.length, 3, "all three aliases refused for what they point at");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("indexing doesn't follow a symlinked DIRECTORY out of the project", async () => {
+    const { listFiles } = await dist("files.js");
+    const { root, p } = tinyRepo();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-outdir-")));
+    try {
+      mkdirSync(join(root, "lib"));
+      writeFileSync(join(root, "lib", "util.ts"), "export const fine = 1;\n");
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], { cwd: root });
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "lib"], { cwd: root });
+      writeFileSync(join(outside, "util.ts"), "export const outsideSecret = 'NB-DIR-SECRET-5521';\n");
+      rmSync(join(root, "lib"), { recursive: true });
+      symlinkSync(outside, join(root, "lib"));
+      assert.ok(execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" }).includes("lib/util.ts"), "sanity: git still lists the tracked path");
+      assert.ok(!listFiles(p).includes("lib/util.ts"), "but it resolves outside the project, so it isn't indexed");
+      nb(root, "index");
+      // (match the file's own content, not the query: "no matches for <query>" echoes what was asked)
+      const out = nb(root, "search", "outsideSecret") + nb(root, "grep", "NB-DIR-SECRET-5521") + nb(root, "symbol", "outsideSecret");
+      assert.doesNotMatch(out, /export const outsideSecret|5521'/, "nothing from the outside file comes back");
+      const { fileRangeText } = await dist("query.js");
+      assert.doesNotMatch(fileRangeText(p, "lib/util.ts", 1, 5), /5521/, "nb_lines' reader refuses it too");
+      assert.equal(fileRangeText(p, "../outside.txt", 1, 5).split("\n").slice(1).join(""), "", "and anything that resolves outside the project, or into .git");
+      assert.equal(fileRangeText(p, ".git/config", 1, 20).split("\n").slice(1).join(""), "");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  test("Discard only undoes what the agent's own edits changed; other changes are left for the user to decide, and nothing is overwritten without a copy", async () => {
+    const { checkpointNow, listCheckpoints, planDiscard, discardTask } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    const w = (f, t) => { mkdirSync(dirname(join(root, f)), { recursive: true }); writeFileSync(join(root, f), t); };
+    const r = (f) => readFileSync(join(root, f), "utf8");
+    try {
+      w("user.txt", "user's file\n"); execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], { cwd: root }); execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "u"], { cwd: root });
+      checkpointNow(p, "rt-at", 0, "start");
+      w("a.txt", "the agent's edit\n");                 // by an edit action
+      w("agent-new.txt", "created by an edit action\n");
+      w("user.txt", "user's file, edited by me while the task ran\n");  // concurrent, not by the agent
+      w("generated.txt", "written by a command\n");     // by a run action
+      checkpointNow(p, "rt-at", 9, "end of task");
+      const cps = listCheckpoints(p, "rt-at");
+      const agent = new Set(["a.txt", "agent-new.txt"]);
+      const plan = planDiscard(root, cps[0].commit, cps[1].commit, { agentPaths: agent });
+      assert.deepEqual([plan.restore, plan.remove], [["a.txt"], ["agent-new.txt"]]);
+      assert.deepEqual(plan.review.sort(), ["generated.txt", "user.txt"], "changed during the task but not by an edit: could be a command or the user");
+      const res = discardTask(root, cps[0].commit, cps[1].commit, { agentPaths: agent });
+      assert.ok(res.ok, res.message);
+      assert.equal(r("a.txt"), "hello\n", "the agent's edit is undone");
+      assert.equal(r("user.txt"), "user's file, edited by me while the task ran\n", "the user's concurrent edit is NOT reverted");
+      assert.equal(r("generated.txt"), "written by a command\n", "a command's output is left alone too, unless asked");
+      assert.equal(readFileSync(join(res.movedTo, "a.txt"), "utf8"), "the agent's edit\n", "the version that was overwritten is kept in the recovery folder");
+      assert.equal(readFileSync(join(res.movedTo, "agent-new.txt"), "utf8"), "created by an edit action\n");
+      const more = discardTask(root, cps[0].commit, cps[1].commit, { agentPaths: agent, includeReview: true });
+      assert.ok(more.ok);
+      assert.equal(r("user.txt"), "user's file\n", "when the user explicitly includes them, they are reverted — with a copy kept");
+      assert.equal(readFileSync(join(more.movedTo, "user.txt"), "utf8"), "user's file, edited by me while the task ran\n");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("Rewind keeps a copy of every file it overwrites", async () => {
+    const { checkpointNow, listCheckpoints, restoreCheckpoint } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    try {
+      checkpointNow(p, "rt-rw", 0, "start");
+      writeFileSync(join(root, "a.txt"), "changed later, by the task or by me\n");
+      const res = restoreCheckpoint(root, listCheckpoints(p, "rt-rw")[0].commit);
+      assert.ok(res.ok, res.message);
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "hello\n");
+      assert.equal(readFileSync(join(res.movedTo, "a.txt"), "utf8"), "changed later, by the task or by me\n", "the overwritten version is recoverable");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe("models are discovered automatically, Claude included", () => {
   test("Claude's model ids are read from the installed Claude Code itself (cached), folding away dated and cloud variants", async () => {
     const { claudeCliModels } = await dist("providers/models.js");
@@ -1969,6 +2079,57 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
       assert.equal(r.compactions, 0, "20k of provider overhead alone must not trigger compaction at a 5k threshold");
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
   });
+});
+
+describe("automatic compaction at 95% of the context window", () => {
+  async function runWith(contextEach, window) {
+    const { root, p } = tinyRepo();
+    const { loadConfig, saveConfig } = await dist("config.js");
+    const cfg = loadConfig(p); cfg.agent = { ...(cfg.agent ?? {}), contextWindow: window }; saveConfig(p, cfg);
+    const dir = mkdtempSync(join(tmpdir(), "nb-win-"));
+    const bin = join(dir, "claude");
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("fs"); const c = ${JSON.stringify(join(dir, "n"))};
+const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) + 1 : 1; fs.writeFileSync(c, String(n));
+const replies = [${JSON.stringify(JSON.stringify({ action: "read", path: "a.txt" }))}, ${JSON.stringify(JSON.stringify({ action: "done", summary: "read it" }))}];
+const text = replies[Math.min(n - 1, replies.length - 1)];
+const usage = { input_tokens: 100, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: ${contextEach - 100} };
+console.log(JSON.stringify({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
+`, { mode: 0o755 });
+    try {
+      const r = await runTask(p, "read a.txt", { claudeBin: bin, boss: false, maxSteps: 6 });
+      return { r, root, dir, p };
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
+  }
+  test("a conversation at 95% of the window compacts; one below it does not", async () => {
+    const full = await runWith(9600, 10000);
+    assert.equal(full.r.outcome, "done");
+    assert.ok(full.r.compactions >= 1, "9600/10000 is over 95%");
+    const roomy = await runWith(9000, 10000);
+    assert.equal(roomy.r.compactions, 0, "9000/10000 is under 95%");
+  });
+  test("window lookup: pinned wins, then discovered, then a conservative guess", async () => {
+    const { contextWindowFor, guessContextWindow, rememberContextWindows } = await dist("providers/models.js");
+    assert.equal(contextWindowFor("claude", "sonnet", { contextWindow: 50000 }), 50000);
+    assert.equal(guessContextWindow("claude", "claude-sonnet-5-5"), 200000);
+    assert.equal(guessContextWindow("claude", "opus[1m]"), 1000000);
+    assert.equal(guessContextWindow("openrouter", "some/unknown-model"), 128000);
+    const home = mkdtempSync(join(tmpdir(), "nb-winhome-"));
+    const old = process.env.HOME; process.env.HOME = home;
+    try {
+      rememberContextWindows("openrouter", { "x/y": 65536 });
+      assert.equal(contextWindowFor("openrouter", "x/y"), 65536);
+    } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+test("the CLI update command is fixed for Codex and Claude, and nothing else", async () => {
+  const { updateCliCommand } = await dist("providers/models.js");
+  assert.deepEqual(updateCliCommand("codex"), { cmd: "npm", args: ["install", "-g", "@openai/codex"] });
+  assert.deepEqual(updateCliCommand("claude").args, ["update"]);
+  assert.equal(updateCliCommand("openrouter"), null);
+  assert.equal(updateCliCommand("codex; rm -rf /"), null);
 });
 
 test("Codex's usage-limit message is a limit with its reset time", async () => {

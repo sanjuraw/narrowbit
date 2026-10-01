@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, lstatSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { DEFAULT_IGNORE, type Paths } from "./config.js";
-import { sh } from "./util.js";
+import { realRel, sh } from "./util.js";
 
 export const CODE_EXT = /\.(?:[cm]?[jt]sx?|d\.ts)$/;
 export const DOC_EXT = /\.(?:md|mdx)$/i;
@@ -91,6 +91,18 @@ export function listFiles(p: Paths): string[] {
     };
     walk(p.root);
   }
+  // Containment is judged on each *directory's* real path (cached): a tracked directory replaced by a symlink to
+  // somewhere else keeps its tracked file names, and lstat on the leaf alone happily follows the directory link.
+  const dirOk = new Map<string, boolean>();
+  const inside = (f: string) => {
+    const d = dirname(f);
+    let ok = dirOk.get(d);
+    if (ok === undefined) {
+      ok = realRel(p.root, join(p.root, d)) !== null;
+      dirOk.set(d, ok);
+    }
+    return ok;
+  };
   return [...new Set(files)]
     .filter((f) => !ig.ignores(f) && existsSync(join(p.root, f)))
     .filter((f) => {
@@ -98,7 +110,7 @@ export function listFiles(p: Paths): string[] {
         // lstat, not stat: a symlink is never indexed. Following one would let the index (and so symbol lookup and
         // search) read a file outside the project — the same escape the agent's own read guard refuses. A link to a
         // file inside the project loses nothing: its target is indexed under its own path.
-        return lstatSync(join(p.root, f)).isFile();
+        return lstatSync(join(p.root, f)).isFile() && inside(f);
       } catch {
         return false;
       }

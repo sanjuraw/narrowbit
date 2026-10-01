@@ -46,6 +46,8 @@ export interface AgentConfig {
   reviewOnly?: boolean;
   /** Ask the user to approve the lead's plan (or ask for changes) before work starts. Needs `boss` on. Default off. */
   planApproval?: boolean;
+  /** Pin the model's context window (tokens) — what automatic compaction at 95% is measured against. Normally discovered. */
+  contextWindow?: number;
 }
 
 export const DEFAULT_CONFIG: NarrowbitConfig = {

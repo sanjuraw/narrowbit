@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
 
 export function sha1(data: string | Buffer): string {
   return createHash("sha1").update(data).digest("hex");
@@ -12,6 +14,46 @@ export function sha1(data: string | Buffer): string {
  */
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 3.6);
+}
+
+/** Anything inside a `.git` directory at any depth, in any letter case (macOS treats `.GIT/config` as `.git/config`).
+ * Git executes settings from there on its next call, so the agent may neither read nor edit it. */
+export function isGitInternal(relPath: string): boolean {
+  return relPath.split(/[\\/]+/).some((seg) => seg.toLowerCase() === ".git");
+}
+
+/** Narrowbit's own state in a project: `.narrowbit/` (config, routing, logs) and `.narrowbitignore`. */
+export function isNarrowbitOwn(relPath: string): boolean {
+  return /^\.narrowbit(ignore$|$|[\\/])/i.test(relPath.replace(/^(\.[\\/])+/, ""));
+}
+
+/**
+ * Where `abs` really lands, relative to the project's real root — or null if that is outside it. Judged on the real
+ * path of the deepest part that exists, so a symlinked *directory* anywhere along the way (not just a symlinked
+ * leaf) can't carry a path out of the project, and so a symlink alias of a protected file shows up as that file.
+ */
+export function realRel(root: string, abs: string): string | null {
+  try {
+    let probe = abs;
+    while (!existsSyncOrLink(probe)) {
+      const parent = dirname(probe);
+      if (parent === probe) return null;
+      probe = parent;
+    }
+    const real = join(realpathSync(probe), relative(probe, abs));
+    const rel = relative(realpathSync(root), real);
+    return rel.startsWith("..") || isAbsolute(rel) ? null : rel;
+  } catch {
+    return null;
+  }
+}
+function existsSyncOrLink(p: string): boolean {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return existsSync(p);
+  }
 }
 
 /**

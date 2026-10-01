@@ -22,7 +22,9 @@ function git(root: string, args: string[], env?: Record<string, string>): { code
   // See util.ts's sh() for why every git invocation here needs this: ownership mismatches (a shared Mac, a
   // folder that predates Narrowbit) otherwise make every checkpoint silently fail — snapshotTree() below
   // would just see "not a usable git repo" and quietly skip rewind entirely, no error surfaced anywhere.
-  const r = spawnSync("git", gitArgs(root, args), { cwd: root, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env, maxBuffer: 64 * 1024 * 1024 });
+  // Hooks off: update-ref runs the repo's reference-transaction hook, so an automatic checkpoint would otherwise run
+  // the repository's program with no approval. Checkpoints are Narrowbit's bookkeeping, not the user's git action.
+  const r = spawnSync("git", ["-c", "core.hooksPath=/dev/null", ...gitArgs(root, args)], { cwd: root, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env, maxBuffer: 64 * 1024 * 1024 });
   return { code: r.status ?? 1, out: (r.stdout ?? r.stderr ?? "").trim() };
 }
 
@@ -113,6 +115,7 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const trash = join(root, ".narrowbit", "rewind-trash", stamp);
   const moved: string[] = [];
+  const overwrittenSaved: string[] = [];
   const kept: string[] = [];
   for (const f of after) {
     if (before.has(f)) continue;
@@ -137,6 +140,20 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
       kept.push(f);
     }
   }
+  // Files the checkout below will overwrite (changed since the checkpoint, by the task or by the user): keep a copy.
+  const overwritten: string[] = now
+    ? git(root, ["diff-tree", "-r", "--name-only", "-z", "--no-renames", "--diff-filter=MT", commit, now]).out.split("\0").filter((f) => f && before.has(f) && after.has(f))
+    : [];
+  for (const f of overwritten) {
+    const to = join(trash, f);
+    try {
+      mkdirSync(dirname(to), { recursive: true });
+      copyFileSync(join(root, f), to);
+      if (!moved.includes(f)) overwrittenSaved.push(f);
+    } catch {
+      /* a file that vanished or can't be read has nothing to keep */
+    }
+  }
   const dir = mkdtempSync(join(tmpdir(), "nb-ckpt-restore-"));
   const idx = join(dir, "index");
   try {
@@ -150,16 +167,28 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
   const notes = [`restored ${before.size} file(s)`];
   if (moved.length) notes.push(`moved ${moved.length} newer file(s) to ${join(".narrowbit", "rewind-trash", stamp)} instead of deleting them (kept there for 14 days)`);
   if (kept.length) notes.push(`left ${kept.length} newer file(s) in place (staged, or could not be moved): ${kept.slice(0, 5).join(", ")}`);
-  return { ok: true, message: notes.join("; "), movedTo: moved.length ? trash : undefined, kept: kept.length ? kept : undefined };
+  if (overwrittenSaved.length) notes.push(`kept a copy of ${overwrittenSaved.length} file(s) it overwrote in ${join(".narrowbit", "rewind-trash", stamp)}`);
+  return { ok: true, message: notes.join("; "), movedTo: moved.length || overwrittenSaved.length ? trash : undefined, kept: kept.length ? kept : undefined };
 }
 
 export interface DiscardPlan {
-  /** Files the task changed that are exactly as it left them: put back to how they were when it started. */
+  /** Files the agent edited, still exactly as the task left them: put back to how they were when it started. */
   restore: string[];
-  /** Files the task created that are exactly as it left them: moved to the recovery folder, not deleted. */
+  /** Files the agent created with an edit, still exactly as the task left them: moved to the recovery folder. */
   remove: string[];
-  /** Files the task changed that have changed again since (by you, or anything else): left alone. */
+  /** Files the agent edited that have changed again since (by you, or anything else): left alone. */
   skipped: string[];
+  /** Changed during the task, but not by one of the agent's edits — a command's output, or you working at the same
+   * time. Narrowbit can't tell which, so they're left alone unless you choose to include them. */
+  review: string[];
+}
+
+export interface DiscardOptions {
+  /** Repo-relative paths the agent's own edit actions changed (from the task's event log). Without it, every changed
+   * file counts as the agent's. */
+  agentPaths?: Set<string>;
+  /** Also undo the `review` files. */
+  includeReview?: boolean;
 }
 
 function blobAt(root: string, commit: string, file: string): string | null {
@@ -174,49 +203,67 @@ function blobNow(root: string, file: string): string | null {
 }
 
 /**
- * What undoing one task would touch, worked out only from that task's own checkpoints: the files that differ
- * between its first checkpoint (before it changed anything) and its last one (as it left the folder). A file is
- * only touched if it is still exactly as the task left it; anything changed again since is reported, not reverted.
- * Nothing the task didn't change is ever looked at — so edits made before the task, after it, or to other files
- * are all safe, unlike restoring every dirty file to HEAD.
+ * What undoing one task would touch, worked out only from that task's own checkpoints and edit log: files that differ
+ * between its first checkpoint (before it changed anything) and its last one (as it left the folder) AND were changed
+ * by one of the agent's own edits. A file is only touched if it is still exactly as the task left it. Files that
+ * changed during the task some other way (a command's output, or your own work done at the same time) are reported,
+ * not reverted — attributing them to the agent would be a guess, and a wrong guess destroys your work.
  */
-export function planDiscard(root: string, start: string, end: string): DiscardPlan {
+export function planDiscard(root: string, start: string, end: string, opts: DiscardOptions = {}): DiscardPlan {
   const names = git(root, ["diff-tree", "-r", "--name-only", "-z", "--no-renames", start, end]).out.split("\0").filter(Boolean);
-  const plan: DiscardPlan = { restore: [], remove: [], skipped: [] };
+  const plan: DiscardPlan = { restore: [], remove: [], skipped: [], review: [] };
   for (const f of names) {
     if (f.startsWith(".narrowbit/") || f === ".narrowbitignore") continue;
     const before = blobAt(root, start, f);
     const after = blobAt(root, end, f);
+    const agents = !opts.agentPaths || opts.agentPaths.has(f);
     if (blobNow(root, f) !== after) plan.skipped.push(f);
+    else if (!agents && !opts.includeReview) plan.review.push(f);
     else if (before) plan.restore.push(f);
     else plan.remove.push(f);
   }
   return plan;
 }
 
-export function discardTask(root: string, start: string, end: string): DiscardPlan & { ok: boolean; message: string; movedTo?: string } {
-  const plan = planDiscard(root, start, end);
+export function discardTask(root: string, start: string, end: string, opts: DiscardOptions = {}): DiscardPlan & { ok: boolean; message: string; movedTo?: string } {
+  const plan = planDiscard(root, start, end, opts);
   let movedTo: string | undefined;
-  if (plan.remove.length) {
-    pruneRewindTrash(root);
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const trash = join(root, ".narrowbit", "rewind-trash", stamp);
-    for (const f of plan.remove) {
-      const to = join(trash, f);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const trash = join(root, ".narrowbit", "rewind-trash", stamp);
+  if (plan.remove.length || plan.restore.length) pruneRewindTrash(root);
+  const keepCopy = (f: string, move: boolean) => {
+    const to = join(trash, f);
+    mkdirSync(dirname(to), { recursive: true });
+    if (move) {
       try {
-        mkdirSync(dirname(to), { recursive: true });
-        try {
-          renameSync(join(root, f), to);
-        } catch {
-          copyFileSync(join(root, f), to);
-          unlinkSync(join(root, f));
-        }
-        movedTo = trash;
+        renameSync(join(root, f), to);
       } catch {
-        /* couldn't move it: leaving it in place is the safe failure */
+        copyFileSync(join(root, f), to);
+        unlinkSync(join(root, f));
       }
+    } else copyFileSync(join(root, f), to);
+    movedTo = trash;
+  };
+  for (const f of plan.remove) {
+    try {
+      keepCopy(f, true);
+    } catch {
+      /* couldn't move it: leaving it in place is the safe failure */
     }
   }
+  // Nothing is overwritten without a copy: the version being replaced (the task's, or — if you chose to include
+  // changes that weren't the agent's edits — whatever was there) goes to the recovery folder first.
+  const restorable: string[] = [];
+  for (const f of plan.restore) {
+    try {
+      keepCopy(f, false);
+      restorable.push(f);
+    } catch {
+      /* can't keep a copy of it, so don't overwrite it */
+      plan.skipped.push(f);
+    }
+  }
+  plan.restore = restorable;
   if (plan.restore.length) {
     const dir = mkdtempSync(join(tmpdir(), "nb-discard-"));
     try {
@@ -228,8 +275,10 @@ export function discardTask(root: string, start: string, end: string): DiscardPl
       rmSync(dir, { recursive: true, force: true });
     }
   }
-  const parts = [`put back ${plan.restore.length} file(s) the task changed`];
-  if (plan.remove.length) parts.push(`moved ${plan.remove.length} file(s) it created to ${join(".narrowbit", "rewind-trash")} (kept there for 14 days)`);
+  const parts = [`put back ${plan.restore.length} file(s) the agent edited`];
+  if (plan.remove.length) parts.push(`moved ${plan.remove.length} file(s) it created aside`);
+  if (movedTo) parts.push(`copies of everything it replaced are in ${join(".narrowbit", "rewind-trash")} (kept there for 14 days)`);
   if (plan.skipped.length) parts.push(`left ${plan.skipped.length} file(s) alone because they changed again after the task`);
+  if (plan.review.length) parts.push(`left ${plan.review.length} file(s) alone that changed during the task but not through the agent's edits`);
   return { ...plan, ok: true, message: parts.join("; "), movedTo };
 }

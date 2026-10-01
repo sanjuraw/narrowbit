@@ -10,13 +10,17 @@ import type { Store } from "./store.js";
 import type { Level, SelectedItem, TaskRecord } from "./tasks.js";
 import { parseTask, type ParsedTask } from "./taskparse.js";
 import { termsOf } from "./terms.js";
-import { estimateTokens, now, shortId } from "./util.js";
+import { estimateTokens, now, shortId, realRel, isGitInternal } from "./util.js";
 
 const SNIPPET_MAX_LINES = 140;
 
 export function readLines(root: string, path: string, start: number, end: number): string {
   let text: string;
   try {
+    // Refuse anything that really lands outside the project or inside .git: this is the one reader behind the MCP
+    // `nb_lines` tool and the package builder, and neither has its own path check.
+    const rel = realRel(root, join(root, path));
+    if (rel === null || isGitInternal(rel) || isGitInternal(path)) return "";
     text = readFileSync(join(root, path), "utf8");
   } catch {
     return "";
