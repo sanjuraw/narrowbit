@@ -477,6 +477,19 @@ describe("app page with a folder open", () => {
     inp.value = "";
   });
 
+  test("picking a file whose name has spaces or accents inserts a mention the runtime reads back whole", async () => {
+    writeFileSync(join(repo, "café notes.ts"), "export {};\n");
+    const inp = page.$("input");
+    inp.focus();
+    inp.value = "see @caf";
+    inp.setSelectionRange(inp.value.length, inp.value.length);
+    inp.dispatchEvent(new page.w.Event("input"));
+    await page.until(() => page.$("mentionPop").textContent.includes("café notes.ts"), "the file to appear as a match");
+    page.$("mentionPop").querySelector(".mi").click();
+    assert.equal(inp.value, 'see @"café notes.ts" ');
+    inp.value = "";
+  });
+
   test("attaching an image shows a chip that can be removed, and other file types are refused", async () => {
     const w = page.w;
     const input = page.$("attachInput");

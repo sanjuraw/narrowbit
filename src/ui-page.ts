@@ -1408,8 +1408,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var at = v.lastIndexOf("@", pos - 1);
     if (at < 0 || (at > 0 && !/\s|\(/.test(v[at - 1]))) return null;
     var token = v.slice(at + 1, pos);
-    if (/\s/.test(token)) return null;
-    return { start: at, end: pos, token: token };
+    // @"my file.ts" — inside quotes a space belongs to the name
+    var quoted = token.charAt(0) === '"';
+    if (quoted ? token.indexOf('"', 1) >= 0 || token.indexOf("\n") >= 0 : /\s/.test(token)) return null;
+    return { start: at, end: pos, token: quoted ? token.slice(1) : token };
   }
   function closeMention() { mention.active = false; show($("mentionPop"), false); }
   function renderMentionPop() {
@@ -1426,8 +1428,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (!f) return;
     var r = mentionRange();
     if (!r) return closeMention();
-    input.value = input.value.slice(0, r.start) + "@" + f + " " + input.value.slice(r.end);
-    var cur = r.start + f.length + 2;
+    // a name with spaces or odd characters is written in quotes, which is also how the runtime reads it back
+    var text = /^[\p{L}\p{N}_.\/-]+$/u.test(f) ? "@" + f : '@"' + f.replace(/"/g, "") + '"';
+    input.value = input.value.slice(0, r.start) + text + " " + input.value.slice(r.end);
+    var cur = r.start + text.length + 1;
     input.setSelectionRange(cur, cur);
     closeMention();
     autosize();

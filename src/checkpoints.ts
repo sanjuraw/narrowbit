@@ -124,10 +124,19 @@ function copyKeepingLinks(from: string, to: string): void {
 
 export function restoreCheckpoint(root: string, commit: string): { ok: boolean; message: string; movedTo?: string; kept?: string[]; unsaved?: string[] } {
   if (git(root, ["cat-file", "-e", `${commit}^{commit}`]).code !== 0) return { ok: false, message: "that checkpoint no longer exists (the repository may have been garbage-collected)" };
+  // Everything below overwrites files, so it only starts once we know exactly what is there now: if the snapshot of the
+  // current state (or any listing) fails — e.g. a git filter that errors — stop with nothing changed, never carry on
+  // with empty "files to back up" lists.
+  const refuse = (why: string) => ({ ok: false, message: `nothing was changed: ${why}` });
   const now = snapshotTree(root);
-  const before = new Set(nameList(git(root, ["ls-tree", "-r", "--name-only", "-z", commit]).out));
-  const after = now ? new Set(nameList(git(root, ["ls-tree", "-r", "--name-only", "-z", now]).out)) : new Set<string>();
-  const staged = new Set(nameList(git(root, ["diff", "--cached", "--name-only", "-z"]).out));
+  if (!now) return refuse("couldn't take a snapshot of the folder as it is now (so there would be no way to keep what the rewind overwrites).");
+  const lsBefore = git(root, ["ls-tree", "-r", "--name-only", "-z", commit]);
+  const lsAfter = git(root, ["ls-tree", "-r", "--name-only", "-z", now]);
+  const lsStaged = git(root, ["diff", "--cached", "--name-only", "-z"]);
+  if (lsBefore.code !== 0 || lsAfter.code !== 0 || lsStaged.code !== 0) return refuse("git couldn't list the files involved.");
+  const before = new Set(nameList(lsBefore.out));
+  const after = new Set(nameList(lsAfter.out));
+  const staged = new Set(nameList(lsStaged.out));
   pruneRewindTrash(root);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const trash = join(root, ".narrowbit", "rewind-trash", stamp);
@@ -135,9 +144,9 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
   const overwrittenSaved: string[] = [];
   const kept: string[] = [];
   // Files the checkout below will overwrite (changed since the checkpoint, by the task or by the user): keep a copy.
-  const overwritten: string[] = now
-    ? git(root, ["diff-tree", "-r", "--name-only", "-z", "--no-renames", "--diff-filter=MT", commit, now]).out.split("\0").filter((f) => f && before.has(f) && after.has(f))
-    : [];
+  const dt = git(root, ["diff-tree", "-r", "--name-only", "-z", "--no-renames", "--diff-filter=MT", commit, now]);
+  if (dt.code !== 0) return refuse("git couldn't compare the checkpoint with the folder.");
+  const overwritten: string[] = dt.out.split("\0").filter((f) => f && before.has(f) && after.has(f));
   const unsaved: string[] = [];
   for (const f of overwritten) {
     const to = join(trash, f);

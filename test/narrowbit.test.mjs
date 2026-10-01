@@ -1108,6 +1108,43 @@ describe("fifth Codex review: checkpoint hooks, symlinked protected paths and di
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  test("Rewind changes nothing when the snapshot of the current state fails (e.g. a broken git filter)", async () => {
+    const { checkpointNow, listCheckpoints, restoreCheckpoint } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    try {
+      checkpointNow(p, "rt-fl", 0, "start");
+      writeFileSync(join(root, "a.txt"), "later edit that must survive\n");
+      // a clean filter that always fails makes `git add -A` (the snapshot) fail from now on
+      execFileSync("git", ["config", "filter.boom.clean", "false"], { cwd: root });
+      execFileSync("git", ["config", "filter.boom.required", "true"], { cwd: root });
+      writeFileSync(join(root, ".gitattributes"), "*.txt filter=boom\n");
+      const res = restoreCheckpoint(root, listCheckpoints(p, "rt-fl")[0].commit);
+      assert.equal(res.ok, false, res.message);
+      assert.match(res.message, /nothing was changed/);
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "later edit that must survive\n");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("@file mentions are redacted like every other file the model sees, and names with accents or spaces round-trip", async () => {
+    const { parseMentions, resolveMentions, renderMentions, mentionText } = await dist("mentions.js");
+    const { root, p } = tinyRepo();
+    try {
+      const fakeToken = "ghp_" + "a".repeat(36);
+      writeFileSync(join(root, "config.txt"), `token = ${fakeToken}\n`);
+      writeFileSync(join(root, "café.ts"), "export const x = 1;\n");
+      writeFileSync(join(root, "my file.ts"), "export const y = 2;\n");
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], { cwd: root });
+      assert.deepEqual(parseMentions('look at @café.ts and @"my file.ts" and @config.txt'), ["café.ts", "my file.ts", "config.txt"]);
+      assert.equal(mentionText("my file.ts"), '@"my file.ts"');
+      assert.equal(mentionText("src/café.ts"), "@src/café.ts");
+      const resolved = resolveMentions(p, ["café.ts", "my file.ts", "config.txt"]);
+      assert.deepEqual(resolved.map((r) => r.path), ["café.ts", "my file.ts", "config.txt"]);
+      const block = renderMentions(resolved);
+      assert.ok(!block.includes(fakeToken), "the credential never reaches the prompt");
+      assert.match(block, /export const y = 2/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test("Rewind keeps a copy of every file it overwrites", async () => {
     const { checkpointNow, listCheckpoints, restoreCheckpoint } = await dist("checkpoints.js");
     const { root, p } = tinyRepo();

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { Paths } from "./config.js";
 import { listFiles } from "./files.js";
+import { redact } from "./redact.js";
 import { capSummary, safeAbsPath } from "./runtime.js";
 
 /**
@@ -9,14 +10,22 @@ import { capSummary, safeAbsPath } from "./runtime.js";
  * mentioned file's content goes straight into the task's first prompt. Cheaper (skips exploration
  * turns entirely for the mentioned file) and more reliable (no chance of grepping for the wrong file).
  */
-const MENTION_RE = /(^|[\s(])@([\w./-]+)/g;
+// Plain form: @src/café.ts (letters and digits in any language). A path with spaces or other odd characters is
+// written @"my file.ts" — the app's autocomplete does that for you.
+const MENTION_RE = /(^|[\s(])@(?:"([^"\n]+)"|([\p{L}\p{N}_./-]+))/gu;
+const PLAIN_PATH = /^[\p{L}\p{N}_./-]+$/u;
+
+/** How to write `path` as a mention so parseMentions reads it back whole. */
+export function mentionText(path: string): string {
+  return PLAIN_PATH.test(path) ? `@${path}` : `@"${path.replace(/"/g, "")}"`;
+}
 
 /** Every "@token" in `text`, in order, deduplicated. Doesn't validate against the repo — see `resolveMentions`. */
 export function parseMentions(text: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const m of text.matchAll(MENTION_RE)) {
-    const token = m[2];
+    const token = m[2] ?? m[3];
     if (token && !seen.has(token)) {
       seen.add(token);
       out.push(token);
@@ -47,10 +56,13 @@ export function resolveMentions(p: Paths, tokens: string[]): ResolvedMention[] {
   }
   return tokens.map((token) => {
     let match: string | null = null;
-    if (files.includes(token)) match = token;
+    // macOS file names are often decomposed Unicode (é as e + accent); compare in one normal form.
+    const norm = (x: string) => x.normalize("NFC");
+    const exact = files.find((f) => norm(f) === norm(token));
+    if (exact) match = exact;
     else {
       const base = token.split("/").pop()!;
-      const candidates = byBasename.get(base);
+      const candidates = [...byBasename.entries()].filter(([b]) => norm(b) === norm(base)).flatMap(([, v]) => v);
       if (candidates?.length === 1) match = candidates[0]!;
       else if (candidates?.length) match = candidates.sort((a, b) => a.length - b.length)[0]!;
     }
@@ -60,7 +72,7 @@ export function resolveMentions(p: Paths, tokens: string[]): ResolvedMention[] {
     try {
       const raw = readFileSync(abs);
       if (raw.subarray(0, 4096).includes(0)) return { token, path: match, content: null }; // binary
-      return { token, path: match, content: capSummary(raw.toString("utf8"), 1500) };
+      return { token, path: match, content: capSummary(redact(raw.toString("utf8")), 1500) };
     } catch {
       return { token, path: match, content: null };
     }
@@ -71,9 +83,9 @@ export function resolveMentions(p: Paths, tokens: string[]): ResolvedMention[] {
 export function renderMentions(resolved: ResolvedMention[]): string {
   if (!resolved.length) return "";
   const parts = resolved.map((r) => {
-    if (r.content !== null) return `File ${r.path} (mentioned with @${r.token}):\n${r.content}`;
-    if (r.path) return `@${r.token} matched ${r.path}, but it couldn't be read (binary or missing).`;
-    return `@${r.token} didn't match any file in this repository — say so rather than guessing what it refers to.`;
+    if (r.content !== null) return `File ${r.path} (mentioned with ${mentionText(r.token)}):\n${r.content}`;
+    if (r.path) return `${mentionText(r.token)} matched ${r.path}, but it couldn't be read (binary or missing).`;
+    return `${mentionText(r.token)} didn't match any file in this repository — say so rather than guessing what it refers to.`;
   });
   return `The user's message mentions specific files:\n\n${parts.join("\n\n")}\n\n`;
 }
