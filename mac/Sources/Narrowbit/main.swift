@@ -177,7 +177,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             return i
         }
         let app = NSMenu()
-        app.addItem(item("About Narrowbit", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""))
+        // Version, update status and diagnostics live in the app's own About section; open that.
+        app.addItem(item("About Narrowbit", #selector(showAbout), ""))
+        app.addItem(item("Check for Updates…", #selector(checkForUpdates), ""))
         app.addItem(.separator())
         app.addItem(item("Hide Narrowbit", #selector(NSApplication.hide(_:)), "h"))
         app.addItem(item("Quit Narrowbit", #selector(NSApplication.terminate(_:)), "q"))
@@ -202,6 +204,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         NSApp.mainMenu = main
         NSApp.windowsMenu = win
+    }
+
+    @objc private func showAbout() {
+        if loaded { web.evaluateJavaScript("window.narrowbitShowAbout && window.narrowbitShowAbout(false)") }
+    }
+
+    @objc private func checkForUpdates() {
+        if loaded { web.evaluateJavaScript("window.narrowbitShowAbout && window.narrowbitShowAbout(true)") }
     }
 
     @objc private func reload() {

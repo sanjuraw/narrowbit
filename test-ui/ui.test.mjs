@@ -296,6 +296,12 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.ok([...page.$("aboutInfo").querySelectorAll("button")].some((b) => b.textContent === "Copy diagnostics"));
   });
 
+  test("the Mac menu can open About", () => {
+    assert.equal(typeof page.w.narrowbitShowAbout, "function");
+    page.w.narrowbitShowAbout(false);
+    assert.ok(page.visible(page.$("aboutInfo")), "About is on screen");
+  });
+
   test("Check now in About shows that it checked", async () => {
     const btn = [...page.$("aboutInfo").querySelectorAll("button")].find((b) => b.textContent === "Check now");
     btn.click();

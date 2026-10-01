@@ -2335,6 +2335,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   $("openRepo").onclick = function () { var v = $("repoPath").value.trim(); if (v) openRepo(v); };
   $("repoPath").addEventListener("keydown", function (e) { if (e.key === "Enter") $("openRepo").click(); });
   $("pickFolder").onclick = function () { native.postMessage({ type: "pickFolder" }); };
+  // Called by the Mac app's menu (About Narrowbit / Check for Updates…).
+  window.narrowbitShowAbout = function (check) {
+    openDrawer(); loadGithub();
+    $("aboutInfo").scrollIntoView({ block: "center" });
+    if (check) { var b = [].slice.call($("aboutInfo").querySelectorAll("button")).filter(function (x) { return x.textContent === "Check now"; })[0]; if (b) b.click(); }
+  };
   window.narrowbitFolderPicked = function (path) { if (path) openRepo(path); };
   $("locateBtn").onclick = function () { openRepoPicker(true); };
   $("initBtn").onclick = function () {
