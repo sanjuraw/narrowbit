@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, unlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Paths } from "./config.js";
@@ -105,12 +106,22 @@ export function pruneRewindTrash(root: string, maxAgeDays = 14, nowMs = Date.now
   return removed;
 }
 
-export function restoreCheckpoint(root: string, commit: string): { ok: boolean; message: string; movedTo?: string; kept?: string[] } {
+/** Names from git as NUL-separated output: with git's default quoting a name like café.txt comes back as "caf\303\251.txt". */
+const nameList = (out: string): string[] => out.split("\0").filter(Boolean);
+
+/** A copy that keeps a symlink a symlink: copyFileSync follows it, which would turn a link to an outside file into a
+ * regular file holding that file's contents (readable by the model). Throws ENOENT if `from` doesn't exist. */
+function copyKeepingLinks(from: string, to: string): void {
+  if (lstatSync(from).isSymbolicLink()) symlinkSync(readlinkSync(from), to);
+  else copyFileSync(from, to);
+}
+
+export function restoreCheckpoint(root: string, commit: string): { ok: boolean; message: string; movedTo?: string; kept?: string[]; unsaved?: string[] } {
   if (git(root, ["cat-file", "-e", `${commit}^{commit}`]).code !== 0) return { ok: false, message: "that checkpoint no longer exists (the repository may have been garbage-collected)" };
   const now = snapshotTree(root);
-  const before = new Set(git(root, ["ls-tree", "-r", "--name-only", commit]).out.split("\n").filter(Boolean));
-  const after = now ? new Set(git(root, ["ls-tree", "-r", "--name-only", now]).out.split("\n").filter(Boolean)) : new Set<string>();
-  const staged = new Set(git(root, ["diff", "--cached", "--name-only"]).out.split("\n").filter(Boolean));
+  const before = new Set(nameList(git(root, ["ls-tree", "-r", "--name-only", "-z", commit]).out));
+  const after = now ? new Set(nameList(git(root, ["ls-tree", "-r", "--name-only", "-z", now]).out)) : new Set<string>();
+  const staged = new Set(nameList(git(root, ["diff", "--cached", "--name-only", "-z"]).out));
   pruneRewindTrash(root);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const trash = join(root, ".narrowbit", "rewind-trash", stamp);
@@ -131,7 +142,7 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
       try {
         renameSync(from, to);
       } catch {
-        copyFileSync(from, to); // e.g. a different filesystem; only remove the original once the copy exists
+        copyKeepingLinks(from, to); // e.g. a different filesystem; only remove the original once the copy exists
         unlinkSync(from);
       }
       moved.push(f);
@@ -144,14 +155,16 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
   const overwritten: string[] = now
     ? git(root, ["diff-tree", "-r", "--name-only", "-z", "--no-renames", "--diff-filter=MT", commit, now]).out.split("\0").filter((f) => f && before.has(f) && after.has(f))
     : [];
+  const unsaved: string[] = [];
   for (const f of overwritten) {
     const to = join(trash, f);
     try {
       mkdirSync(dirname(to), { recursive: true });
-      copyFileSync(join(root, f), to);
+      copyKeepingLinks(join(root, f), to);
       if (!moved.includes(f)) overwrittenSaved.push(f);
-    } catch {
-      /* a file that vanished or can't be read has nothing to keep */
+    } catch (e: any) {
+      // A file that is already gone has nothing to keep; anything else means it is about to be overwritten uncopied.
+      if (e?.code !== "ENOENT") unsaved.push(f);
     }
   }
   const dir = mkdtempSync(join(tmpdir(), "nb-ckpt-restore-"));
@@ -167,8 +180,9 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
   const notes = [`restored ${before.size} file(s)`];
   if (moved.length) notes.push(`moved ${moved.length} newer file(s) to ${join(".narrowbit", "rewind-trash", stamp)} instead of deleting them (kept there for 14 days)`);
   if (kept.length) notes.push(`left ${kept.length} newer file(s) in place (staged, or could not be moved): ${kept.slice(0, 5).join(", ")}`);
+  if (unsaved.length) notes.push(`WARNING: could not keep a copy of ${unsaved.length} file(s) before overwriting them: ${unsaved.slice(0, 5).join(", ")}`);
   if (overwrittenSaved.length) notes.push(`kept a copy of ${overwrittenSaved.length} file(s) it overwrote in ${join(".narrowbit", "rewind-trash", stamp)}`);
-  return { ok: true, message: notes.join("; "), movedTo: moved.length || overwrittenSaved.length ? trash : undefined, kept: kept.length ? kept : undefined };
+  return { ok: true, message: notes.join("; "), movedTo: moved.length || overwrittenSaved.length ? trash : undefined, kept: kept.length ? kept : undefined, unsaved: unsaved.length ? unsaved : undefined };
 }
 
 export interface DiscardPlan {
@@ -197,7 +211,15 @@ function blobAt(root: string, commit: string, file: string): string | null {
 }
 
 function blobNow(root: string, file: string): string | null {
-  if (!existsSync(join(root, file))) return null;
+  let link: string | null = null;
+  try {
+    const st = lstatSync(join(root, file));
+    if (st.isSymbolicLink()) link = readlinkSync(join(root, file));
+  } catch {
+    return null; // not there at all
+  }
+  // git stores a symlink as a blob of its target text; `git hash-object` on the path would hash the target's contents.
+  if (link !== null) return createHash("sha1").update(`blob ${Buffer.byteLength(link)}\0`).update(link).digest("hex");
   const r = git(root, ["hash-object", "--", file]);
   return r.code === 0 && r.out ? r.out : null;
 }
@@ -210,7 +232,7 @@ function blobNow(root: string, file: string): string | null {
  * not reverted — attributing them to the agent would be a guess, and a wrong guess destroys your work.
  */
 export function planDiscard(root: string, start: string, end: string, opts: DiscardOptions = {}): DiscardPlan {
-  const names = git(root, ["diff-tree", "-r", "--name-only", "-z", "--no-renames", start, end]).out.split("\0").filter(Boolean);
+  const names = nameList(git(root, ["diff-tree", "-r", "--name-only", "-z", "--no-renames", start, end]).out);
   const plan: DiscardPlan = { restore: [], remove: [], skipped: [], review: [] };
   for (const f of names) {
     if (f.startsWith(".narrowbit/") || f === ".narrowbitignore") continue;
@@ -232,25 +254,36 @@ export function discardTask(root: string, start: string, end: string, opts: Disc
   const trash = join(root, ".narrowbit", "rewind-trash", stamp);
   if (plan.remove.length || plan.restore.length) pruneRewindTrash(root);
   const keepCopy = (f: string, move: boolean) => {
+    // A file that is already gone has nothing to copy (a deleted file being put back); only an existing one needs saving.
+    try {
+      lstatSync(join(root, f));
+    } catch (e: any) {
+      if (e?.code === "ENOENT") return;
+      throw e;
+    }
     const to = join(trash, f);
     mkdirSync(dirname(to), { recursive: true });
     if (move) {
       try {
         renameSync(join(root, f), to);
       } catch {
-        copyFileSync(join(root, f), to);
+        copyKeepingLinks(join(root, f), to);
         unlinkSync(join(root, f));
       }
-    } else copyFileSync(join(root, f), to);
+    } else copyKeepingLinks(join(root, f), to);
     movedTo = trash;
   };
+  const removed: string[] = [];
   for (const f of plan.remove) {
     try {
       keepCopy(f, true);
+      removed.push(f);
     } catch {
       /* couldn't move it: leaving it in place is the safe failure */
+      plan.skipped.push(f);
     }
   }
+  plan.remove = removed;
   // Nothing is overwritten without a copy: the version being replaced (the task's, or — if you chose to include
   // changes that weren't the agent's edits — whatever was there) goes to the recovery folder first.
   const restorable: string[] = [];
@@ -278,7 +311,7 @@ export function discardTask(root: string, start: string, end: string, opts: Disc
   const parts = [`put back ${plan.restore.length} file(s) the agent edited`];
   if (plan.remove.length) parts.push(`moved ${plan.remove.length} file(s) it created aside`);
   if (movedTo) parts.push(`copies of everything it replaced are in ${join(".narrowbit", "rewind-trash")} (kept there for 14 days)`);
-  if (plan.skipped.length) parts.push(`left ${plan.skipped.length} file(s) alone because they changed again after the task`);
+  if (plan.skipped.length) parts.push(`left ${plan.skipped.length} file(s) alone (they changed again after the task, or a copy of them couldn't be saved first)`);
   if (plan.review.length) parts.push(`left ${plan.review.length} file(s) alone that changed during the task but not through the agent's edits`);
   return { ...plan, ok: true, message: parts.join("; "), movedTo };
 }

@@ -1033,6 +1033,51 @@ describe("fifth Codex review: checkpoint hooks, symlinked protected paths and di
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  test("Rewind and Discard handle non-ASCII names, symlinks and deleted files", async () => {
+    const { checkpointNow, listCheckpoints, restoreCheckpoint, discardTask } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    const outside = mkdtempSync(join(tmpdir(), "nb-out-"));
+    const sh = (...a) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root });
+    try {
+      writeFileSync(join(outside, "secret.txt"), "OUTSIDE-SECRET\n");
+      writeFileSync(join(root, "café.txt"), "v1\n");
+      writeFileSync(join(root, "gone.txt"), "keep me\n");
+      sh("add", "-A"); sh("commit", "-qm", "files");
+      checkpointNow(p, "rt-x", 0, "start");
+      // after the checkpoint: non-ASCII file edited, a tracked file replaced by a link to an outside file, another deleted
+      writeFileSync(join(root, "café.txt"), "v2 edited later\n");
+      writeFileSync(join(root, "newer-é.txt"), "created later\n");
+      rmSync(join(root, "a.txt")); symlinkSync(join(outside, "secret.txt"), join(root, "a.txt"));
+      rmSync(join(root, "gone.txt"));
+      checkpointNow(p, "rt-x", 5, "end of task");
+      const cps = listCheckpoints(p, "rt-x");
+
+      // Discard puts a deleted file back (there is nothing to back up) and says so truthfully
+      const d = discardTask(root, cps[0].commit, cps[1].commit, { includeReview: true });
+      assert.ok(d.ok, d.message);
+      assert.equal(readFileSync(join(root, "gone.txt"), "utf8"), "keep me\n", "a deleted file is restored");
+      assert.ok(d.restore.includes("gone.txt"));
+      assert.equal(readFileSync(join(root, "café.txt"), "utf8"), "v1\n", "non-ASCII name restored");
+      assert.equal(readFileSync(join(d.movedTo, "café.txt"), "utf8"), "v2 edited later\n", "and its later edit was kept");
+      assert.ok(!existsSync(join(root, "newer-é.txt")), "the file created later (non-ASCII name) was moved aside");
+      assert.ok(existsSync(join(d.movedTo, "newer-é.txt")));
+      // the symlink case: the recovery copy must stay a link, never a regular file holding the outside content
+      assert.ok(lstatSync(join(d.movedTo, "a.txt")).isSymbolicLink(), "the backup of a symlink is a symlink");
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "hello\n");
+
+      // Rewind, the same way: put the later state back first, then rewind to the checkpoint
+      writeFileSync(join(root, "café.txt"), "v3 edited again\n");
+      rmSync(join(root, "a.txt")); symlinkSync(join(outside, "secret.txt"), join(root, "a.txt"));
+      writeFileSync(join(root, "newer-é.txt"), "created again\n");
+      const r = restoreCheckpoint(root, cps[0].commit);
+      assert.ok(r.ok, r.message);
+      assert.doesNotMatch(r.message, /WARNING/);
+      assert.equal(readFileSync(join(r.movedTo, "café.txt"), "utf8"), "v3 edited again\n", "a non-ASCII file's overwritten version has a recovery copy");
+      assert.ok(!existsSync(join(root, "newer-é.txt")), "the newer non-ASCII file is moved aside, not left behind");
+      assert.ok(lstatSync(join(r.movedTo, "a.txt")).isSymbolicLink(), "rewind keeps a symlink a symlink in the recovery copy");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
   test("Rewind keeps a copy of every file it overwrites", async () => {
     const { checkpointNow, listCheckpoints, restoreCheckpoint } = await dist("checkpoints.js");
     const { root, p } = tinyRepo();

@@ -799,6 +799,22 @@ describe("app page with a folder open", () => {
     assert.equal((await post({ message: "add leak", force: true })).status, 200);
   });
 
+  test("commit takes only the files shown, not a secret that was staged and then hidden from the working tree", async () => {
+    const git = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" });
+    writeFileSync(join(repo, "hidden.js"), "// harmless\n");
+    git("add", "hidden.js"); git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "harmless file");
+    writeFileSync(join(repo, "hidden.js"), 'const k = "ghp_' + "y".repeat(36) + '";\n'); // narrowbit-audit-ignore: fake
+    git("add", "hidden.js");
+    writeFileSync(join(repo, "hidden.js"), "// harmless\n"); // back to what HEAD has, so it is not shown — but the staged copy holds the token
+    writeFileSync(join(repo, "shown.txt"), "a normal change\n");
+    const post = (body) => fetch(`${app.base}/api/commit`, { method: "POST", headers: { "x-narrowbit-token": app.token, "content-type": "application/json" }, body: JSON.stringify(body) });
+    const res = await post({ message: "just the shown file" });
+    assert.equal(res.status, 200, "nothing in what is shown is a secret");
+    const committed = git("show", "--name-only", "--format=", "HEAD").split("\n").filter(Boolean);
+    assert.ok(committed.includes("shown.txt"));
+    assert.ok(!git("show", "HEAD:hidden.js").includes("ghp_"), "the staged token was not committed");
+  });
+
   // Last in this describe: it leaves the project, so nothing after it can assume a folder is open.
   test("'New task' always starts a blank, no-folder chat — like Claude's own 'New' — not a task in whatever project is open", async () => {
     assert.ok(!page.$("crumb").classList.contains("empty"), "a project is open to start");

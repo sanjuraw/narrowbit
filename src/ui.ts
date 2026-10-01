@@ -1020,7 +1020,7 @@ export function startUi(opts: UiOptions) {
           const r = restoreCheckpoint(targetRoot, target.commit);
           if (!r.ok) return json(res, 500, { error: r.message });
           appendEvent(p, id, { actor: "user", type: "checkpoint", summary: `rewound to: ${target.summary}`, meta: { rewoundTo: target.id } });
-          return json(res, 200, { ok: true, message: r.message, movedTo: r.movedTo });
+          return json(res, 200, { ok: true, message: r.message, movedTo: r.movedTo, unsaved: r.unsaved });
         }
         case "/api/stop": {
           if (!run?.running) return json(res, 200, { ok: true });
@@ -1057,9 +1057,12 @@ export function startUi(opts: UiOptions) {
           }
           const add = sh("git", ["add", "-A", "--", ...files], root);
           if (add.code !== 0) return json(res, 500, { error: add.stderr.trim() || "git add failed" });
-          const c = sh("git", ["commit", "-m", message], root);
+          // Commit exactly the files shown on the Changes card (as they are on disk, which is what was scanned above) —
+          // a plain `git commit` would also take whatever else was already staged, unseen and unscanned.
+          const c = sh("git", ["commit", "-m", message, "--only", "--", ...files], root);
           if (c.code !== 0) return json(res, 500, { error: (c.stderr || c.stdout).trim() || "git commit failed" });
-          return json(res, 200, { ok: true, head: sh("git", ["rev-parse", "--short", "HEAD"], root).stdout.trim() });
+          const leftStaged = sh("git", ["diff", "--cached", "--name-only", "-z"], root).stdout.split("\0").filter(Boolean);
+          return json(res, 200, { ok: true, head: sh("git", ["rev-parse", "--short", "HEAD"], root).stdout.trim(), leftStaged });
         }
         case "/api/reveal-recovered": {
           // Show a rewind/discard recovery folder in Finder. Only ever a folder under this project's

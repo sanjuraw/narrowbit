@@ -2211,7 +2211,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       var commit = el("button", { cls: "primary", text: "Commit", onclick: function () {
         if (!msg.value.trim()) { msg.focus(); return; }
         var doCommit = function (force) {
-          api("/api/commit", { message: msg.value.trim(), task: id, force: force }).then(function (r) { banner("", null); finishCard(card, "Committed " + r.head + " — " + msg.value.trim()); load(); }).catch(function (e) {
+          api("/api/commit", { message: msg.value.trim(), task: id, force: force }).then(function (r) { banner("", null); finishCard(card, "Committed " + r.head + " — " + msg.value.trim() + (r.leftStaged && r.leftStaged.length ? " (not included: " + r.leftStaged.length + " other file(s) you had already staged — they stay staged)" : "")); load(); }).catch(function (e) {
             if (e.status === 409 && e.data && e.data.error === "secrets") {
               var box = el("div");
               box.appendChild(el("strong", { text: "Possible secrets in this change — commit paused." }));
