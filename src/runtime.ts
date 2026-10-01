@@ -577,25 +577,40 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   };
   const lead: LeadCtx = leadFor(opts.leadModel) ?? { p, taskId, call, model: tiers.escalate, effort, role, preexisting, claudeBin: opts.claudeBin };
   const reviewLead: LeadCtx = leadFor(opts.reviewer) ?? lead;
+  let rejected: string | null = null;
   if (boss && !opts.reviewOnly && !continuing) {
     log(`[plan] (${tiers.escalate}) planning`);
     plan = await leadPlan(lead, taskText, store);
     if (plan) log(`      → ${plan.steps.length} steps`);
     if (plan && opts.planApproval && opts.ask) {
-      const choice = await opts.ask(`Proposed plan:\n\n${renderPlanForWorker(plan)}`, ["Approve", "Ask for changes"]);
-      if (choice === "Ask for changes") {
-        const feedback = (await opts.ask("What should change about the plan?", [])) ?? "";
-        log(`[plan] revising per feedback: ${feedback.slice(0, 80)}`);
-        const revised = feedback.trim() ? await leadPlan(lead, `${taskText}\n\nRevise the plan: ${feedback.trim()}`, store) : null;
-        if (revised) {
-          plan = revised;
-          log(`      → ${plan.steps.length} steps (revised)`);
+      // Only an explicit "Approve" lets work start. Anything else — Reject, or a typed answer such as "No, stop" — must not
+      // be read as approval: a typed answer is taken as feedback for one revision, and the revised plan needs approving too.
+      const OPTIONS = ["Approve", "Ask for changes", "Reject"];
+      let decided = false;
+      for (let round = 0; round < 2 && !decided; round++) {
+        const choice = await opts.ask(`${round ? "Revised plan" : "Proposed plan"}:\n\n${renderPlanForWorker(plan)}`, OPTIONS);
+        if (choice === null) break; // nobody available to ask: proceed, same as when planApproval is off
+        if (choice === "Approve") {
+          appendEvent(p, taskId, { actor: "user", type: "decision", summary: "plan approved" });
+          decided = true;
+        } else if (choice === "Reject") {
+          rejected = "You rejected the plan, so nothing was changed.";
+          appendEvent(p, taskId, { actor: "user", type: "decision", summary: "plan rejected — task stopped before any edit" });
+          break;
+        } else if (round === 0) {
+          const feedback = choice === "Ask for changes" ? ((await opts.ask("What should change about the plan?", [])) ?? "") : choice;
+          log(`[plan] revising per feedback: ${feedback.slice(0, 80)}`);
+          const revised = feedback.trim() ? await leadPlan(lead, `${taskText}\n\nRevise the plan: ${feedback.trim()}`, store) : null;
+          if (revised) {
+            plan = revised;
+            log(`      → ${plan.steps.length} steps (revised)`);
+          }
+          appendEvent(p, taskId, { actor: "user", type: "decision", summary: revised ? "plan revised after feedback" : "asked for changes, but the plan is unchanged (no feedback given, or revising failed)" });
+        } else {
+          rejected = "The revised plan wasn't approved, so nothing was changed.";
+          appendEvent(p, taskId, { actor: "user", type: "decision", summary: "revised plan not approved — task stopped before any edit" });
         }
-        appendEvent(p, taskId, { actor: "user", type: "decision", summary: revised ? "plan revised after feedback" : "asked for changes, but the plan is unchanged (no feedback given, or revising failed)" });
-      } else if (choice !== null) {
-        appendEvent(p, taskId, { actor: "user", type: "decision", summary: "plan approved" });
       }
-      // choice === null (nobody available to ask): proceed with the original plan, same as when planApproval is off.
     }
   }
 
@@ -616,8 +631,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     }
   }
 
-  let outcome: RuntimeResult["outcome"] = "max_steps";
-  let summary = "";
+  let outcome: RuntimeResult["outcome"] = rejected ? "stopped" : "max_steps";
+  let summary = rejected ?? "";
   let steps = 0;
   let parseRetries = 0;
   let compactions = 0;
@@ -684,7 +699,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   let providerOverhead = 0;
   let attachmentsPending = !!opts.attachments?.length;
 
-  for (; steps < maxSteps; steps++) {
+  for (; steps < maxSteps && !rejected; steps++) {
     if (opts.signal?.aborted) {
       outcome = "stopped";
       summary = "stopped by the user";
@@ -1361,7 +1376,7 @@ interface LeadCtx {
 }
 
 function untrackedFiles(p: Paths): string[] {
-  return sh("git", ["ls-files", "--others", "--exclude-standard"], p.root).stdout.split("\n").filter((f) => f && !f.startsWith(".narrowbit/"));
+  return sh("git", ["ls-files", "--others", "--exclude-standard", "-z"], p.root).stdout.split("\0").filter((f) => f && !f.startsWith(".narrowbit/"));
 }
 
 function planMeta(plan: LeadPlan) {

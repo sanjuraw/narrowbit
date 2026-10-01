@@ -194,7 +194,7 @@ function untrackedAtStart(p: Paths, taskId: string | null): Set<string> | null {
 /** Added/removed line counts per changed file (new files count every line as added). */
 function diffStats(root: string, files: string[]): Record<string, { added: number; removed: number }> {
   const out: Record<string, { added: number; removed: number }> = {};
-  for (const line of sh("git", ["diff", "HEAD", "--numstat", "--", ".", ":(exclude).narrowbit"], root).stdout.split("\n")) {
+  for (const line of sh("git", ["diff", "HEAD", "--numstat", "-z", "--no-renames", "--", ".", ":(exclude).narrowbit"], root).stdout.split("\0")) {
     const [a, r, file] = line.split("\t");
     if (file) out[file] = { added: Number(a) || 0, removed: Number(r) || 0 };
   }
@@ -660,8 +660,8 @@ export function startUi(opts: UiOptions) {
             if (existsSync(dir) && body.confirmCreate !== true) {
               const entries = readdirSync(dir).filter((n) => n !== ".DS_Store");
               if (entries.length) {
-                const tracked = sh("git", ["ls-files", "--others", "--exclude-standard"], dir);
-                const files = tracked.code === 0 ? tracked.stdout.split("\n").filter(Boolean) : entries;
+                const tracked = sh("git", ["ls-files", "--others", "--exclude-standard", "-z"], dir);
+                const files = tracked.code === 0 ? tracked.stdout.split("\0").filter(Boolean) : entries;
                 return json(res, 409, { error: "confirm-create", path: dir, count: files.length, files: files.slice(0, 25) });
               }
             }

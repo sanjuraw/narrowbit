@@ -44,7 +44,7 @@ function save(all: Record<string, Connector>): void {
 
 /** What the app page may see: names only, never the environment values (they are often tokens). */
 export function publicConnector(c: Connector): { name: string; command: string; args: string[]; envKeys: string[]; url: string | null; headerKeys: string[]; signedIn: boolean } {
-  return { name: c.name, command: c.command, args: c.args, envKeys: [...Object.keys(c.env ?? {})], url: c.url ?? null, headerKeys: Object.keys(c.headers ?? {}), signedIn: !!c.url && isSignedIn(c.name) };
+  return { name: c.name, command: c.command, args: c.args, envKeys: [...Object.keys(c.env ?? {})], url: c.url ?? null, headerKeys: Object.keys(c.headers ?? {}), signedIn: !!c.url && isSignedIn(c.name, c.url) };
 }
 
 export function listConnectors(): Connector[] {

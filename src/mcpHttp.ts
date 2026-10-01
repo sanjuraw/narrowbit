@@ -27,11 +27,11 @@ export async function openHttpSession(c: Connector, timeoutMs: number): Promise<
   const post = async (body: object, retryAuth = true): Promise<Response> => {
     const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2025-06-18", ...(c.headers ?? {}) };
     if (sessionId) headers["mcp-session-id"] = sessionId;
-    const token = await accessToken(c.name);
+    const token = await accessToken(c.name, url);
     if (token && !headers.authorization && !headers.Authorization) headers.authorization = `Bearer ${token}`;
     const left = Math.max(1000, deadline - Date.now());
     const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(left) });
-    if (r.status === 401 && retryAuth && (await accessToken(c.name, true))) return post(body, false);
+    if (r.status === 401 && retryAuth && (await accessToken(c.name, url, true))) return post(body, false);
     if (r.status === 401) throw new SignInRequired(c.name);
     return r;
   };
@@ -39,20 +39,36 @@ export async function openHttpSession(c: Connector, timeoutMs: number): Promise<
   const readReply = async (r: Response, id: number): Promise<any> => {
     if (!r.ok) throw new Error(`${c.name}: server answered ${r.status}${r.status === 404 ? " (session expired?)" : ""}`);
     const type = r.headers.get("content-type") ?? "";
-    const text = await r.text();
-    if (type.includes("text/event-stream")) {
-      for (const block of text.split(/\r?\n\r?\n/)) {
-        const data = block.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart()).join("\n");
-        if (!data) continue;
-        try {
-          const m = JSON.parse(data);
-          if (m.id === id) return m;
-        } catch {
-          /* not a JSON event */
+    if (type.includes("text/event-stream") && r.body) {
+      // Read the stream as it arrives and answer as soon as the matching response is in: a server may keep the
+      // connection open after replying, and waiting for it to close would hang the call until the timeout.
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (value) buf += dec.decode(value, { stream: !done });
+          const blocks = buf.split(/\r?\n\r?\n/);
+          buf = done ? "" : (blocks.pop() ?? "");
+          for (const block of blocks) {
+            const data = block.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart()).join("\n");
+            if (!data) continue;
+            try {
+              const m = JSON.parse(data);
+              if (m.id === id) return m;
+            } catch {
+              /* not a JSON event */
+            }
+          }
+          if (done) break;
         }
+      } finally {
+        reader.cancel().catch(() => {});
       }
       throw new Error(`${c.name}: the server closed the stream without answering`);
     }
+    const text = await r.text();
     const m = JSON.parse(text);
     return Array.isArray(m) ? m.find((x: any) => x.id === id) : m;
   };

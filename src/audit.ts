@@ -38,7 +38,7 @@ export function auditRepo(root: string, opts: { files?: string[]; history?: bool
   const findings: Finding[] = [];
   const git = (args: string[]) => sh("git", args, root);
   const isRepo = git(["rev-parse", "--is-inside-work-tree"]).code === 0;
-  const tracked = isRepo ? git(["ls-files"]).stdout.split("\n").filter(Boolean) : [];
+  const tracked = isRepo ? git(["ls-files", "-z"]).stdout.split("\0").filter(Boolean) : [];
   const files = (opts.files ?? tracked).filter((f) => !f.startsWith(".narrowbit/") && !f.startsWith("node_modules/"));
 
   for (const f of files) {
@@ -65,7 +65,7 @@ export function auditRepo(root: string, opts: { files?: string[]; history?: bool
 
   if (isRepo && !opts.files) {
     // Secret files present in the folder that git would happily commit next.
-    for (const f of git(["ls-files", "--others", "--exclude-standard"]).stdout.split("\n").filter(Boolean)) {
+    for (const f of git(["ls-files", "--others", "--exclude-standard", "-z"]).stdout.split("\0").filter(Boolean)) {
       if (SECRET_FILE.test(f) && !f.startsWith("node_modules/")) findings.push({ severity: "high", check: "secret file not ignored", file: f, detail: `${f} is not in .gitignore, so the next "git add ." will commit it. Add it to .gitignore now.` });
     }
     if (existsSync(join(root, ".env")) && git(["check-ignore", "-q", ".env"]).code !== 0 && !findings.some((x) => x.file === ".env")) findings.push({ severity: "high", check: "secret file not ignored", file: ".env", detail: ".env exists but is not ignored by git. Add it to .gitignore." });

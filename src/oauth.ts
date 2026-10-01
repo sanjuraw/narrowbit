@@ -10,6 +10,8 @@ import { join } from "node:path";
  * the page; the app only learns "signed in or not". No client secret is used (public client + PKCE).
  */
 interface Stored {
+  /** The MCP server URL this token was issued for. A token is only ever sent to that exact server. */
+  resource?: string;
   clientId: string;
   tokenEndpoint: string;
   access: string;
@@ -33,7 +35,21 @@ function save(all: Record<string, Stored>): void {
   if (existsSync(file())) chmodSync(file(), 0o600);
 }
 
-export const isSignedIn = (name: string): boolean => !!load()[name]?.access;
+const sameResource = (stored: string | undefined, url: string | undefined): boolean => {
+  if (!stored || !url) return false;
+  try {
+    return new URL(stored).href === new URL(url).href;
+  } catch {
+    return false;
+  }
+};
+
+/** Signed in to *this* server: a token issued for a different URL (the connector was edited to point elsewhere, or an
+ * older entry that recorded no server) doesn't count — it would go to a destination the user never signed in to. */
+export const isSignedIn = (name: string, url?: string): boolean => {
+  const s = load()[name];
+  return !!s?.access && sameResource(s.resource, url);
+};
 export function signOut(name: string): void {
   const all = load();
   delete all[name];
@@ -119,7 +135,7 @@ export async function completeSignIn(state: string, code: string): Promise<strin
   pending.delete(state);
   const tok = await tokenRequest(p.tokenEndpoint, { grant_type: "authorization_code", code, redirect_uri: p.redirectUri, client_id: p.clientId, code_verifier: p.verifier, resource: p.url });
   const all = load();
-  all[p.name] = { clientId: p.clientId, tokenEndpoint: p.tokenEndpoint, access: tok.access_token, refresh: tok.refresh_token, expiresAt: tok.expires_in ? Date.now() + Number(tok.expires_in) * 1000 : 0 };
+  all[p.name] = { resource: p.url, clientId: p.clientId, tokenEndpoint: p.tokenEndpoint, access: tok.access_token, refresh: tok.refresh_token, expiresAt: tok.expires_in ? Date.now() + Number(tok.expires_in) * 1000 : 0 };
   save(all);
   return p.name;
 }
@@ -132,10 +148,10 @@ async function tokenRequest(endpoint: string, form: Record<string, string>): Pro
 }
 
 /** A usable access token for this connector, refreshed when it has (nearly) expired. Null = not signed in. */
-export async function accessToken(name: string, forceRefresh = false): Promise<string | null> {
+export async function accessToken(name: string, url: string, forceRefresh = false): Promise<string | null> {
   const all = load();
   const s = all[name];
-  if (!s?.access) return null;
+  if (!s?.access || !sameResource(s.resource, url)) return null;
   const stale = forceRefresh || (s.expiresAt && Date.now() > s.expiresAt - 30_000);
   if (!stale) return s.access;
   if (!s.refresh) return forceRefresh ? null : s.access;

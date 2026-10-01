@@ -1078,6 +1078,36 @@ describe("fifth Codex review: checkpoint hooks, symlinked protected paths and di
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
   });
 
+  test("Rewind changes nothing if it can't save a recovery copy first", async () => {
+    const { checkpointNow, listCheckpoints, restoreCheckpoint } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    try {
+      checkpointNow(p, "rt-nb", 0, "start");
+      writeFileSync(join(root, "a.txt"), "later work that must survive a failed rewind\n");
+      writeFileSync(join(root, "extra.txt"), "created later\n");
+      mkdirSync(join(root, ".narrowbit"), { recursive: true });
+      writeFileSync(join(root, ".narrowbit", "rewind-trash"), "a file where the recovery folder should be\n"); // so it can't be created
+      const res = restoreCheckpoint(root, listCheckpoints(p, "rt-nb")[0].commit);
+      assert.equal(res.ok, false, res.message);
+      assert.match(res.message, /nothing was changed/);
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "later work that must survive a failed rewind\n", "the later edit was not overwritten");
+      assert.ok(existsSync(join(root, "extra.txt")), "and the newer file was not moved");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("changedSince returns real paths for non-ASCII names, so Commit can stage them", async () => {
+    const { changedSince } = await dist("git.js");
+    const { root } = tinyRepo();
+    try {
+      writeFileSync(join(root, "café.txt"), "new\n");
+      writeFileSync(join(root, "a.txt"), "edited\n");
+      const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+      const files = changedSince(root, head);
+      assert.ok(files.includes("café.txt"), JSON.stringify(files));
+      execFileSync("git", ["add", "-A", "--", ...files], { cwd: root }); // what Commit does; throws on a quoted name
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test("Rewind keeps a copy of every file it overwrites", async () => {
     const { checkpointNow, listCheckpoints, restoreCheckpoint } = await dist("checkpoints.js");
     const { root, p } = tinyRepo();
@@ -1686,7 +1716,7 @@ describe("remote MCP servers", () => {
     const cb = new URL(back.headers.get("location"));
     assert.equal(cb.searchParams.get("code"), "abc");
     assert.equal(await completeSignIn(cb.searchParams.get("state"), cb.searchParams.get("code")), "mock");
-    assert.equal(isSignedIn("mock"), true);
+    assert.equal(isSignedIn("mock", world.base + "/mcp"), true);
     const mode = (await import("node:fs")).statSync(join(home, ".narrowbit", "oauth.json")).mode & 0o777;
     assert.equal(mode, 0o600);
     assert.ok(!JSON.stringify(publicConnector(getConnector("mock"))).includes("tok1"), "the token never appears in what the page sees");
@@ -1706,7 +1736,38 @@ describe("remote MCP servers", () => {
     const r = await callConnectorTool(c, "list_issues", {});
     assert.match(r.text, /ran list_issues/);
     assert.equal(world.state.refreshes, 1);
-    assert.equal(await accessToken("mock"), "tok2");
+    assert.equal(await accessToken("mock", world.base + "/mcp"), "tok2");
+  });
+
+  test("a sign-in belongs to one server: pointing the connector at another URL is signed out, and the old token is never sent there", async () => {
+    const url = world.base + "/mcp";
+    assert.equal(isSignedIn("mock", url), true);
+    assert.equal(isSignedIn("mock", "http://127.0.0.1:9/elsewhere"), false);
+    assert.equal(await accessToken("mock", "http://127.0.0.1:9/elsewhere"), null);
+    saveConnector("mock", "", [], undefined, { url: "http://127.0.0.1:9/elsewhere" });
+    assert.equal(publicConnector(getConnector("mock")).signedIn, false, "the page no longer says 'signed in'");
+    await assert.rejects(() => listConnectorTools(getConnector("mock")), /sign-in required|fetch failed|ECONNREFUSED/);
+    saveConnector("mock", "", [], undefined, { url });
+    assert.equal(publicConnector(getConnector("mock")).signedIn, true, "pointing it back restores it");
+  });
+
+  test("an event-stream reply returns as soon as the matching response arrives, even if the server keeps the stream open", async () => {
+    const http = await import("node:http");
+    const srv = http.createServer((req, res) => {
+      let body = ""; req.on("data", (d) => (body += d)); req.on("end", () => {
+        const m = JSON.parse(body);
+        if (m.id === undefined) { res.writeHead(202); res.end(); return; }
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ jsonrpc: "2.0", id: m.id, result: m.method === "tools/list" ? { tools: [{ name: "t1", description: "d", inputSchema: {} }] } : {} })}\n\n`);
+        // and never end(): the connection stays open
+      });
+    });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    try {
+      saveConnector("sse-open", "", [], undefined, { url: `http://127.0.0.1:${srv.address().port}/mcp`, headers: { Authorization: "Bearer x" } });
+      const tools = await Promise.race([listConnectorTools(getConnector("sse-open")), new Promise((_, rej) => setTimeout(() => rej(new Error("hung waiting for the stream to close")), 8000))]);
+      assert.deepEqual(tools.map((t) => t.name), ["t1"]);
+    } finally { srv.closeAllConnections(); srv.close(); }
   });
 
   test("signed out: a clear 'sign in' message, and a static Authorization header works without OAuth", async () => {
@@ -2773,18 +2834,39 @@ describe("plan approval (opt-in, needs lead mode and someone to ask)", () => {
       asked.push(q);
       if (/Proposed plan/.test(q)) return "Ask for changes";
       if (/What should change/.test(q)) return "make it French";
+      if (/Revised plan/.test(q)) return "Approve";
       return null;
     };
     try {
       const r = await runTask(p, "say hi in a.txt", { claudeBin: fake.bin, boss: true, planApproval: true, ask, maxSteps: 10 });
       assert.equal(r.outcome, "done");
-      assert.equal(asked.length, 2, "asked to approve, then asked what to change");
+      assert.equal(asked.length, 3, "asked to approve, asked what to change, then asked to approve the revised plan");
       const ev = readEvents(p, r.taskId);
       assert.ok(ev.some((e) => e.summary === "plan revised after feedback"));
       const plans = ev.filter((e) => e.type === "plan" && /^plan: \d+ steps$/.test(e.summary));
       assert.equal(plans.length, 2, "the plan was generated, then regenerated once (a later 'N/N done' progress event doesn't count)");
       assert.match(plans[1].summary + JSON.stringify(plans[1].meta), /French/);
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("Rejecting the plan, or answering it with 'No', never counts as approval: nothing is edited", async () => {
+    for (const answer of ["Reject", "No. Stop; do not edit anything"]) {
+      const { root, p } = tinyRepo();
+      const fake = fakeClaude([
+        JSON.stringify({ plan: ["say hi in a.txt"], files: ["a.txt"] }),
+        JSON.stringify({ plan: ["still say hi in a.txt"], files: ["a.txt"] }), // a typed answer gets one revision...
+        JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "hi" }),
+        JSON.stringify({ action: "done", summary: "changed it" }),
+      ]);
+      // ...and the revised plan is then refused too
+      const ask = async (q) => (/Revised plan/.test(q) ? "Reject" : answer);
+      try {
+        const r = await runTask(p, "say hi in a.txt", { claudeBin: fake.bin, boss: true, planApproval: true, ask, maxSteps: 10 });
+        assert.equal(r.outcome, "stopped", answer);
+        assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "hello\n", "the file was not edited");
+        assert.ok(!readEvents(p, r.taskId).some((e) => e.summary === "plan approved"));
+      } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+    }
   });
 
   test("Approve leaves the plan untouched, and no ask means proceed as if planApproval were off", async () => {

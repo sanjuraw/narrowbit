@@ -67,8 +67,9 @@ export function fileRecency(commits: CommitInfo[]): Map<string, { index: number;
 
 /** Files changed between a base commit and the working tree (tracked + untracked). */
 export function changedSince(root: string, base: string): string[] {
-  const tracked = sh("git", ["diff", "--name-only", base], root).stdout.split("\n").filter(Boolean);
-  const untracked = sh("git", ["ls-files", "--others", "--exclude-standard"], root).stdout.split("\n").filter(Boolean);
+  // NUL-separated: git otherwise quotes names like café.txt, and a quoted name is not a path.
+  const tracked = sh("git", ["diff", "--name-only", "-z", base], root).stdout.split("\0").filter(Boolean);
+  const untracked = sh("git", ["ls-files", "--others", "--exclude-standard", "-z"], root).stdout.split("\0").filter(Boolean);
   return [...new Set([...tracked, ...untracked])];
 }
 

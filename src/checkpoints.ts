@@ -95,7 +95,13 @@ export function pruneRewindTrash(root: string, maxAgeDays = 14, nowMs = Date.now
   const base = join(root, ".narrowbit", "rewind-trash");
   if (!existsSync(base)) return [];
   const removed: string[] = [];
-  for (const name of readdirSync(base)) {
+  let names: string[];
+  try {
+    names = readdirSync(base);
+  } catch {
+    return []; // not a readable folder: nothing to prune (the caller finds out when it tries to write there)
+  }
+  for (const name of names) {
     const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(name);
     if (!m) continue;
     const at = Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`);
@@ -128,6 +134,25 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
   const moved: string[] = [];
   const overwrittenSaved: string[] = [];
   const kept: string[] = [];
+  // Files the checkout below will overwrite (changed since the checkpoint, by the task or by the user): keep a copy.
+  const overwritten: string[] = now
+    ? git(root, ["diff-tree", "-r", "--name-only", "-z", "--no-renames", "--diff-filter=MT", commit, now]).out.split("\0").filter((f) => f && before.has(f) && after.has(f))
+    : [];
+  const unsaved: string[] = [];
+  for (const f of overwritten) {
+    const to = join(trash, f);
+    try {
+      mkdirSync(dirname(to), { recursive: true });
+      copyKeepingLinks(join(root, f), to);
+      if (!moved.includes(f)) overwrittenSaved.push(f);
+    } catch (e: any) {
+      // A file that is already gone has nothing to keep; anything else means it is about to be overwritten uncopied.
+      if (e?.code !== "ENOENT") unsaved.push(f);
+    }
+  }
+  // Nothing is overwritten or moved unless every file about to be replaced has a recovery copy: stop here instead.
+  if (unsaved.length) return { ok: false, message: `nothing was changed: couldn't save a recovery copy of ${unsaved.length} file(s) first (${unsaved.slice(0, 5).join(", ")}). Check that .narrowbit/rewind-trash is writable.`, unsaved };
+
   for (const f of after) {
     if (before.has(f)) continue;
     if (staged.has(f)) {
@@ -151,22 +176,6 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
       kept.push(f);
     }
   }
-  // Files the checkout below will overwrite (changed since the checkpoint, by the task or by the user): keep a copy.
-  const overwritten: string[] = now
-    ? git(root, ["diff-tree", "-r", "--name-only", "-z", "--no-renames", "--diff-filter=MT", commit, now]).out.split("\0").filter((f) => f && before.has(f) && after.has(f))
-    : [];
-  const unsaved: string[] = [];
-  for (const f of overwritten) {
-    const to = join(trash, f);
-    try {
-      mkdirSync(dirname(to), { recursive: true });
-      copyKeepingLinks(join(root, f), to);
-      if (!moved.includes(f)) overwrittenSaved.push(f);
-    } catch (e: any) {
-      // A file that is already gone has nothing to keep; anything else means it is about to be overwritten uncopied.
-      if (e?.code !== "ENOENT") unsaved.push(f);
-    }
-  }
   const dir = mkdtempSync(join(tmpdir(), "nb-ckpt-restore-"));
   const idx = join(dir, "index");
   try {
@@ -180,9 +189,8 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
   const notes = [`restored ${before.size} file(s)`];
   if (moved.length) notes.push(`moved ${moved.length} newer file(s) to ${join(".narrowbit", "rewind-trash", stamp)} instead of deleting them (kept there for 14 days)`);
   if (kept.length) notes.push(`left ${kept.length} newer file(s) in place (staged, or could not be moved): ${kept.slice(0, 5).join(", ")}`);
-  if (unsaved.length) notes.push(`WARNING: could not keep a copy of ${unsaved.length} file(s) before overwriting them: ${unsaved.slice(0, 5).join(", ")}`);
   if (overwrittenSaved.length) notes.push(`kept a copy of ${overwrittenSaved.length} file(s) it overwrote in ${join(".narrowbit", "rewind-trash", stamp)}`);
-  return { ok: true, message: notes.join("; "), movedTo: moved.length || overwrittenSaved.length ? trash : undefined, kept: kept.length ? kept : undefined, unsaved: unsaved.length ? unsaved : undefined };
+  return { ok: true, message: notes.join("; "), movedTo: moved.length || overwrittenSaved.length ? trash : undefined, kept: kept.length ? kept : undefined };
 }
 
 export interface DiscardPlan {
