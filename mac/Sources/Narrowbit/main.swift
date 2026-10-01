@@ -1,9 +1,10 @@
 import AppKit
 import WebKit
+import UserNotifications
 
 /// Narrowbit.app: starts `narrowbit ui --app` in the background and shows it in a native window.
 /// All behaviour lives in the TypeScript runtime; this file only adds what a browser tab can't:
-/// a Dock icon, a native folder picker, Dock attention when a command needs approval, and
+/// a Dock icon, a native folder picker, a notification when a command needs approval, and
 /// stopping the server when the app quits.
 final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate {
     private var window: NSWindow!
@@ -15,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
+        // Asked once; macOS remembers the answer. Without it we fall back to a single Dock bounce.
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         let config = WKWebViewConfiguration()
         config.userContentController.add(self, name: "narrowbit")
         web = WKWebView(frame: .zero, configuration: config)
@@ -150,8 +153,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 NSPasteboard.general.setString(text, forType: .string)
             }
         case "attention", "finished":
-            // A command is waiting for approval, or a run ended: bounce the Dock if we're in the background.
-            if !NSApp.isActive { NSApp.requestUserAttention(type == "attention" ? .criticalRequest : .informationalRequest) }
+            // A command or question is waiting for you, or a run ended. In the background this is a notification
+            // (like the Claude app's), not a bouncing Dock icon; clicking it brings the window forward.
+            if NSApp.isActive { break }
+            let text = (body["text"] as? String) ?? ""
+            let center = UNUserNotificationCenter.current()
+            center.getNotificationSettings { settings in
+                guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+                    DispatchQueue.main.async { NSApp.requestUserAttention(.informationalRequest) } // one bounce at most
+                    return
+                }
+                let content = UNMutableNotificationContent()
+                content.title = type == "attention" ? "Narrowbit needs your OK" : "Narrowbit finished"
+                content.body = String(text.prefix(200))
+                content.sound = type == "attention" ? .default : nil
+                center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+            }
         default:
             break
         }
