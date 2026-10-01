@@ -296,6 +296,12 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.ok([...page.$("aboutInfo").querySelectorAll("button")].some((b) => b.textContent === "Copy diagnostics"));
   });
 
+  test("Check now in About shows that it checked", async () => {
+    const btn = [...page.$("aboutInfo").querySelectorAll("button")].find((b) => b.textContent === "Check now");
+    btn.click();
+    await page.until(() => /Checked at/.test(page.$("aboutInfo").textContent), "a visible 'Checked at' line after Check now");
+  });
+
   test("with nothing signed in, the 'get a model ready' card explains what to do", async () => {
     const card = await page.until(() => (page.visible(page.$("getStarted")) ? page.$("getStarted") : null), "the setup card");
     assert.match(card.textContent, /Let's get a model ready/);

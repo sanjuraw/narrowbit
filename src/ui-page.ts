@@ -996,6 +996,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       .catch(function (e) { var n = $("skillErr"); n.textContent = e.message; show(n, true); });
   };
 
+  var checkedAt = null;
   function renderVersion() {
     var v = S && S.version;
     var line = v && v.version ? "Narrowbit v" + v.version + (v.commit ? " · " + v.commit : "") : "";
@@ -1004,15 +1005,21 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     a.appendChild(el("div", { text: line || "Version unknown" }));
     var msg = !U ? "Checking for updates…" : U.canApply ? "An update is available — use the banner at the top." : U.behind > 0 ? (U.reason || "A newer version is available.") : U.supported ? "Up to date." : (U.reason || "Update check unavailable.");
     a.appendChild(el("div", { cls: "muted", style: "font-size:12.5px", text: msg }));
-    a.appendChild(el("button", { text: "Check now", onclick: function () { loadUpdate(true); } }));
+    var cb = el("button", { text: "Check now", onclick: function () {
+      cb.disabled = true; cb.textContent = "Checking…";
+      loadUpdate(true).then(function () { checkedAt = new Date(); renderVersion(); });
+    } });
+    a.appendChild(cb);
+    if (checkedAt) a.appendChild(el("div", { cls: "muted", style: "font-size:12px", text: "Checked at " + checkedAt.toLocaleTimeString() }));
     var box = el("textarea", { cls: "diag hidden", readonly: "readonly", rows: "8" });
-    a.appendChild(el("button", { text: "Copy diagnostics", title: "Version, setup status and recent problems (secrets removed) to paste into a bug report", onclick: function () {
+    var dg = el("button", { text: "Copy diagnostics", title: "Version, setup status and recent problems (secrets removed) to paste into a bug report", onclick: function () {
       api("/api/diagnostics").then(function (r) {
-        var done = function () { flash($("savedMsg"), "Diagnostics copied"); };
+        var done = function () { dg.textContent = "Copied ✓"; setTimeout(function () { dg.textContent = "Copy diagnostics"; }, 2000); };
         if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(r.text).then(done).catch(function () { box.value = r.text; show(box, true); box.select(); });
         else { box.value = r.text; show(box, true); box.select(); }
       }).catch(function (e) { banner("bad", e.message); });
-    } }));
+    } });
+    a.appendChild(dg);
     a.appendChild(box);
   }
 
