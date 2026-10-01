@@ -26,7 +26,7 @@ import { redact } from "./redact.js";
 import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
 import { termsOf } from "./terms.js";
-import { estimateTokens, sh, shortId, isGitInternal, isNarrowbitOwn, realRel } from "./util.js";
+import { estimateTokens, sha1, sh, shortId, isGitInternal, isGitConfigInclude, isNarrowbitOwn, realRel } from "./util.js";
 import { verify } from "./verify.js";
 
 /**
@@ -615,9 +615,22 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   }
 
   // "@path" mentions in the task text: read straight into the first prompt, so the model never has to
-  // spend a turn finding a file the user already named. Only on a fresh task — a follow-up's mentions
-  // would just repeat what's already in the resumed conversation or the compaction digest.
-  const mentionBlock = continuing ? "" : renderMentions(resolveMentions(p, parseMentions(taskText)));
+  // spend a turn finding a file the user already named. Every message is resolved, follow-ups included; a file whose
+  // content was already sent earlier in this task (recorded as `mentionKeys`) is not sent again, but one that is new —
+  // or has changed since — is.
+  const sentBefore = new Set<string>(prior.flatMap((e) => (Array.isArray(e.meta?.mentionKeys) ? (e.meta!.mentionKeys as string[]) : [])));
+  const resolvedMentions = resolveMentions(p, parseMentions(taskText));
+  const mentionKey = (r: { path: string | null; content: string | null }) => `${r.path}:${sha1(r.content ?? "")}`;
+  const mentionBlock = renderMentions(resolvedMentions.filter((r) => r.content === null || !sentBefore.has(mentionKey(r))));
+  if (resolvedMentions.length) {
+    const missed = resolvedMentions.filter((r) => r.content === null).map((r) => `@${r.token}`);
+    appendEvent(p, taskId, {
+      actor: "system",
+      type: "decision",
+      summary: `attached ${resolvedMentions.length - missed.length} file(s) from @ mentions${missed.length ? `; couldn't attach ${missed.join(", ")} (no such file, or unreadable)` : ""}`,
+      meta: { mentionKeys: resolvedMentions.filter((r) => r.content !== null).map(mentionKey), mentionsMissed: missed },
+    });
+  }
 
   let scoutReport: string | null = null;
   if (opts.scout && !continuing) {
@@ -681,12 +694,12 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       sessionId = lastSession;
       freshSessionPending = false;
       cumulativeCost = Number(last?.meta?.sessionCost ?? 0);
-      nextPrompt = `Follow-up request from the user: ${taskText}\n\nThe earlier work is already in the files. Respond with your next action as JSON.`;
-      nextParts = [part("task", "your follow-up", taskText)];
+      nextPrompt = `Follow-up request from the user: ${taskText}\n\n${mentionBlock}The earlier work is already in the files. Respond with your next action as JSON.`;
+      nextParts = [part("task", "your follow-up", taskText), ...(mentionBlock ? [part("mentions", "files mentioned with @", mentionBlock)] : [])];
     } else {
       const digest = digestWithMemory(p, taskId, cfg.budget.initial);
-      nextParts = [part("task", "your follow-up", taskText), part("digest", "summary of the earlier work", digest), part("instructions", "Narrowbit's instructions", systemPrompt)];
-      nextPrompt = `You are continuing an earlier task (original goal: ${goal}). Progress so far:\n\n${digest}\n\nNew request from the user: ${taskText}\n\nUse read/grep/search for anything you need in full. Respond with your next action as JSON.`;
+      nextParts = [part("task", "your follow-up", taskText), ...(mentionBlock ? [part("mentions", "files mentioned with @", mentionBlock)] : []), part("digest", "summary of the earlier work", digest), part("instructions", "Narrowbit's instructions", systemPrompt)];
+      nextPrompt = `You are continuing an earlier task (original goal: ${goal}). Progress so far:\n\n${digest}\n\nNew request from the user: ${taskText}\n\n${mentionBlock}Use read/grep/search for anything you need in full. Respond with your next action as JSON.`;
     }
   }
   let reviews = 0;
@@ -1189,6 +1202,11 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       }
       if (isGitInternal(path) || (!abs && isGitInternal(relative(p.root, resolve(p.root, path))))) {
         const text = `edit ${path}: refused — files inside .git are git's own internals, not part of the task (and git would execute some of them)`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
+        return text;
+      }
+      if (abs && isGitConfigInclude(p.root, abs)) {
+        const text = `edit ${path}: refused — this repository's git config includes that file, so git would run any program named in it`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
         return text;
       }

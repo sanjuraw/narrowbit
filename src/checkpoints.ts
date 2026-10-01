@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Paths } from "./config.js";
 import { appendEvent, readEvents } from "./events.js";
+import { untrustedReason } from "./trust.js";
 import { gitArgs } from "./util.js";
 
 /**
@@ -32,6 +33,9 @@ function git(root: string, args: string[], env?: Record<string, string>): { code
 /** A tree-only commit of the working tree right now (no parent, floating), or null if this isn't a usable git repo. */
 function snapshotTree(root: string): string | null {
   if (git(root, ["rev-parse", "--is-inside-work-tree"]).out !== "true") return null;
+  // `git add` runs the repository's clean filters. Re-check the config now rather than trusting the check made when the
+  // folder was opened: it can have changed since (a task that edited an included config file, say).
+  if (untrustedReason(root)) return null;
   const dir = mkdtempSync(join(tmpdir(), "nb-ckpt-"));
   const idx = join(dir, "index");
   try {

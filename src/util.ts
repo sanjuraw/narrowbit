@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 export function sha1(data: string | Buffer): string {
   return createHash("sha1").update(data).digest("hex");
@@ -104,4 +105,45 @@ export function stripAnsi(s: string): string {
 
 export function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
+}
+
+/**
+ * Files the repository's own git config pulls in (`[include] path = …`, `[includeIf …]`, and anything those include).
+ * They are config: a filter or other program named there is run by git exactly as if it were in .git/config, so the
+ * agent may not edit them either. A path that doesn't exist yet still counts — git ignores a missing include, and
+ * creating the file would switch it on.
+ */
+export function gitConfigIncludeFiles(root: string): string[] {
+  const out = new Set<string>();
+  const gd = sh("git", ["rev-parse", "--absolute-git-dir"], root);
+  if (gd.code !== 0) return [];
+  const gitDir = gd.stdout.trim();
+  const direct = sh("git", ["config", "--local", "--get-regexp", "^include(if\\..*)?\\.path$"], root);
+  for (const line of direct.stdout.split("\n")) {
+    const value = line.replace(/^\S+\s+/, "").trim();
+    if (!value) continue;
+    out.add(value.startsWith("~/") ? join(homedir(), value.slice(2)) : isAbsolute(value) ? value : join(gitDir, value));
+  }
+  // Includes of includes (each exists, or it wouldn't have been read).
+  const all = sh("git", ["config", "--local", "--includes", "--list", "--show-origin"], root);
+  for (const line of all.stdout.split("\n")) {
+    const m = /^file:(\S.*?)\t/.exec(line);
+    if (m && resolve(m[1]!) !== resolve(gitDir, "config")) out.add(resolve(m[1]!));
+  }
+  return [...out].map((f) => resolve(f));
+}
+
+/** True if `abs` (an absolute path, or its real path) is one of the repo's git-config include files. */
+export function isGitConfigInclude(root: string, abs: string, realAbs?: string | null): boolean {
+  const targets = gitConfigIncludeFiles(root);
+  if (!targets.length) return false;
+  const real = (f: string) => {
+    try {
+      return realpathSync(f);
+    } catch {
+      return f;
+    }
+  };
+  const mine = new Set([resolve(abs), real(abs), ...(realAbs ? [resolve(realAbs)] : [])]);
+  return targets.some((t) => mine.has(t) || mine.has(real(t)));
 }

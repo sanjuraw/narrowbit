@@ -83,7 +83,15 @@ export async function callOpenAICompat(ep: Endpoint, opts: ModelCallOptions): Pr
     // A local server that isn't running won't start on a retry; a hosted API blip might recover.
     return fail(`couldn't reach ${label} at ${ep.baseUrl} (${code})${local ? ` — is ${label} running?` : ""}`, local && code === "ECONNREFUSED");
   }
-  const raw = await res.text();
+  // The body can fail after the headers arrived (a connection reset, the timeout firing mid-download): that is a
+  // provider error like any other, so it must come back through fail() and reach the runtime's retry/fallback.
+  let raw: string;
+  try {
+    raw = await res.text();
+  } catch (e: any) {
+    if (e?.name === "TimeoutError") return fail(`${label} timed out`, false);
+    return fail(`the connection to ${label} broke while its reply was coming in (${e?.cause?.code ?? e?.name ?? "network error"})`, false);
+  }
   let d: any = null;
   try {
     d = JSON.parse(raw);

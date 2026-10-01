@@ -815,6 +815,27 @@ test("app server (ui.ts): refuses calls without the launch token or from a non-l
   }
 });
 
+test("openai-compat: a connection that breaks while the reply body is arriving is a retryable provider error, not an exception", async () => {
+  const { callOpenAICompat } = await dist("providers/openai-compat.js");
+  const { createServer } = await import("node:http");
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json", "content-length": "500" });
+      res.write('{"choices":[{"mess'); // promised 500 bytes, sent 18, then the connection dies
+      setTimeout(() => req.socket.destroy(), 20);
+    });
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    const ep = { provider: "openrouter", baseUrl: `http://127.0.0.1:${server.address().port}`, apiKey: "k", needsKey: true };
+    const r = await callOpenAICompat(ep, { cwd: ".", role: "execution", model: "m", sessionId: "s-broken", systemPrompt: "S", prompt: "p" });
+    assert.equal(r.isError, true);
+    assert.equal(r.fatal, false, "retryable, so the runtime's retry and fallback can take over");
+    assert.match(r.errorMessage ?? r.text ?? "", /broke|timed out/);
+  } finally { server.closeAllConnections(); server.close(); }
+});
+
 test("openai-compat adapter: keeps the conversation per session, cumulative cost, fatal vs retryable errors", async () => {
   const { callOpenAICompat } = await dist("providers/openai-compat.js");
   const { createServer } = await import("node:http");
@@ -1105,6 +1126,35 @@ describe("fifth Codex review: checkpoint hooks, symlinked protected paths and di
       const files = changedSince(root, head);
       assert.ok(files.includes("café.txt"), JSON.stringify(files));
       execFileSync("git", ["add", "-A", "--", ...files], { cwd: root }); // what Commit does; throws on a quoted name
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("the agent can't edit a file the repo's git config includes, and a checkpoint refuses to run a filter that appeared after trust was checked", async () => {
+    const { isGitConfigInclude } = await dist("util.js");
+    const { checkpointNow, listCheckpoints } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    try {
+      writeFileSync(join(root, "extra.gitconfig"), "# nothing yet\n");
+      execFileSync("git", ["config", "include.path", "../extra.gitconfig"], { cwd: root });
+      execFileSync("git", ["config", "--add", "include.path", "../not-yet.gitconfig"], { cwd: root }); // a missing include
+      assert.ok(isGitConfigInclude(root, join(root, "extra.gitconfig")), "an existing included file is protected");
+      assert.ok(isGitConfigInclude(root, join(root, "not-yet.gitconfig")), "so is one that doesn't exist yet (creating it would switch it on)");
+      assert.ok(!isGitConfigInclude(root, join(root, "a.txt")));
+      // the model can't make that edit...
+      const fake = fakeClaude([
+        JSON.stringify({ action: "edit", path: "extra.gitconfig", old: "# nothing yet", new: "[filter \"x\"]\n\tclean = touch PWNED" }),
+        JSON.stringify({ action: "done", summary: "tried" }),
+      ]);
+      const r = await runTask(p, "edit it", { claudeBin: fake.bin, boss: false, maxSteps: 6 });
+      assert.equal(readFileSync(join(root, "extra.gitconfig"), "utf8"), "# nothing yet\n", "the included config file was not changed");
+      assert.ok(readEvents(p, r.taskId).some((e) => /git config includes that file/.test(e.summary)));
+      rmSync(fake.dir, { recursive: true, force: true });
+      // ...and if such a filter shows up anyway, the snapshot (which runs `git add`, hence clean filters) does not run it
+      writeFileSync(join(root, "extra.gitconfig"), '[filter "x"]\n\tclean = touch PWNED\n');
+      writeFileSync(join(root, ".gitattributes"), "*.txt filter=x\n");
+      checkpointNow(p, "rt-inc", 0, "start");
+      assert.deepEqual(listCheckpoints(p, "rt-inc"), [], "no checkpoint taken while an untrusted filter is configured");
+      assert.ok(!existsSync(join(root, "PWNED")), "the filter command did not run");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -2658,6 +2708,26 @@ describe("@ file mentions", () => {
       assert.match(block, /@nope\.ts didn't match any file/);
       assert.deepEqual(suggestFiles(p, "b.tx"), ["b.txt"]);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a follow-up's new @ mention is attached; a file already sent in this task is not sent twice", async () => {
+    const { root, p } = tinyRepo();
+    writeFileSync(join(root, "b.txt"), "second file\n");
+    const fake = fakeClaude([JSON.stringify({ action: "done", summary: "ok" })]);
+    const mentionParts = (taskId) => readEvents(p, taskId).filter((e) => e.type === "model_call").map((e) => (e.meta?.context?.parts ?? []).filter((x) => x.kind === "mentions").length);
+    try {
+      const r1 = await runTask(p, "what does @a.txt say?", { claudeBin: fake.bin, boss: false, maxSteps: 5 });
+      assert.deepEqual(mentionParts(r1.taskId), [1]);
+      await runTask(p, "and what about @b.txt (and @a.txt again)?", { claudeBin: fake.bin, boss: false, maxSteps: 5, continueTask: r1.taskId });
+      const counts = mentionParts(r1.taskId);
+      assert.equal(counts.length, 2);
+      assert.equal(counts[1], 1, "b.txt was attached on the follow-up");
+      const sent = readEvents(p, r1.taskId).filter((e) => e.meta?.mentionKeys).map((e) => e.meta.mentionKeys);
+      assert.equal(sent.length, 2);
+      assert.ok(readEvents(p, r1.taskId).some((e) => /attached 2 file/.test(e.summary)), "the event says what was attached");
+      await runTask(p, "once more, @a.txt and @nope.txt", { claudeBin: fake.bin, boss: false, maxSteps: 5, continueTask: r1.taskId });
+      assert.ok(readEvents(p, r1.taskId).some((e) => /couldn't attach @nope\.txt/.test(e.summary)), "an unresolved mention is reported");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 
   test("the worker answers from a mentioned file's content without needing to read it first", async () => {
