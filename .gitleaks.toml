@@ -11,4 +11,5 @@ regexes = [
   '''sk_live_b{24}''',
   '''ghp_abcdefghijklmnopqrstuvwxyz0123456789''',
   '''ghp_a{36}''',
+  '''NB-DIR-SECRET-5521''',
 ]
