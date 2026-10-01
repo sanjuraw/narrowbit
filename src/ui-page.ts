@@ -118,8 +118,9 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .sess-acts button.danger:hover { color: var(--bad); }
 .sess-edit { width: 100%; }
 .sess-confirm { display: flex; gap: 6px; align-items: center; padding: 7px 10px; font-size: 12.5px; color: var(--muted); }
-.ckpt { display: flex; align-items: center; gap: 8px; padding: 4px 2px; font-size: 12px; color: var(--faint); }
-.ckpt-label { font-family: var(--mono); }
+.ckpt { display: flex; align-items: center; gap: 8px; padding: 2px 2px 2px 14px; font-size: 12px; color: var(--faint); opacity: .45; transition: opacity .12s; }
+.ckpt:hover, .ckpt:focus-within { opacity: 1; }
+.ckpt-label { font-family: inherit; }
 .ckpt-confirm { display: flex; align-items: center; gap: 6px; }
 .sess.on { background: var(--panel); box-shadow: var(--shadow); }
 .sess .st { display: flex; gap: 7px; align-items: center; font-size: 13px; }
@@ -221,13 +222,16 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .step.run .sd { background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
 .step.ok .sd { background: var(--ok); } .step.fail .sd { background: var(--bad); }
 @keyframes pulse { 50% { opacity: .35; } }
-.step .verb { font-weight: 600; flex: none; }
-.step .tgt { font-family: var(--mono); font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.step .verb { font-weight: 500; flex: none; color: var(--text); }
+.step .tgt.cmd { font-family: var(--mono); font-size: 12px; }
+.step .meta .chip, .step .meta .ctx-btn { opacity: 0; transition: opacity .12s; }
+.step .sh:hover .chip, .step .sh:hover .ctx-btn, .step .sh:focus-within .ctx-btn { opacity: 1; }
+.step .tgt { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .step .meta { margin-left: auto; display: flex; gap: 8px; align-items: baseline; flex: none; font-size: 11.5px; color: var(--faint); }
 .step .add { color: var(--ok); font-family: var(--mono); } .step .rem { color: var(--bad); font-family: var(--mono); }
 .chip { font-size: 10.5px; font-weight: 600; padding: 0 6px; border-radius: 5px; background: var(--panel-2); }
 .drawer h3 .chip { margin-left: 6px; color: var(--accent); text-transform: none; letter-spacing: normal; vertical-align: middle; padding: 2px 7px; }
-.step .prev { font-family: var(--mono); font-size: 12px; color: var(--muted); padding: 0 0 2px 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.step .prev { font-size: 12.5px; color: var(--muted); padding: 0 0 2px 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .step .prev::before { content: "⎿  "; color: var(--faint); }
 .step .sb { margin: 4px 0 8px 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: auto; max-height: 360px; }
 .step .sb pre { margin: 0; padding: 8px 10px; font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; }
@@ -262,12 +266,14 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .approval .ah { font-weight: 600; }
 .approval pre { margin: 8px 0 10px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; white-space: pre-wrap; word-break: break-all; font: 12.5px var(--mono); }
 .approval .btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.approval.resolved { box-shadow: none; opacity: .75; padding: 8px 12px; }
+.approval.resolved { box-shadow: none; border: 0; background: transparent; padding: 3px 0; margin: 2px 0; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.approval.resolved .ah { font-weight: 500; font-size: 13px; color: var(--muted); flex: none; }
+.approval.resolved .approval-warn { display: none; }
 .sug-row { display: flex; gap: 8px; align-items: baseline; margin: 6px 0; flex-wrap: wrap; }
 .sug-row .sug-text { flex: 1; min-width: 200px; }
 .approval .qt { margin: 6px 0 10px; }
 .approval input[type=text] { flex: 1; min-width: 180px; }
-.approval.resolved pre { margin: 4px 0 0; }
+.approval.resolved pre { margin: 0; padding: 0; border: 0; background: none; font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 .working { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; margin: 12px 0; }
 .working .spark { width: 14px; height: 14px; border-radius: 4px; background: var(--accent); animation: spin 1.6s cubic-bezier(.6,0,.4,1) infinite; }
@@ -1716,7 +1722,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function placeWorking() {
     var old = $("workingRow"); if (old) old.remove();
     if (!view || !view.working || !viewingRun()) return;
-    var row = el("div", { cls: "working", id: "workingRow" }, el("span", { cls: "spark" }), el("span", { cls: "shimmer", text: view.working }), el("span", { cls: "muted", id: "workTimer", text: view.segStart ? dur(Date.now() - view.segStart) : "" }));
+    var row = el("div", { cls: "working", id: "workingRow" }, el("span", { cls: "spark" }), el("span", { cls: "shimmer", text: view.working }), el("span", { cls: "muted", id: "workTimer", text: view.segStart ? dur(Date.now() - view.segStart) : "" }), el("span", { cls: "muted work-sum", text: actionSummary() ? "· " + actionSummary() : "" }));
     follow(function () { $("items").appendChild(row); });
   }
   setInterval(function () {
@@ -1747,7 +1753,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       : m.action === "grep" ? (m.pattern || "") + (m.glob ? "  in " + m.glob : "") : m.path || "";
     var meta = el("span", { cls: "meta" });
     if (m.model) meta.appendChild(el("span", { cls: "chip", text: m.model, style: "color:" + tierColor(m.model) }));
-    var head = el("div", { cls: "sh" }, el("span", { cls: "sd" }), el("span", { cls: "verb", text: VERB[m.action] || m.action }), el("span", { cls: "tgt", text: target || "" }), meta);
+    var head = el("div", { cls: "sh" }, el("span", { cls: "sd" }), el("span", { cls: "verb", text: VERB[m.action] || m.action }), el("span", { cls: "tgt" + (m.action === "run" || m.action === "grep" ? " cmd" : ""), text: target || "" }), meta);
     var box = el("div", { cls: "step run" }, head);
     var s = { box: box, head: head, meta: meta, prev: null, body: null, open: false };
     head.onclick = function () { if (s.body) { s.open = !s.open; show(s.body, s.open); if (s.prev) show(s.prev, !s.open); } };
@@ -1899,12 +1905,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       var ex = /\(exit (\d+)/.exec(e.summary);
       var code = ex ? Number(ex[1]) : 0;
       if (ex) s.meta.insertBefore(el("span", { cls: code ? "o-blocked" : "", text: "exit " + code }), s.meta.firstChild);
-      attach(s, code ? "fail" : "ok", firstLine(afterFirst(e.summary)) || firstLine(e.summary), pre(e.summary), !!code);
+      attach(s, code ? "fail" : "ok", firstLine(afterFirst(e.summary)) || firstLine(e.summary), pre(e.summary), false);
       view.step = null; return;
     }
     if (e.type === "verify" && s) {
       s.meta.insertBefore(el("span", { cls: m.ok ? "o-done" : "o-blocked", text: m.ok ? "passed" : "failed" }), s.meta.firstChild);
-      attach(s, m.ok ? "ok" : "fail", firstLine(e.summary), pre(e.summary), !m.ok);
+      attach(s, m.ok ? "ok" : "fail", firstLine(e.summary), pre(e.summary), false);
       view.step = null; return;
     }
     if ((e.type === "tool_result" || (e.type === "decision" && m.memoryId)) && s) {
@@ -1953,7 +1959,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (e.type === "checkpoint") {
       if (e.actor === "user") { add(el("div", { cls: "divider", text: e.summary })); return; }
       var row = el("div", { cls: "ckpt" });
-      var label = el("span", { cls: "ckpt-label", text: m.step === 0 ? "Checkpoint: before any changes" : "Checkpoint: after this edit" });
+      var label = el("span", { cls: "ckpt-label", text: m.step === 0 ? "Before any changes" : "After this edit" });
       row.appendChild(label);
       var askBtn = el("button", { cls: "link", text: "Rewind here", onclick: function () {
         if (run.active) { banner("warn", "Stop the task before rewinding."); return; }
@@ -2041,7 +2047,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function onApprovalResolved(ev) {
     var a = view && view.approvals[ev.id]; if (!a) return;
     a.done = true; a.box.classList.add("resolved");
-    a.box.firstChild.textContent = (a.box.firstChild.textContent.indexOf("connector") >= 0 ? "Connector tool " : "Command ") + (ev.allowed ? "allowed" : "denied");
+    a.box.firstChild.textContent = (ev.allowed ? "✓ Allowed" : "✕ Denied");
     a.btns.remove();
   }
 

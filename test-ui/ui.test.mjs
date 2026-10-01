@@ -763,8 +763,8 @@ describe("app page with a folder open", () => {
     const sess = await page.until(() => [...page.w.document.querySelectorAll("#sessions .sess")].find((s) => /say bye/.test(s.textContent)), "the checkpointed session");
     sess.click();
     const labels = await page.until(() => { const l = [...page.w.document.querySelectorAll(".ckpt-label")]; return l.length === 2 ? l : null; }, "both checkpoint rows");
-    assert.match(labels[0].textContent, /before any changes/);
-    assert.match(labels[1].textContent, /after this edit/);
+    assert.match(labels[0].textContent, /before any changes/i);
+    assert.match(labels[1].textContent, /after this edit/i);
     const btn = labels[1].parentElement.querySelector("button");
     assert.equal(btn.textContent, "Rewind here");
     btn.click();
