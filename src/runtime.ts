@@ -702,7 +702,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     } else {
       const digest = digestWithMemory(p, taskId, cfg.budget.initial);
       nextParts = [part("task", "your follow-up", taskText), ...(mentionBlock ? [part("mentions", "files mentioned with @", mentionBlock)] : []), part("digest", "summary of the earlier work", digest), part("instructions", "Narrowbit's instructions", systemPrompt)];
-      nextPrompt = `You are continuing an earlier task (original goal: ${goal}). Progress so far:\n\n${digest}\n\nNew request from the user: ${taskText}\n\n${mentionBlock}Use read/grep/search for anything you need in full. Respond with your next action as JSON.`;
+      nextPrompt = `You are continuing an earlier task (original goal: ${goal}). Progress so far:\n\n${digest}\n\nNew request from the user: ${taskText}\n\n${mentionBlock}Don\'t explore the project again: the files, notes and memory above are what the earlier work already established. Use grep/search to find the specific part you need, and read only that. Use read/grep/search for anything you need in full. Respond with your next action as JSON.`;
     }
   }
   let reviews = 0;
@@ -804,7 +804,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       appendEvent(p, taskId, { actor: "system", type: "decision", summary: `fallback: ${failedWith.slice(0, 120)} — continuing on ${to.provider}`, meta: { fallback: { to: to.provider, reason: failedWith.slice(0, 300) } } });
       log(`[${steps}] main model failed (${failedWith.slice(0, 80)}) — continuing on ${to.provider}`);
       nextParts = [part("digest", "summary of the work so far (new model)", digest), part("nudge", "the step that was in progress", nextPrompt), part("instructions", "Narrowbit's instructions (resent to the backup model)", systemPrompt)];
-      nextPrompt = `You are taking over this task on a different model because the previous one became unavailable. Nothing was lost — use read/grep/search again for anything you need in full. Progress so far:\n\n${digest}\n\nThe input for the step that was in progress:\n${nextPrompt}`;
+      nextPrompt = `You are taking over this task on a different model because the previous one became unavailable. Nothing was lost — don\'t re-explore: rely on the files, notes and memory below, and use grep/search/read only for the specific parts you need. Progress so far:\n\n${digest}\n\nThe input for the step that was in progress:\n${nextPrompt}`;
       steps--;
       continue;
     }
@@ -1059,7 +1059,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       });
       log(`      ~ compacted (${contextTokens} context tokens) — new session`);
       nextParts = [part("digest", "summary after compacting the session", digest), ...resultParts, part("instructions", "Narrowbit's instructions (resent to the new session)", systemPrompt)];
-      nextPrompt = `You are continuing this task after a context compaction. Nothing was lost, only compacted — use read/grep/search again for anything you need in full, rather than assuming what you remember is still current. Progress so far:\n\n${digest}\n\nMost recent result(s):\n${combined}${stopNote}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
+      nextPrompt = `You are continuing this task after a context compaction. Nothing was lost, only compacted — don\'t re-explore the project; rely on the files, notes and memory below, and use grep/search/read only for the specific parts you need, rather than assuming what you remember is still current. Progress so far:\n\n${digest}\n\nMost recent result(s):\n${combined}${stopNote}${nudge}\n\nWhat is the next action? Respond with JSON only.`;
     } else {
       nextParts = resultParts;
       nextPrompt = `${combined}${stopNote}${nudge}${readOnlyNudge}\n\nWhat is the next action? Respond with JSON only.`;
@@ -1067,6 +1067,25 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   }
 
   if (outcome === "done") {
+    // Project memory fills itself: one short note per finished task (what was asked, the answer, what changed), so a
+    // different model — or you, next week — doesn't start from nothing. Stored automatically, fetched only on demand
+    // (or when a model takes over a task); a follow-up replaces the note rather than adding another.
+    try {
+      const evs = readEvents(p, taskId);
+      const goalText = String(evs.find((e) => e.type === "decision" && typeof e.meta?.goal === "string")?.meta?.goal ?? goal);
+      const answer = [...evs].reverse().find((e) => e.type === "decision" && e.actor === "model" && e.summary.startsWith("done: "))?.summary.slice(6).trim() ?? "";
+      const changed = [...new Set(evs.filter((e) => e.type === "edit" && typeof e.meta?.path === "string").map((e) => String(e.meta!.path)))];
+      if (answer.length >= 30 || changed.length) {
+        const mem = openMemory(p);
+        const text = `${goalText.slice(0, 160)} — ${answer.slice(0, 420) || "done"}${changed.length ? ` (changed: ${changed.slice(0, 6).join(", ")})` : ""}`;
+        const old = mem.load().filter((e) => !e.external && e.status === "active" && e.source === taskId && (e.tags ?? []).includes("auto-task"));
+        const entry = mem.add({ type: "fact", text, reason: "saved automatically when the task finished", files: changed.slice(0, 6), source: taskId, tags: ["auto-task"], confidence: "medium" });
+        for (const o of old) mem.setStatus(o.id, "superseded", entry.id);
+        appendEvent(p, taskId, { actor: "system", type: "decision", summary: `remembered [${entry.id}] (fact): ${text.slice(0, 200)}`, meta: { memoryId: entry.id, memoryType: "fact", auto: true } });
+      }
+    } catch {
+      /* a note is a convenience; never fail a finished task over it */
+    }
     try {
       const suggested = suggestNotes(readEvents(p, taskId), openMemory(p).load().filter((e) => e.status === "active"));
       if (suggested.length) appendEvent(p, taskId, { actor: "system", type: "decision", summary: `suggested ${suggested.length} note${suggested.length === 1 ? "" : "s"} for project memory (nothing saved until you approve)`, meta: { suggested } });
@@ -1099,14 +1118,21 @@ function resultMeta(d: Decision, result: string): string {
 
 /** The deterministic summary, plus what project memory holds — a pointer, not an injection: notes are still fetched only on `recall`. */
 export function digestWithMemory(p: Paths, taskId: string, budget: number): string {
-  const digest = project(fold(taskId, readEvents(p, taskId)), { budget });
+  const state = fold(taskId, readEvents(p, taskId));
+  const digest = project(state, { budget });
   let active = 0;
+  let shown = "";
   try {
-    active = openMemory(p).load().filter((e) => e.status === "active").length;
+    const mem = openMemory(p);
+    active = mem.load().filter((e) => e.status === "active").length;
+    // A different model (or a fresh session) is taking over: this is exactly when what the project has already
+    // learned pays for itself, so the few notes most relevant to this task go in; the rest stay behind `recall`.
+    const rel = mem.relevant(termsOf([state.goal ?? "", ...state.filesTouched, ...state.filesRead].join(" ")), [...state.filesTouched, ...state.filesRead], 5);
+    if (rel.length) shown = "\n\nPROJECT MEMORY (most relevant notes):\n" + rel.map((r) => `  - (${r.entry.type}) ${r.entry.text.slice(0, 240)}`).join("\n");
   } catch {
     /* no memory store yet */
   }
-  return active ? `${digest}\n\nPROJECT MEMORY: ${active} active note${active === 1 ? "" : "s"} exist for this repository. None are shown here; use the recall action with a topic to search them.` : digest;
+  return (active ? `${digest}${shown}\n\nPROJECT MEMORY: ${active} active note${active === 1 ? "" : "s"} exist for this repository${shown ? "; the most relevant are above" : ""}. Use the recall action with a topic to search the rest.` : digest);
 }
 
 function checkFailedLabel(d: Decision, result: string): string {

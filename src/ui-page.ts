@@ -1928,6 +1928,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       attach(s, m.ok ? "ok" : "fail", firstLine(e.summary), pre(e.summary), false);
       view.step = null; return;
     }
+    if (e.type === "decision" && m.auto && m.memoryId) { add(el("div", { cls: "notice", text: "Saved a note about this to project memory" })); return; }
     if ((e.type === "tool_result" || (e.type === "decision" && m.memoryId)) && s) {
       var refused = /: (refused|"old" text not found|file not found|file does not exist|"old" text matches)/.test(e.summary) || m.declined;
       if (m.declined) s.meta.insertBefore(el("span", { cls: "o-blocked", text: "denied" }), s.meta.firstChild);

@@ -16,6 +16,13 @@ function render(state: FoldedState): string {
   if (state.blocker) lines.push(`BLOCKER: ${state.blocker}`);
   if (state.lastVerify) lines.push(`LAST VERIFY: ${state.lastVerify.ok ? "PASSED" : "FAILED"} — ${state.lastVerify.summary}`);
   if (state.filesTouched.length) lines.push(`FILES TOUCHED: ${state.filesTouched.join(", ")}`);
+  const readOnly = state.filesRead.filter((f) => !state.filesTouched.includes(f));
+  if (readOnly.length) lines.push(`FILES ALREADY READ (examined earlier in this task; their findings are in the notes below — don't read them again, search inside them for specifics): ${readOnly.slice(0, 40).join(", ")}${readOnly.length > 40 ? ` … and ${readOnly.length - 40} more` : ""}`);
+  if (state.notes.length) {
+    lines.push("WHAT WAS FOUND (the previous model's own notes, oldest first):");
+    for (const n of state.notes) lines.push(`  - ${n}`);
+  }
+  if (state.answers.length) lines.push(`LAST ANSWER GIVEN: ${state.answers[state.answers.length - 1]}`);
   if (state.remembered.length) {
     lines.push("SAVED TO PROJECT MEMORY IN THIS TASK (already stored; search with recall, don't re-save):");
     // Capped like every automatic inclusion: at most 12 notes, 200 characters each (idea from ECC's session-start cap).

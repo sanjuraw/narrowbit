@@ -96,6 +96,12 @@ export interface FoldedState {
   lastVerify: { ok: boolean; summary: string } | null;
   blocker: string | null;
   filesTouched: string[];
+  /** Files the task has already read (paths, oldest first) — what a model taking over need not read again. */
+  filesRead: string[];
+  /** The model's own running commentary ("note" on its actions), most recent last: what it found and why it did things. */
+  notes: string[];
+  /** Final answers given so far (most recent last). */
+  answers: string[];
   /** Notes this task saved to project memory with `remember` (id, type, text) — durable, so the summary always lists them. */
   remembered: { id: string; type: string; text: string }[];
   /** Non-model-call events, oldest first, capped to `recentLimit`. */
@@ -109,8 +115,9 @@ export interface FoldedState {
  * This is what makes the projection in context.ts testable and reproducible.
  */
 export function fold(taskId: string, events: Event[], recentLimit = 8): FoldedState {
-  const state: FoldedState = { taskId, goal: null, plan: [], lastVerify: null, blocker: null, filesTouched: [], remembered: [], recent: [], ledgerByRole: {} };
+  const state: FoldedState = { taskId, goal: null, plan: [], lastVerify: null, blocker: null, filesTouched: [], filesRead: [], notes: [], answers: [], remembered: [], recent: [], ledgerByRole: {} };
   const touched = new Set<string>();
+  const read = new Set<string>();
   const recent: Event[] = [];
   for (const e of events) {
     if (e.type === "decision" && typeof e.meta?.goal === "string") state.goal = e.meta.goal;
@@ -119,6 +126,9 @@ export function fold(taskId: string, events: Event[], recentLimit = 8): FoldedSt
     if (e.type === "blocker") state.blocker = e.summary;
     if (e.type === "decision" && e.meta?.resolvesBlocker) state.blocker = null;
     if (e.type === "edit" && typeof e.meta?.path === "string") touched.add(e.meta.path);
+    if (e.type === "tool_call" && e.meta?.action === "read" && typeof e.meta?.path === "string") read.add(e.meta.path);
+    if (e.type === "tool_call" && typeof e.meta?.note === "string" && e.meta.note.trim()) state.notes.push(e.meta.note.trim().slice(0, 240));
+    if (e.type === "decision" && e.actor === "model" && e.summary.startsWith("done: ")) state.answers.push(e.summary.slice(6, 506));
     if (e.type === "decision" && typeof e.meta?.memoryId === "string") state.remembered.push({ id: e.meta.memoryId, type: String(e.meta.memoryType ?? "note"), text: e.summary.replace(/^remembered \[[^\]]*\] \([^)]*\):\s*/, "") });
     if (e.tokens) {
       const bucket = (state.ledgerByRole[e.tokens.role] ??= { inputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 });
@@ -135,6 +145,9 @@ export function fold(taskId: string, events: Event[], recentLimit = 8): FoldedSt
     }
   }
   state.filesTouched = [...touched];
+  state.filesRead = [...read];
+  state.notes = state.notes.slice(-6);
+  state.answers = state.answers.slice(-2);
   state.recent = recent;
   return state;
 }

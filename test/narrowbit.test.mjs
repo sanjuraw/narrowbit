@@ -2362,7 +2362,7 @@ describe("effort per tier", () => {
 describe("Compact now, and how it meets project memory", () => {
   test("the summary lists notes this task saved, and points at recall without injecting other notes", async () => {
     const { root, p } = tinyRepo();
-    const m = new Memory(p); m.add({ type: "convention", text: "An unrelated project note that must not be injected" });
+    const m = new Memory(p); m.add({ type: "fact", text: "Zebra mango handling is documented elsewhere" });
     const fake = fakeClaude([
       JSON.stringify({ action: "remember", type: "decision", text: "Use pnpm here", reason: "lockfile" }),
       JSON.stringify({ action: "read", path: "a.txt" }),
@@ -2378,7 +2378,7 @@ describe("Compact now, and how it meets project memory", () => {
       const d = digestWithMemory(p, r.taskId, 8000);
       assert.match(d, /SAVED TO PROJECT MEMORY IN THIS TASK[\s\S]*\(decision\) Use pnpm here/);
       assert.match(d, /PROJECT MEMORY: 2 active notes/);
-      assert.ok(!d.includes("unrelated project note"), "other notes are not injected");
+      assert.ok(!d.includes("zebra"), "other notes are not injected");
       assert.ok(fake.resumes().includes("fresh") && fake.resumes().filter((x) => x === "fresh").length >= 2, "the call after the compaction started a fresh session");
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
@@ -2480,10 +2480,68 @@ describe("memory suggestions at the end of a task (approve to save)", () => {
     ]);
     try {
       const r = await runTask(p, "change x to y", { claudeBin: fake.bin, boss: false, maxSteps: 6 });
-      // No failed-then-passed check happened, so nothing is proposed and nothing is saved.
+      // No failed-then-passed check happened, so nothing is *proposed*; the task's own summary note is saved automatically.
       assert.ok(!readEvents(p, r.taskId).some((e) => Array.isArray(e.meta?.suggested)));
-      assert.equal(new Memory(p).load().filter((e) => e.status === "active").length, 0);
+      const notes = new Memory(p).load().filter((e) => e.status === "active");
+      assert.equal(notes.length, 1);
+      assert.deepEqual(notes[0].tags, ["auto-task"]);
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("handoff between models and automatic project memory", () => {
+  test("a finished task saves one summary note automatically; a follow-up replaces it instead of adding another", async () => {
+    const { root, p } = tinyRepo(); writeFileSync(join(root, "b.txt"), "x\n");
+    const fake = fakeClaude([
+      JSON.stringify({ action: "edit", path: "b.txt", old: "x", new: "y" }),
+      JSON.stringify({ action: "done", summary: "Changed x to y in b.txt; nothing else needed." }),
+    ]);
+    try {
+      const r1 = await runTask(p, "change x to y", { claudeBin: fake.bin, boss: false, maxSteps: 6 });
+      const active = () => new Memory(p).load().filter((e) => e.status === "active");
+      assert.equal(active().length, 1);
+      assert.match(active()[0].text, /change x to y — Changed x to y in b\.txt/);
+      assert.deepEqual(active()[0].files, ["b.txt"]);
+      assert.ok(readEvents(p, r1.taskId).some((e) => e.meta?.auto && e.meta?.memoryId), "the log says a note was saved");
+      await runTask(p, "and now z", { claudeBin: fake.bin, boss: false, maxSteps: 6, continueTask: r1.taskId });
+      assert.equal(active().length, 1, "still one note for this task");
+      assert.equal(new Memory(p).load().filter((e) => e.status === "superseded").length, 1);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("the digest a new model starts from lists the files already read, the earlier findings, the last answer and the relevant project notes", async () => {
+    const { root, p } = tinyRepo();
+    new Memory(p).add({ type: "fact", text: "a.txt greets the user; edit it, never generate it", files: ["a.txt"] });
+    const fake = fakeClaude([
+      JSON.stringify([{ action: "read", path: "a.txt", note: "a.txt holds the greeting the app prints" }]),
+      JSON.stringify({ action: "done", summary: "The greeting lives in a.txt." }),
+    ]);
+    try {
+      const r = await runTask(p, "where is the greeting", { claudeBin: fake.bin, boss: false, maxSteps: 6 });
+      const { digestWithMemory } = await dist("runtime.js");
+      const d = digestWithMemory(p, r.taskId, 8000);
+      assert.match(d, /FILES ALREADY READ[^\n]*a\.txt/);
+      assert.match(d, /WHAT WAS FOUND[\s\S]*a\.txt holds the greeting the app prints/);
+      assert.match(d, /LAST ANSWER GIVEN: The greeting lives in a\.txt/);
+      assert.match(d, /PROJECT MEMORY \(most relevant notes\)[\s\S]*edit it, never generate it/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("switching provider mid-conversation starts from that digest and tells the new model not to explore again", async () => {
+    const { root, p } = tinyRepo();
+    const fake1 = fakeClaude([JSON.stringify([{ action: "read", path: "a.txt", note: "found the greeting" }]), JSON.stringify({ action: "done", summary: "greeting is in a.txt" })]);
+    try {
+      const r1 = await runTask(p, "where is the greeting", { claudeBin: fake1.bin, boss: false, maxSteps: 6 });
+      // pretend the earlier calls came from another provider, so this follow-up is a switch (a new provider can't resume its session)
+      const evFile = join(p.runtime, r1.taskId, "events.jsonl");
+      writeFileSync(evFile, readFileSync(evFile, "utf8").replace(/"provider":"claude"/g, '"provider":"codex"'));
+      const fake2 = fakeClaude([JSON.stringify({ action: "done", summary: "same file" })]);
+      try {
+        await runTask(p, "which line?", { claudeBin: fake2.bin, boss: false, maxSteps: 6, continueTask: r1.taskId, provider: "claude", models: { explore: "haiku", execute: "haiku", escalate: "haiku" } });
+        const calls = readEvents(p, r1.taskId).filter((e) => e.type === "model_call" && e.meta?.context);
+        assert.ok(calls.some((c) => c.meta.context.parts.some((x) => x.kind === "digest")), "the follow-up was seeded with the digest");
+      } finally { rmSync(fake2.dir, { recursive: true, force: true }); }
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake1.dir, { recursive: true, force: true }); }
   });
 });
 
