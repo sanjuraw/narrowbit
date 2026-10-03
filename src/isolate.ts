@@ -128,4 +128,5 @@ export function discardIsolated(p: Paths, taskId: string): void {
   if (existsSync(m.dir)) rmSync(m.dir, { recursive: true, force: true });
   sh("git", ["worktree", "prune"], p.root);
   rmSync(markerFile(p, taskId), { force: true });
+  for (const ext of ["", "-wal", "-shm"]) rmSync(join(p.nb, "worktree-index", `${taskId}.db${ext}`), { force: true });
 }

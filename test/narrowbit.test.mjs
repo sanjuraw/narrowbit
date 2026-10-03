@@ -1869,6 +1869,44 @@ describe("remote MCP servers", () => {
 
 const { readIsolated, isolatedPatch, applyIsolated, discardIsolated } = await dist("isolate.js");
 
+describe("tenth Codex audit: hard links and the isolated index", () => {
+  test("an edit to a file with a second hard link (maybe outside the project) is refused", async () => {
+    const { root, p } = tinyRepo();
+    const outside = mkdtempSync(join(tmpdir(), "nb-hl-"));
+    const fake = fakeClaude([
+      JSON.stringify({ action: "edit", path: "linked.txt", old: "TOP-SECRET", new: "CHANGED" }),
+      JSON.stringify({ action: "done", summary: "tried" }),
+    ]);
+    try {
+      writeFileSync(join(outside, "secret.txt"), "TOP-SECRET\n");
+      (await import("node:fs")).linkSync(join(outside, "secret.txt"), join(root, "linked.txt"));
+      const r = await runTask(p, "edit the linked file", { claudeBin: fake.bin, boss: false, maxSteps: 6 });
+      assert.equal(readFileSync(join(outside, "secret.txt"), "utf8"), "TOP-SECRET\n", "the outside file is unchanged");
+      assert.ok(readEvents(p, r.taskId).some((e) => /hard links/.test(e.summary)));
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("an isolated task indexes its own copy: the folder's index never learns about code that only exists there", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([
+      JSON.stringify({ action: "edit", path: "copy-only.ts", old: "", new: "export function onlyInTheCopy() { return 1; }\n" }),
+      JSON.stringify({ action: "done", summary: "added" }),
+    ]);
+    try {
+      const r = await runTask(p, "add a function", { claudeBin: fake.bin, boss: false, maxSteps: 6, isolate: true });
+      assert.equal(r.outcome, "done");
+      const { openStore } = await dist("indexer.js");
+      const folder = openStore(p);
+      const n = folder.db.prepare("select count(*) as c from symbols where name = ?").get("onlyInTheCopy").c;
+      folder.close();
+      assert.equal(n, 0, "the folder's index has no trace of the isolated task's function");
+      assert.ok(existsSync(join(p.nb, "worktree-index", `${r.taskId}.db`)), "the copy has its own index");
+      discardIsolated(p, r.taskId);
+      assert.ok(!existsSync(join(p.nb, "worktree-index", `${r.taskId}.db`)), "and it is removed with the copy");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
 describe("isolated runs (throwaway git worktree)", () => {
   test("the agent edits a separate copy; the folder is untouched until Apply, and Discard removes the copy", async () => {
     const { root, p } = tinyRepo();

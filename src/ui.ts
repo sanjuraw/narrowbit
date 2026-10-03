@@ -547,7 +547,7 @@ export function startUi(opts: UiOptions) {
         thisRun.running = false;
         setTimeout(() => runs.delete(thisRun.id), 60_000).unref();
       });
-    return { status: 200, body: { ok: true, isolated: sharesFolder } };
+    return { status: 200, body: { ok: true, isolated: sharesFolder, run: thisRun.id } };
   };
 
   const resolveApproval = (id: string, decision: "once" | "task" | "deny") => {

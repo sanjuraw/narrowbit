@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { loadConfig, type AgentConfig, type Paths } from "./config.js";
 import { parseMentions, renderMentions, resolveMentions } from "./mentions.js";
 import { checkpointNow } from "./checkpoints.js";
@@ -486,7 +486,14 @@ export async function runTask(p: Paths, taskText: string, opts: RuntimeOptions =
 async function runLoop(p: Paths, taskId: string, taskText: string, opts: RuntimeOptions): Promise<RuntimeResult> {
   // Isolated: code operations (read/edit/run/verify) use the worktree as their root; state (index, memory,
   // event log, config) keeps living in the real folder's .narrowbit, since those paths were fixed above.
-  if (opts.isolate) p = { ...p, root: ensureIsolated(p, taskId).dir };
+  // Its own index too: the copy's files differ from the folder's, and sharing one database made the folder's search
+  // return functions that only exist in the copy.
+  if (opts.isolate) {
+    const dir = ensureIsolated(p, taskId).dir;
+    const db = join(p.nb, "worktree-index", `${taskId}.db`);
+    mkdirSync(dirname(db), { recursive: true, mode: 0o700 });
+    p = { ...p, root: dir, db };
+  }
   let provider = opts.provider ?? "claude";
   const cfg = loadConfig(p);
   let tiers = opts.models ? { ...DEFAULT_TIERS[provider], ...opts.models } : opts.model ? { explore: opts.model, execute: opts.model, escalate: opts.model } : DEFAULT_TIERS[provider];
@@ -1265,6 +1272,14 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
         mkdirSync(dirname(abs), { recursive: true });
         writeFileSync(abs, newText, "utf8");
       } else {
+        // A file with more than one hard link shares its data with every other name for it — possibly one outside the
+        // project (a backup, a key file) — and writing in place would change that too.
+        const st = lstatSync(abs);
+        if (st.isFile() && st.nlink > 1) {
+          const text = `edit ${path}: refused — this file has ${st.nlink} hard links, so changing it would also change the other name(s) for it, which may be outside this project. Copy it to a new file (a plain copy has one link) and edit that, or ask the user.`;
+          appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
+          return text;
+        }
         const current = readFileSync(abs, "utf8");
         const count = oldText ? current.split(oldText).length - 1 : 0;
         if (oldText === "") {

@@ -302,6 +302,20 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.ok(page.visible(page.$("aboutInfo")), "About is on screen");
   });
 
+  test("a new conversation only attaches to its own run, not to another conversation's event that arrives first", () => {
+    page.$("newBtn").click();
+    const nb = page.w.__nb;
+    const v = nb.view();
+    v.pendingNew = true; v.taskId = null; v.pendingRun = null;
+    const ev = (run, taskId) => ({ type: "event", run, task: taskId, event: { id: "e-" + run + "-" + taskId, taskId, at: new Date().toISOString(), actor: "user", type: "decision", summary: "task received", meta: { goal: "goal of " + taskId } } });
+    nb.stream(ev("run-old", "rt-old"));          // an older conversation's event (e.g. replayed) arrives first
+    assert.equal(nb.view().taskId, null, "it did not attach to the old conversation");
+    nb.stream(ev("run-new", "rt-new"));
+    nb.claim("run-new");                          // the server then says which run is ours
+    assert.equal(nb.view().taskId, "rt-new");
+    assert.equal(nb.view().pendingNew, false);
+  });
+
   test("Check now in About shows that it checked", async () => {
     const btn = [...page.$("aboutInfo").querySelectorAll("button")].find((b) => b.textContent === "Check now");
     btn.click();

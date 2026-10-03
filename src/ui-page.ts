@@ -1580,6 +1580,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     api("/api/run", { task: text, force: !!force, continueTask: cont, maxSteps: Number($("maxSteps").value) || 20, askBeforeCommands: askOn(), isolate: $("isoTog").checked, attachments: attached.map(function (a) { return a.id; }) })
       .then(function (r) {
         if (r && r.queued) { input.value = ""; autosize(); renderComposer(); return; }
+        // Tell the view which run is its own, then replay what arrived while we didn't know.
+        if (!cont && view && view.pendingNew && r && r.run) claimRun(r.run);
         if (r && r.isolated) showToast("Another task is working in this folder, so this one runs in a separate copy. Apply its changes when it finishes.");
         attached = []; renderAttached();
         input.value = ""; autosize();
@@ -2073,14 +2075,29 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function connect() {
     if (!S || !S.root) return;
     es = new EventSource("/api/stream?t=" + encodeURIComponent(T));
-    es.onmessage = function (msg) {
-      var ev = JSON.parse(msg.data);
+    es.onmessage = function (msg) { handleStream(JSON.parse(msg.data)); };
+  }
+  // The server said which run this window's new conversation is; replay what arrived while that was unknown.
+  function claimRun(runId) {
+    if (!view) return;
+    view.pendingRun = runId;
+    var held = view.pendingBuf || []; view.pendingBuf = null;
+    held.forEach(function (h) { handleStream(h); });
+  }
+  window.__nb = { stream: function (e) { handleStream(e); }, claim: claimRun, view: function () { return view; } };   // for the page tests
+  function handleStream(ev) {
       if (ev.type === "start") { if (ev.continueTask) run.tasks[ev.continueTask] = true; renderComposer(); renderSessions(); return; }
       if (ev.type === "event") {
         var id = ev.event.taskId;
         var newRun = !run.tasks[id];
         run.tasks[id] = true;
-        if (view && view.pendingNew && !view.taskId) { view.taskId = id; view.pendingNew = false; renderComposer(); }
+        // A brand-new conversation is waiting for its id. Only the run this window started may claim it — the stream
+        // also replays other running conversations (and carries every run's events), and taking the first event
+        // would attach this view to one of those. Until the server has told us which run is ours, hold the events.
+        if (view && view.pendingNew && !view.taskId) {
+          if (!view.pendingRun) { (view.pendingBuf = view.pendingBuf || []).push(ev); if (newRun) load(); return; }
+          if (ev.run === view.pendingRun) { view.taskId = id; view.pendingNew = false; renderComposer(); }
+        }
         if (view && view.taskId === id) renderEvent(ev.event, false);
         if (newRun) load();
         return;
@@ -2111,7 +2128,6 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         if (view && (view.pendingNew || mine)) { view.working = null; placeWorking(); add(el("div", { cls: "notice bad", text: "The run failed: " + ev.error })); view.pendingNew = false; }
         renderComposer(); load();
       }
-    };
   }
 
   // ---------- changes ----------
