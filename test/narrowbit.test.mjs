@@ -2527,6 +2527,34 @@ describe("memory suggestions at the end of a task (approve to save)", () => {
   });
 });
 
+describe("the memory system stays separable from the agent loop", () => {
+  test("nothing in src/memory/ imports the runtime, the app, providers or the CLI — only small shared utilities and settings", async () => {
+    const { readdirSync } = await import("node:fs");
+    const dir = join(process.cwd(), "src", "memory");
+    const allowedOutside = new Set(["../util.js", "../redact.js", "../terms.js", "../config.js"]);
+    const bad = [];
+    for (const f of readdirSync(dir).filter((x) => x.endsWith(".ts"))) {
+      const text = readFileSync(join(dir, f), "utf8");
+      for (const m of text.matchAll(/(?:^|\n)\s*(?:import|export)\s[^;]*?from\s+["']([^"']+)["']/g)) {
+        const spec = m[1];
+        if (spec.startsWith("node:")) continue;
+        if (spec.startsWith("./")) continue;
+        if (!allowedOutside.has(spec)) bad.push(`${f} imports ${spec}`);
+      }
+    }
+    assert.deepEqual(bad, [], "memory must not depend on the agent loop; allowed outside: " + [...allowedOutside].join(", "));
+  });
+
+  test("the public surface offers save, recall, staleness, task notes and the hand-over summary", async () => {
+    const api = await dist("memory/index.js");
+    for (const name of ["Memory", "openMemory", "renderMemory", "recordTaskNote", "proposeNotes", "digestWithMemory", "fold", "appendEvent", "project", "suggestNotes"]) assert.equal(typeof api[name], "function", name);
+    const { Memory } = api;
+    assert.equal(typeof Memory.prototype.add, "function");
+    assert.equal(typeof Memory.prototype.relevant, "function");
+    assert.equal(typeof Memory.prototype.staleFilesOf, "function");
+  });
+});
+
 describe("ideas from Hindsight: wider secret scrubbing and notes that know when they may be out of date", () => {
   test("token shapes beyond the original set are scrubbed, and ordinary text is left alone", async () => {
     const { redact } = await dist("redact.js");

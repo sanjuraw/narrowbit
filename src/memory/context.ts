@@ -1,0 +1,51 @@
+import type { FoldedState } from "./events.js";
+import { estimateTokens } from "../util.js";
+
+export interface ProjectionOptions {
+  /** Token budget for the rendered projection; recent-event lines are dropped oldest-first to fit. */
+  budget: number;
+}
+
+function render(state: FoldedState): string {
+  const lines: string[] = [];
+  if (state.goal) lines.push(`GOAL: ${state.goal}`);
+  if (state.plan.length) {
+    lines.push("PLAN:");
+    for (const s of state.plan) lines.push(`  [${s.status}] ${s.text}`);
+  }
+  if (state.blocker) lines.push(`BLOCKER: ${state.blocker}`);
+  if (state.lastVerify) lines.push(`LAST VERIFY: ${state.lastVerify.ok ? "PASSED" : "FAILED"} — ${state.lastVerify.summary}`);
+  if (state.filesTouched.length) lines.push(`FILES TOUCHED: ${state.filesTouched.join(", ")}`);
+  const readOnly = state.filesRead.filter((f) => !state.filesTouched.includes(f));
+  if (readOnly.length) lines.push(`FILES ALREADY READ (examined earlier in this task; their findings are in the notes below — don't read them again, search inside them for specifics): ${readOnly.slice(0, 40).join(", ")}${readOnly.length > 40 ? ` … and ${readOnly.length - 40} more` : ""}`);
+  if (state.notes.length) {
+    lines.push("WHAT WAS FOUND (the previous model's own notes, oldest first):");
+    for (const n of state.notes) lines.push(`  - ${n}`);
+  }
+  if (state.answers.length) lines.push(`LAST ANSWER GIVEN: ${state.answers[state.answers.length - 1]}`);
+  if (state.remembered.length) {
+    lines.push("SAVED TO PROJECT MEMORY IN THIS TASK (already stored; search with recall, don't re-save):");
+    // Capped like every automatic inclusion: at most 12 notes, 200 characters each (idea from ECC's session-start cap).
+    for (const n of state.remembered.slice(-12)) lines.push(`  - [${n.id}] (${n.type}) ${n.text.slice(0, 200)}`);
+  }
+  if (state.recent.length) {
+    lines.push("RECENT:");
+    for (const e of state.recent) lines.push(`  - ${e.type}: ${e.summary}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * The only state a model turn sees: a bounded, summary-first render of the folded event log.
+ * No transcript replay — goal/plan/blocker/last-verify are never dropped; only the oldest
+ * "recent" action summaries are trimmed if the render doesn't fit the budget.
+ */
+export function project(state: FoldedState, opts: ProjectionOptions): string {
+  let recent = state.recent;
+  let text = render({ ...state, recent });
+  while (estimateTokens(text) > opts.budget && recent.length > 0) {
+    recent = recent.slice(1);
+    text = render({ ...state, recent });
+  }
+  return text;
+}

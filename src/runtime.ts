@@ -6,16 +6,12 @@ import { parseMentions, renderMentions, resolveMentions } from "./mentions.js";
 import { checkpointNow } from "./checkpoints.js";
 import { capOutput, runCommand } from "./compress.js";
 import { getConnector, listConnectors } from "./connectors.js";
-import { project } from "./context.js";
-import { writeEvidence } from "./evidence.js";
-import { appendEvent, fold, readEvents, subscribe, type Event, type PlanStep } from "./events.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { ensureIsolated } from "./isolate.js";
+import { MEMORY_TYPES, appendEvent, digestWithMemory, fold, openMemory, project, proposeNotes, readEvents, recordTaskNote, renderMemory, subscribe, writeEvidence, type Event, type MemoryType, type PlanStep } from "./memory/index.js";
 import { chooseTier } from "./route.js";
 import { guardNote } from "./guard.js";
-import { suggestNotes } from "./memory-suggest.js";
 import { callConnectorTool, listConnectorTools } from "./mcpClient.js";
-import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./memory.js";
 import { classifyModelError, isPermanentModelError } from "./errors.js";
 import { callModel, type ModelCallOptions, type ModelCallResult } from "./providers/claude-cli.js";
 import { callCodex } from "./providers/codex-cli.js";
@@ -1074,31 +1070,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   }
 
   if (outcome === "done") {
-    // Project memory fills itself: one short note per finished task (what was asked, the answer, what changed), so a
-    // different model — or you, next week — doesn't start from nothing. Stored automatically, fetched only on demand
-    // (or when a model takes over a task); a follow-up replaces the note rather than adding another.
-    try {
-      const evs = readEvents(p, taskId);
-      const goalText = String(evs.find((e) => e.type === "decision" && typeof e.meta?.goal === "string")?.meta?.goal ?? goal);
-      const answer = [...evs].reverse().find((e) => e.type === "decision" && e.actor === "model" && e.summary.startsWith("done: "))?.summary.slice(6).trim() ?? "";
-      const changed = [...new Set(evs.filter((e) => e.type === "edit" && typeof e.meta?.path === "string").map((e) => String(e.meta!.path)))];
-      if (answer.length >= 30 || changed.length) {
-        const mem = openMemory(p);
-        const text = `${goalText.slice(0, 160)} — ${answer.slice(0, 420) || "done"}${changed.length ? ` (changed: ${changed.slice(0, 6).join(", ")})` : ""}`;
-        const old = mem.load().filter((e) => !e.external && e.status === "active" && e.source === taskId && (e.tags ?? []).includes("auto-task"));
-        const entry = mem.add({ type: "fact", text, reason: "saved automatically when the task finished", files: changed.slice(0, 6), source: taskId, tags: ["auto-task"], confidence: "medium" });
-        for (const o of old) mem.setStatus(o.id, "superseded", entry.id);
-        appendEvent(p, taskId, { actor: "system", type: "decision", summary: `remembered [${entry.id}] (fact): ${text.slice(0, 200)}`, meta: { memoryId: entry.id, memoryType: "fact", auto: true } });
-      }
-    } catch {
-      /* a note is a convenience; never fail a finished task over it */
-    }
-    try {
-      const suggested = suggestNotes(readEvents(p, taskId), openMemory(p).load().filter((e) => e.status === "active"));
-      if (suggested.length) appendEvent(p, taskId, { actor: "system", type: "decision", summary: `suggested ${suggested.length} note${suggested.length === 1 ? "" : "s"} for project memory (nothing saved until you approve)`, meta: { suggested } });
-    } catch {
-      /* suggestions are a convenience; never fail a finished task over them */
-    }
+    // What the memory system does at the end of a task (memory/lifecycle.ts): a note per finished task, plus proposals.
+    recordTaskNote(p, taskId, goal);
+    proposeNotes(p, taskId);
   }
   if (outcome === "max_steps") log(`[${steps}] hit the step budget (${maxSteps}) without finishing`);
   const failure = outcome === "error" ? classifyModelError(summary) : null;
@@ -1122,25 +1096,7 @@ function resultMeta(d: Decision, result: string): string {
     default: return `${d.action} returned ${lines} line(s)`;
   }
 }
-
-/** The deterministic summary, plus what project memory holds — a pointer, not an injection: notes are still fetched only on `recall`. */
-export function digestWithMemory(p: Paths, taskId: string, budget: number): string {
-  const state = fold(taskId, readEvents(p, taskId));
-  const digest = project(state, { budget });
-  let active = 0;
-  let shown = "";
-  try {
-    const mem = openMemory(p);
-    active = mem.load().filter((e) => e.status === "active").length;
-    // A different model (or a fresh session) is taking over: this is exactly when what the project has already
-    // learned pays for itself, so the few notes most relevant to this task go in; the rest stay behind `recall`.
-    const rel = mem.relevant(termsOf([state.goal ?? "", ...state.filesTouched, ...state.filesRead].join(" ")), [...state.filesTouched, ...state.filesRead], 5);
-    if (rel.length) shown = "\n\nPROJECT MEMORY (most relevant notes):\n" + rel.map((r) => { const st = mem.staleFilesOf(r.entry); return `  - (${r.entry.type}) ${r.entry.text.slice(0, 240)}${st.length ? ` [may be out of date: ${st.slice(0, 3).join(", ")} changed since]` : ""}`; }).join("\n");
-  } catch {
-    /* no memory store yet */
-  }
-  return (active ? `${digest}${shown}\n\nPROJECT MEMORY: ${active} active note${active === 1 ? "" : "s"} exist for this repository${shown ? "; the most relevant are above" : ""}. Use the recall action with a topic to search the rest.` : digest);
-}
+export { digestWithMemory };
 
 function checkFailedLabel(d: Decision, result: string): string {
   return (d.action === "verify" && result.startsWith("VERIFICATION FAILED")) || (d.action === "run" && /^\$ .*\(exit [1-9]/.test(result)) ? " (failed)" : "";
