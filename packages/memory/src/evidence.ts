@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Paths } from "../config.js";
+import type { MemoryPaths } from "./paths.js";
 import { taskDir } from "./events.js";
-import { redact } from "../redact.js";
-import { estimateTokens, shortId } from "../util.js";
+import { redact } from "./redact.js";
+import { estimateTokens, shortId } from "./util.js";
 
 /**
  * Generalizes compress.ts's existing "full output on disk, summary re-enters context" pattern
@@ -21,11 +21,11 @@ export interface EvidenceHandle {
   tokens: number;
 }
 
-function evidenceDir(p: Paths, taskId: string): string {
+function evidenceDir(p: MemoryPaths, taskId: string): string {
   return join(taskDir(p, taskId), "evidence");
 }
 
-export function writeEvidence(p: Paths, taskId: string, kind: EvidenceKind, content: string, summary: string, path?: string): EvidenceHandle {
+export function writeEvidence(p: MemoryPaths, taskId: string, kind: EvidenceKind, content: string, summary: string, path?: string): EvidenceHandle {
   const dir = evidenceDir(p, taskId);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const id = shortId();
@@ -34,7 +34,7 @@ export function writeEvidence(p: Paths, taskId: string, kind: EvidenceKind, cont
   return { id, kind, path, summary, tokens: estimateTokens(clean) };
 }
 
-export function readEvidence(p: Paths, taskId: string, id: string): string {
+export function readEvidence(p: MemoryPaths, taskId: string, id: string): string {
   const f = join(evidenceDir(p, taskId), id);
   if (!existsSync(f)) throw new Error(`no evidence ${id} for task ${taskId}`);
   return readFileSync(f, "utf8");

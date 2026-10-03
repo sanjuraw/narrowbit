@@ -8,7 +8,7 @@ import { capOutput, runCommand } from "./compress.js";
 import { getConnector, listConnectors } from "./connectors.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { ensureIsolated } from "./isolate.js";
-import { MEMORY_TYPES, appendEvent, digestWithMemory, fold, openMemory, project, proposeNotes, readEvents, recordTaskNote, renderMemory, subscribe, writeEvidence, type Event, type MemoryType, type PlanStep } from "./memory/index.js";
+import { MEMORY_TYPES, appendEvent, digestWithMemory, fold, openMemory, project, proposeNotes, readEvents, recordTaskNote, renderMemory, subscribe, writeEvidence, type Event, type MemoryType, type PlanStep } from "./memory.js";
 import { chooseTier } from "./route.js";
 import { guardNote } from "./guard.js";
 import { callConnectorTool, listConnectorTools } from "./mcpClient.js";

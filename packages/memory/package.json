@@ -1,0 +1,25 @@
+{
+  "name": "narrowbit-memory",
+  "version": "0.1.0",
+  "description": "Project memory for coding agents: decisions, constraints and failed approaches as Markdown notes that know when they may be out of date. Local, no model calls. Runs as an MCP server.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+  },
+  "bin": {
+    "narrowbit-memory": "bin/narrowbit-memory.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test --test-reporter=spec test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "license": "MIT",
+  "private": true,
+  "files": ["bin", "dist", "README.md", "LICENSE"],
+  "keywords": ["memory", "coding-agent", "mcp", "claude", "codex", "local-first"]
+}

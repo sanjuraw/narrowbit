@@ -1,2 +1,2 @@
-// Moved into src/memory/ (the memory system's own folder); this path stays so existing imports keep working.
-export * from "./memory/events.js";
+// The memory system lives in the narrowbit-memory package (packages/memory); this path stays so existing imports keep working.
+export { taskDir, ensureTaskDir, appendEvent, subscribe, readEvents, fold, type Actor, type EventType, type TokenUsage, type PlanStep, type Event, type FoldedState } from "narrowbit-memory";

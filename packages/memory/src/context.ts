@@ -1,5 +1,5 @@
 import type { FoldedState } from "./events.js";
-import { estimateTokens } from "../util.js";
+import { estimateTokens } from "./util.js";
 
 export interface ProjectionOptions {
   /** Token budget for the rendered projection; recent-event lines are dropped oldest-first to fit. */

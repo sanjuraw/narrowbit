@@ -1,5 +1,5 @@
-import type { Paths } from "../config.js";
-import { termsOf } from "../terms.js";
+import type { MemoryPaths } from "./paths.js";
+import { termsOf } from "./terms.js";
 import { project } from "./context.js";
 import { fold, readEvents } from "./events.js";
 import { openMemory } from "./notes.js";
@@ -10,7 +10,7 @@ import { openMemory } from "./notes.js";
  * model's findings and last answer — plus the few project notes most relevant to it. Everything else in project memory
  * stays behind `recall`. Notes whose files have changed since they were saved say so.
  */
-export function digestWithMemory(p: Paths, taskId: string, budget: number): string {
+export function digestWithMemory(p: MemoryPaths, taskId: string, budget: number): string {
   const state = fold(taskId, readEvents(p, taskId));
   const digest = project(state, { budget });
   let active = 0;

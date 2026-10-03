@@ -1,3 +1,4 @@
+export { now, shortId, estimateTokens } from "narrowbit-memory";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
@@ -8,14 +9,6 @@ export function sha1(data: string | Buffer): string {
   return createHash("sha1").update(data).digest("hex");
 }
 
-/**
- * Rough token estimate. Claude's tokenizer is not available locally, so this
- * is a character heuristic (~3.6 chars/token for source code). Every number
- * derived from it is labelled "est." in output; benchmarks use provider-reported usage.
- */
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 3.6);
-}
 
 /** Anything inside a `.git` directory at any depth, in any letter case (macOS treats `.GIT/config` as `.git/config`).
  * Git executes settings from there on its next call, so the agent may neither read nor edit it. */
@@ -82,16 +75,6 @@ export function sh(cmd: string, args: string[], cwd: string, input?: string): { 
   const realArgs = cmd === "git" ? gitArgs(cwd, args) : args;
   const r = spawnSync(cmd, realArgs, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, input });
   return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
-}
-
-export function now(): string {
-  return new Date().toISOString();
-}
-
-export function shortId(): string {
-  const d = new Date();
-  const stamp = d.toISOString().slice(0, 10).replace(/-/g, "");
-  return `${stamp}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
 export function fmtNum(n: number): string {

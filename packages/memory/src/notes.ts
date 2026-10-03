@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
-import { loadConfig, type Paths } from "../config.js";
-import { redact } from "../redact.js";
-import { termsOf } from "../terms.js";
-import { now, shortId } from "../util.js";
+import type { MemoryPaths } from "./paths.js";
+import { redact } from "./redact.js";
+import { termsOf } from "./terms.js";
+import { now, shortId } from "./util.js";
 
 export const MEMORY_TYPES = ["fact", "decision", "constraint", "convention", "failure", "bug", "command", "environment"] as const;
 export type MemoryType = (typeof MEMORY_TYPES)[number];
@@ -140,7 +140,7 @@ function slug(text: string): string {
  */
 export class Memory {
   constructor(
-    private p: Paths,
+    private p: MemoryPaths,
     private extraDirs: string[] = [],
   ) {
     if (existsSync(p.memory)) {
@@ -286,9 +286,8 @@ export class Memory {
   }
 }
 
-export function openMemory(p: Paths): Memory {
-  const dirs = (loadConfig(p).memoryDirs ?? []).map((d) => (isAbsolute(d) ? d : resolve(p.root, d.replace(/^~(?=\/)/, process.env.HOME ?? "~"))));
-  return new Memory(p, dirs);
+export function openMemory(p: MemoryPaths): Memory {
+  return new Memory(p, p.extraDirs ?? []);
 }
 
 /** A short content hash of a file inside the project, or null if it isn't a readable file there. */

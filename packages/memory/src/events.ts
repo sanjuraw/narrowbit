@@ -1,8 +1,8 @@
-import { redact } from "../redact.js";
+import { redact } from "./redact.js";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Paths } from "../config.js";
-import { now, shortId } from "../util.js";
+import type { MemoryPaths } from "./paths.js";
+import { now, shortId } from "./util.js";
 
 /**
  * Owned-runtime append-only ledger (CLAUDE.md "Handoff"): every model call, tool call, edit,
@@ -43,21 +43,21 @@ export interface Event {
   meta?: Record<string, unknown>;
 }
 
-export function taskDir(p: Paths, taskId: string): string {
+export function taskDir(p: MemoryPaths, taskId: string): string {
   return join(p.runtime, taskId);
 }
 
-function eventsFile(p: Paths, taskId: string): string {
+function eventsFile(p: MemoryPaths, taskId: string): string {
   return join(taskDir(p, taskId), "events.jsonl");
 }
 
-export function ensureTaskDir(p: Paths, taskId: string): string {
+export function ensureTaskDir(p: MemoryPaths, taskId: string): string {
   const dir = taskDir(p, taskId);
   mkdirSync(join(dir, "evidence"), { recursive: true, mode: 0o700 });
   return dir;
 }
 
-export function appendEvent(p: Paths, taskId: string, e: Omit<Event, "id" | "taskId" | "at"> & Partial<Pick<Event, "id" | "at">>): Event {
+export function appendEvent(p: MemoryPaths, taskId: string, e: Omit<Event, "id" | "taskId" | "at"> & Partial<Pick<Event, "id" | "at">>): Event {
   ensureTaskDir(p, taskId);
   // Summaries carry model text and shell commands, either of which can contain a secret.
   const meta = e.meta && typeof e.meta.command === "string" ? { ...e.meta, command: redact(e.meta.command) } : e.meta;
@@ -80,7 +80,7 @@ export function subscribe(taskId: string, fn: (e: Event) => void): () => void {
   };
 }
 
-export function readEvents(p: Paths, taskId: string): Event[] {
+export function readEvents(p: MemoryPaths, taskId: string): Event[] {
   const f = eventsFile(p, taskId);
   if (!existsSync(f)) return [];
   return readFileSync(f, "utf8")

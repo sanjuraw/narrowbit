@@ -1,4 +1,4 @@
-import type { Paths } from "../config.js";
+import type { MemoryPaths } from "./paths.js";
 import { appendEvent, readEvents } from "./events.js";
 import { openMemory } from "./notes.js";
 import { suggestNotes, type SuggestedNote } from "./suggest.js";
@@ -11,7 +11,7 @@ import { suggestNotes, type SuggestedNote } from "./suggest.js";
  * follow-up replaces the task's note rather than adding another. Returns the saved note (or null when there was nothing
  * worth keeping: no substantial answer and no edits). Never throws — a note is a convenience, not part of the task.
  */
-export function recordTaskNote(p: Paths, taskId: string, fallbackGoal = ""): { id: string; text: string } | null {
+export function recordTaskNote(p: MemoryPaths, taskId: string, fallbackGoal = ""): { id: string; text: string } | null {
   try {
     const evs = readEvents(p, taskId);
     const goalText = String(evs.find((e) => e.type === "decision" && typeof e.meta?.goal === "string")?.meta?.goal ?? fallbackGoal);
@@ -31,7 +31,7 @@ export function recordTaskNote(p: Paths, taskId: string, fallbackGoal = ""): { i
 }
 
 /** Notes worth keeping that a person should approve (a failed-then-fixed check, a command that kept working); logged, never saved. */
-export function proposeNotes(p: Paths, taskId: string): SuggestedNote[] {
+export function proposeNotes(p: MemoryPaths, taskId: string): SuggestedNote[] {
   try {
     const suggested = suggestNotes(readEvents(p, taskId), openMemory(p).load().filter((e) => e.status === "active"));
     if (suggested.length) appendEvent(p, taskId, { actor: "system", type: "decision", summary: `suggested ${suggested.length} note${suggested.length === 1 ? "" : "s"} for project memory (nothing saved until you approve)`, meta: { suggested } });

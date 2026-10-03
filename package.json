@@ -11,14 +11,15 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/stamp-version.mjs",
+    "build": "npm run build --workspace narrowbit-memory && tsc -p tsconfig.json && node scripts/stamp-version.mjs",
     "dev": "tsc -p tsconfig.json --watch",
-    "test": "npm run build && node --disable-warning=ExperimentalWarning --test --test-reporter=spec test/*.test.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && npm test --workspace narrowbit-memory && node --disable-warning=ExperimentalWarning --test --test-reporter=spec test/*.test.mjs",
+    "typecheck": "npm run build --workspace narrowbit-memory && tsc -p tsconfig.json --noEmit",
     "test:ui": "npm run build && npm --prefix test-ui install --no-audit --no-fund --silent && node --test --test-reporter=spec test-ui/ui.test.mjs"
   },
   "dependencies": {
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "narrowbit-memory": "*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0"
@@ -46,5 +47,8 @@
     "dist",
     "README.md",
     "LICENSE"
+  ],
+  "workspaces": [
+    "packages/*"
   ]
 }
