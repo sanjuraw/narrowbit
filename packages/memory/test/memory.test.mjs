@@ -92,3 +92,35 @@ describe("the MCP server", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("branching a conversation", () => {
+  test("a branch is the log before the chosen message, without the provider session or the cost, plus its evidence", () => {
+    const root = project();
+    try {
+      const p = api.memoryPaths(root);
+      const t = "rt-orig";
+      const first = api.appendEvent(p, t, { actor: "user", type: "decision", summary: "task received", meta: { goal: "find the greeting" } });
+      api.appendEvent(p, t, { actor: "model", type: "model_call", summary: "step 0", tokens: { model: "m", role: "execution", inputTokens: 10, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 5, costUsd: 0.01 }, meta: { sessionId: "provider-session-1", sessionCost: 0.01, contextTokens: 900 } });
+      const handle = api.writeEvidence(p, t, "file", "the whole file\n", "the whole file");
+      api.appendEvent(p, t, { actor: "system", type: "tool_result", summary: "read a.txt", evidenceRef: handle.id });
+      api.appendEvent(p, t, { actor: "model", type: "decision", summary: "done: it is in a.txt", meta: {} });
+      const second = api.appendEvent(p, t, { actor: "user", type: "decision", summary: "follow-up", meta: { followUp: "which line?" } });
+      api.appendEvent(p, t, { actor: "model", type: "decision", summary: "done: line 3", meta: {} });
+
+      const r = api.forkTask(p, t, second.id);
+      assert.ok(r.taskId && r.taskId !== t, JSON.stringify(r));
+      const copy = api.readEvents(p, r.taskId);
+      assert.equal(copy.length, 5, "four events from before the message, plus the branch marker");
+      assert.deepEqual(copy.slice(0, 4).map((e) => e.id), api.readEvents(p, t).slice(0, 4).map((e) => e.id), "same events, same order");
+      assert.ok(copy.every((e) => e.taskId === r.taskId));
+      assert.ok(!copy.some((e) => e.meta?.sessionId || e.meta?.sessionCost || e.tokens), "no provider session and no spend carried over");
+      assert.ok(copy.at(-1).meta.forkOf === t, "the branch says where it came from");
+      assert.equal(api.readEvidence(p, r.taskId, handle.id)?.includes("the whole file"), true, "evidence the log points at came along");
+      assert.equal(api.readEvents(p, t).length, 6, "the original is untouched");
+
+      assert.match(api.forkTask(p, t, first.id).error, /first message/);
+      assert.match(api.forkTask(p, t, "nope").error, /isn't in this conversation/);
+      assert.match(api.forkTask(p, t, api.readEvents(p, t)[3].id).error, /one of your messages/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});

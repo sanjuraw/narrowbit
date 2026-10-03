@@ -441,10 +441,16 @@ export async function main(argv: string[]): Promise<number> {
     }
     case "agent": {
       requireInit(p);
+      // --json: machine-readable run — one JSON object per line on stdout (every task event as it happens, then a final
+      // "result"); the human progress lines go to stderr, so a program driving Narrowbit gets clean stdout.
+      const json = !!args.flags.json;
+      const say = (line: string) => {
+        if (!json) out(line);
+      };
       if (!requireTrust(root, args)) return 2;
       let text = pos.join(" ");
       if (!text && !args.flags.skill) {
-        process.stderr.write('usage: narrowbit agent "<task>" [--skill <name>] [--provider <name>] [--model X | --explore X --execute X --escalate X] [--effort medium] [--max-steps N] [--force] [--dry-run]\n');
+        process.stderr.write('usage: narrowbit agent "<task>" [--skill <name>] [--provider <name>] [--model X | --explore X --execute X --escalate X] [--effort medium] [--max-steps N] [--force] [--dry-run] [--json]\n');
         return 2;
       }
       if (args.flags.skill) {
@@ -484,12 +490,16 @@ export async function main(argv: string[]): Promise<number> {
       }
       const maxSteps = args.flags["max-steps"] ? Number(args.flags["max-steps"]) : 20;
       const modelsLine = `provider=${sel.provider}  models: explore=${sel.tiers.explore} execute=${sel.tiers.execute} escalate=${sel.tiers.escalate}  effort=${sel.effort}  lead mode: ${args.flags["boss"] || cfg.agent?.boss === true ? `on (${sel.tiers.escalate} plans + reviews)` : "off"}`;
+      if (args.flags["dry-run"] && json) {
+        process.stdout.write(JSON.stringify({ type: "dry-run", task: text, provider: sel.provider, models: sel.tiers, effort: sel.effort, maxSteps, verify: Object.fromEntries(Object.entries(cfg.verify).filter(([, v]) => v)) }) + "\n");
+        return 0;
+      }
       if (args.flags["dry-run"]) {
         const verifyEntries = Object.entries(cfg.verify).filter(([, v]) => v);
-        out(`narrowbit agent (dry run): ${text}`);
-        out(modelsLine);
-        out(`max steps: ${maxSteps}`);
-        out(`verify: ${verifyEntries.length ? verifyEntries.map(([k, v]) => `${k}=${v}`).join(", ") : "(none)"}`);
+        say(`narrowbit agent (dry run): ${text}`);
+        say(modelsLine);
+        say(`max steps: ${maxSteps}`);
+        say(`verify: ${verifyEntries.length ? verifyEntries.map(([k, v]) => `${k}=${v}`).join(", ") : "(none)"}`);
         return 0;
       }
       const unavailable = unavailableReason(sel, cfg.agent);
@@ -497,8 +507,8 @@ export async function main(argv: string[]): Promise<number> {
         process.stderr.write(`narrowbit: ${unavailable}\n`);
         return 2;
       }
-      out(`narrowbit agent: ${text}`);
-      out(`${modelsLine}\n`);
+      say(`narrowbit agent: ${text}`);
+      say(`${modelsLine}\n`);
       // The agent runs shell commands, and it reads files that can contain instructions aimed at it, so
       // like the app the terminal asks first. --allow-commands opts out (scripts, or a repo you trust).
       const allowFlag = !!args.flags["allow-commands"];
@@ -561,26 +571,45 @@ export async function main(argv: string[]): Promise<number> {
         claudeBin: typeof args.flags["claude-bin"] === "string" ? args.flags["claude-bin"] : undefined,
         compactThreshold: args.flags["compact-threshold"] ? Number(args.flags["compact-threshold"]) : undefined,
         log: (line) => process.stderr.write(line + "\n"),
+        onEvent: json ? (event) => void process.stdout.write(JSON.stringify({ type: "event", event }) + "\n") : undefined,
       });
       // Untracked files already sitting in the tree before this task started (e.g. from `narrowbit init`,
       // or a user's own scratch files) are not something this task changed — only report new ones.
       const changed = headBefore
         ? changedSince(root, headBefore).filter((f) => !f.startsWith(".narrowbit/") && !untrackedBefore.has(f))
         : [];
+      if (json) {
+        const st = fold(result.taskId, readEvents(p, result.taskId));
+        const rs = Object.values(st.ledgerByRole);
+        process.stdout.write(
+          JSON.stringify({
+            type: "result",
+            taskId: result.taskId,
+            outcome: result.outcome,
+            summary: result.summary,
+            steps: result.steps,
+            filesChanged: changed,
+            tokens: rs.reduce((a, r) => a + r.inputTokens + r.cacheCreationTokens + r.cacheReadTokens + r.outputTokens, 0),
+            costUsd: rs.reduce((a, r) => a + r.costUsd, 0),
+            commandsNotRun: [...new Set(notRun)],
+          }) + "\n",
+        );
+        return result.outcome === "done" ? 0 : result.outcome === "blocked" ? 1 : 2;
+      }
       const label = result.outcome === "done" ? "DONE" : result.outcome === "blocked" ? "BLOCKED" : result.outcome === "error" ? "ERROR" : result.outcome === "stopped" ? "STOPPED" : "STOPPED (step budget)";
-      out(`\n${label}: ${result.summary}`);
-      out(`${result.steps} step(s)${result.compactions ? `, ${result.compactions} compaction(s)` : ""} — files changed: ${changed.length ? changed.join(", ") : "(none)"}`);
+      say(`\n${label}: ${result.summary}`);
+      say(`${result.steps} step(s)${result.compactions ? `, ${result.compactions} compaction(s)` : ""} — files changed: ${changed.length ? changed.join(", ") : "(none)"}`);
       const state = fold(result.taskId, readEvents(p, result.taskId));
       const roles = Object.values(state.ledgerByRole);
       const totalTok = roles.reduce((a, r) => a + r.inputTokens + r.cacheCreationTokens + r.cacheReadTokens + r.outputTokens, 0);
       const totalCost = roles.reduce((a, r) => a + r.costUsd, 0);
-      out(`usage: ~${fmtNum(totalTok)} tokens, ~$${totalCost.toFixed(3)} notional (subscription usage — nothing is billed per token)`);
-      if (result && args.flags.isolate && readIsolated(p, result.taskId)) out(`\nmade in a separate copy — nothing in your folder changed yet.\n  bring the changes over:  narrowbit apply ${result.taskId}\n  throw them away:         narrowbit discard ${result.taskId}`);
-      out(`task: ${result.taskId}  (full log: .narrowbit/runtime/${result.taskId}/events.jsonl)`);
+      say(`usage: ~${fmtNum(totalTok)} tokens, ~$${totalCost.toFixed(3)} notional (subscription usage — nothing is billed per token)`);
+      if (result && args.flags.isolate && readIsolated(p, result.taskId)) say(`\nmade in a separate copy — nothing in your folder changed yet.\n  bring the changes over:  narrowbit apply ${result.taskId}\n  throw them away:         narrowbit discard ${result.taskId}`);
+      say(`task: ${result.taskId}  (full log: .narrowbit/runtime/${result.taskId}/events.jsonl)`);
       // A declined command (including verify's own checks) means the agent could not confirm its work; say so
       // here, next to the DONE line, instead of leaving it as one easy-to-miss line mid-run.
-      if (notRun.length) out(`note: ${notRun.length} command(s) were not run (${[...new Set(notRun)].slice(0, 3).join("; ")}) — this result is NOT verified by them. Re-run with --allow-commands, or approve them at the prompt.`);
-      if (result.outcome !== "done" && changed.length) out(`tip: review the diff before trusting this — the task did not report a clean completion.`);
+      if (notRun.length) say(`note: ${notRun.length} command(s) were not run (${[...new Set(notRun)].slice(0, 3).join("; ")}) — this result is NOT verified by them. Re-run with --allow-commands, or approve them at the prompt.`);
+      if (result.outcome !== "done" && changed.length) say(`tip: review the diff before trusting this — the task did not report a clean completion.`);
       return result.outcome === "done" ? 0 : result.outcome === "blocked" ? 1 : 2;
     }
     case "ui": {

@@ -13,6 +13,7 @@ export * from "./notes.js";
 export * from "./suggest.js";
 export * from "./events.js";
 export * from "./evidence.js";
+export * from "./fork.js";
 export * from "./context.js";
 export * from "./lifecycle.js";
 export * from "./handoff.js";

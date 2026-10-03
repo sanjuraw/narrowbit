@@ -13,7 +13,7 @@ import { applyIsolated, discardIsolated, readIsolated } from "./isolate.js";
 import { listCheckpoints, restoreCheckpoint } from "./checkpoints.js";
 import { createProjectFromDraft, draftsPaths, planningReply, tooBroadForProject } from "./planning.js";
 import { findSkills } from "./skillimport.js";
-import { appendEvent, fold, readEvents, type Event } from "./events.js";
+import { appendEvent, fold, forkTask, readEvents, type Event } from "./events.js";
 import { changedSince, createGithubRepo, githubIdentity, gitState, pushBranch, remoteInfo } from "./git.js";
 import { listConnectorTools } from "./mcpClient.js";
 import { initProject } from "./project.js";
@@ -1076,6 +1076,15 @@ export function startUi(opts: UiOptions) {
           if (!r.ok) return json(res, 500, { error: r.message });
           appendEvent(p, id, { actor: "user", type: "checkpoint", summary: `rewound to: ${target.summary}`, meta: { rewoundTo: target.id } });
           return json(res, 200, { ok: true, message: r.message, movedTo: r.movedTo, unsaved: r.unsaved });
+        }
+        case "/api/fork": {
+          // Branch a conversation from one of your earlier messages: a new conversation with everything before it.
+          if (!root) return json(res, 400, { error: "no repository open" });
+          const id = String(body.task ?? "");
+          if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
+          const r = forkTask(paths(root), id, String(body.event ?? ""));
+          if ("error" in r) return json(res, 400, { error: r.error });
+          return json(res, 200, { ok: true, taskId: r.taskId, isolated: !!readIsolated(paths(root), id) });
         }
         case "/api/stop": {
           // The conversation being viewed (body.task), else whatever is running in the open folder.

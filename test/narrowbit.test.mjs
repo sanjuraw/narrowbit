@@ -2564,6 +2564,33 @@ describe("ideas from Hindsight: wider secret scrubbing and notes that know when 
   });
 });
 
+describe("narrowbit agent --json", () => {
+  test("stdout carries one JSON object per line — every event, then a result — and the human progress goes to stderr", async () => {
+    const { spawnSync } = await import("node:child_process");
+    const { root } = tinyRepo();
+    const fake = fakeClaude([
+      JSON.stringify({ action: "read", path: "a.txt" }),
+      JSON.stringify({ action: "done", summary: "The file a.txt says hello, which is the whole greeting." }),
+    ]);
+    try {
+      const env = { ...process.env, HOME: mkdtempSync(join(tmpdir(), "nb-jhome-")) };
+      spawnSync(process.execPath, [join(process.cwd(), "bin", "narrowbit.js"), "init"], { cwd: root, env, encoding: "utf8" });
+      const r = spawnSync(process.execPath, [join(process.cwd(), "bin", "narrowbit.js"), "agent", "--json", "what is in a.txt", "--claude-bin", fake.bin, "--max-steps", "6", "--no-boss"], { cwd: root, encoding: "utf8", env });
+      const lines = r.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l));
+      assert.ok(lines.length >= 3, r.stdout + r.stderr);
+      assert.ok(lines.slice(0, -1).every((l) => l.type === "event" && l.event.taskId), "events first");
+      const last = lines.at(-1);
+      assert.equal(last.type, "result");
+      assert.equal(last.outcome, "done");
+      assert.match(last.summary, /hello/);
+      assert.ok(last.taskId && "tokens" in last && "costUsd" in last && Array.isArray(last.filesChanged));
+      assert.equal(r.status, 0);
+      assert.match(r.stderr, /\[0\]|step/i, "progress lines are on stderr");
+      assert.ok(!/narrowbit agent:/.test(r.stdout), "no human banner on stdout");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
 describe("handoff between models and automatic project memory", () => {
   test("a finished task saves one summary note automatically; a follow-up replaces it instead of adding another", async () => {
     const { root, p } = tinyRepo(); writeFileSync(join(root, "b.txt"), "x\n");

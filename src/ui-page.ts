@@ -1724,13 +1724,24 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { done(true); }).catch(function () { done(false); });
     else done(false);
   }
-  function userActions(text, at) {
+  // Branch from this message: a new conversation holding everything before it, with this message ready to edit and send.
+  // The first message has nothing before it, so it just starts a fresh task with the text.
+  function branchFrom(text, eventId, isFirst) {
+    if (isFirst || !view || !view.taskId || !eventId) { blankView(); input.value = text; autosize(); input.focus(); return; }
+    api("/api/fork", { task: view.taskId, event: eventId }).then(function (r) {
+      load();
+      openSession(r.taskId);
+      input.value = text; autosize(); input.focus(); input.setSelectionRange(text.length, text.length);
+      if (r.isolated) banner("warn", "That conversation worked in a separate copy of your folder. The branch has the conversation, not those files.");
+    }).catch(function (e) { banner("bad", e.message); });
+  }
+  function userActions(text, at, eventId, isFirst) {
     var copyBtn = iconBtn("copy", "Copy", function () { copyText(text, copyBtn); });
     return el("div", { cls: "msg-actions" },
       el("span", { cls: "when", text: at ? ago(at) : "" }),
       copyBtn,
       iconBtn("again", "Edit and send again", function () { input.value = text; autosize(); input.focus(); input.setSelectionRange(text.length, text.length); }),
-      iconBtn("fork", "Start a new task from this", function () { blankView(); input.value = text; autosize(); input.focus(); }));
+      iconBtn("fork", isFirst ? "Start a new task from this" : "Branch the conversation from here (everything before this message, in a new conversation)", function () { branchFrom(text, eventId, isFirst); }));
   }
   function add(node, force) { follow(function () { $("items").appendChild(node); }, force); placeWorking(); return node; }
   function setWorking(text) { if (!view) return; view.working = text; placeWorking(); }
@@ -1890,15 +1901,16 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (e.type === "decision" && e.actor === "user") {
       var text = m.goal || m.followUp || "";
       // A message typed while the agent was working: just a bubble in the flow, not the start of a new turn.
-      if (m.midTask) { add(el("div", { cls: "msg-user" }, el("div", { cls: "bubble" }, rich(text)), userActions(text, e.at)), true); return; }
+      if (m.midTask) { add(el("div", { cls: "msg-user" }, el("div", { cls: "bubble" }, rich(text)), userActions(text, e.at, e.id, false)), true); return; }
       (view.asks = view.asks || []).push(text);
       if (m.goal) $("title").textContent = m.goal;
       show($("welcome"), false);
       view.acts = { read: 0, search: 0, edit: {}, run: 0, verify: 0, memory: 0 }; view.segTokens = 0; view.segCost = 0; view.segSteps = 0; view.segStart = new Date(e.at).getTime();
-      add(el("div", { cls: "msg-user" }, el("div", { cls: "bubble" }, rich(text)), userActions(text, e.at)), true);
+      add(el("div", { cls: "msg-user" }, el("div", { cls: "bubble" }, rich(text)), userActions(text, e.at, e.id, !!m.goal)), true);
       if (!replay) setWorking(S && S.lead && m.goal ? "Lead is planning…" : "Thinking…");
       return;
     }
+    if (e.type === "decision" && m.forkOf) { add(el("div", { cls: "divider", text: "branched from an earlier conversation" })); return; }
     if (e.type === "plan") { renderPlan(m); if (!replay) setWorking("Working…"); return; }
     if (e.type === "tool_call") {
       view.segSteps++;

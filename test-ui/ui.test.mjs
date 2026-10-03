@@ -459,6 +459,14 @@ describe("app page with a folder open", () => {
     appendEvent(p, "rt-ckpt-test", { actor: "system", type: "checkpoint", summary: "checkpoint after step 1: edited a.txt", meta: { step: 1, commit: "cafef00d" } });
     appendEvent(p, "rt-ckpt-test", { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: "changed it", steps: 1 } });
 
+    // A conversation with a follow-up, to branch from.
+    appendEvent(p, "rt-branch-test", { actor: "user", type: "decision", summary: "task received", meta: { goal: "where is the greeting" } });
+    appendEvent(p, "rt-branch-test", { actor: "model", type: "decision", summary: "done: in a.txt", meta: {} });
+    appendEvent(p, "rt-branch-test", { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: "in a.txt", steps: 1 } });
+    appendEvent(p, "rt-branch-test", { actor: "user", type: "decision", summary: "follow-up", meta: { followUp: "and which line?" } });
+    appendEvent(p, "rt-branch-test", { actor: "model", type: "decision", summary: "done: line 1", meta: {} });
+    appendEvent(p, "rt-branch-test", { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: "line 1", steps: 1 } });
+
     // A task with an applied edit: its diff should be tucked away until the step is opened.
     appendEvent(p, "rt-edit-test", { actor: "user", type: "decision", summary: "task received", meta: { goal: "change the greeting" } });
     appendEvent(p, "rt-edit-test", { actor: "model", type: "tool_call", summary: "edit a.txt", meta: { action: "edit", path: "a.txt", model: "haiku" } });
@@ -792,6 +800,22 @@ describe("app page with a folder open", () => {
     assert.ok(!body.classList.contains("hidden"), "clicking the step shows it");
     step.click();
     assert.ok(body.classList.contains("hidden"), "and clicking again hides it");
+  });
+
+  test("branching from a follow-up opens a new conversation with only what came before, and the message ready to edit", async () => {
+    const before = (await fetch(`${app.base}/api/state`, { headers: { "x-narrowbit-token": app.token } }).then((r) => r.json())).history.length;
+    const sess = await page.until(() => [...page.w.document.querySelectorAll("#sessions .sess")].find((x) => /where is the greeting/.test(x.textContent)), "the source session");
+    sess.click();
+    const bubble = await page.until(() => [...page.w.document.querySelectorAll(".msg-user")].find((m) => /and which line\?/.test(m.textContent)), "the follow-up message");
+    const btn = bubble.querySelector(".msg-actions button[title^='Branch']");
+    assert.ok(btn, "the follow-up has a Branch button");
+    btn.click();
+    await page.until(() => /branched from an earlier conversation/.test(page.$("items").textContent), "the branch to open");
+    assert.equal(page.$("input").value, "and which line?", "the message is in the box, ready to edit");
+    assert.ok(![...page.w.document.querySelectorAll(".msg-user")].some((m) => /and which line\?/.test(m.textContent)), "the follow-up itself is not in the branch");
+    const after = (await fetch(`${app.base}/api/state`, { headers: { "x-narrowbit-token": app.token } }).then((r) => r.json())).history.length;
+    assert.equal(after, before + 1, "one new conversation, the original still there");
+    page.$("input").value = "";
   });
 
   test("rewind: each checkpoint has a Rewind button; clicking it asks to confirm before restoring", async () => {
