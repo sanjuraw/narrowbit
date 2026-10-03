@@ -2527,6 +2527,43 @@ describe("memory suggestions at the end of a task (approve to save)", () => {
   });
 });
 
+describe("ideas from Hindsight: wider secret scrubbing and notes that know when they may be out of date", () => {
+  test("token shapes beyond the original set are scrubbed, and ordinary text is left alone", async () => {
+    const { redact } = await dist("redact.js");
+    const a = (c, n) => c.repeat(n);
+    const tokens = [
+      "github_pat_" + a("A", 40), "glpat-" + a("b", 24), "npm" + "_" + a("c", 36), "hf" + "_" + a("d", 34),
+      "xai" + "-" + a("e", 30), "pplx" + "-" + a("f", 30), "r8" + "_" + a("g", 34), "dapi" + a("1", 32),
+      "ya29" + "." + a("h", 30), "ASIA" + a("Q", 16), "dop" + "_v1_" + a("a", 64), "shpat" + "_" + a("2", 32),
+      "SG" + "." + a("i", 22) + "." + a("j", 43), "key" + "-" + a("3", 32), "SK" + a("4", 32),
+      "https://hooks.slack.com/" + "services/T00000000/B00000000/" + a("k", 24),
+      "123456789" + ":" + a("l", 35),
+    ];
+    for (const t of tokens) assert.ok(!redact(`token ${t} here`).includes(t.slice(8)), `not scrubbed: ${t.slice(0, 12)}…`);
+    const plain = "npm_config_registry is set; the SKILL file; key-value pairs; dapi docs; version 1.2.3; at 12:34";
+    assert.equal(redact(plain), plain, "nothing here looks like a secret");
+  });
+
+  test("a note remembers its files' content, and says it may be out of date once one changes", async () => {
+    const { Memory, renderMemory } = await dist("memory.js");
+    const { root, p } = tinyRepo();
+    try {
+      const mem = new Memory(p);
+      const e = mem.add({ type: "fact", text: "a.txt greets the user", files: ["a.txt", "not-there.txt"] });
+      assert.equal(e.fileHashes.length, 1, "only existing files are hashed");
+      assert.deepEqual(mem.staleFilesOf(mem.load().find((x) => x.id === e.id)), [], "fresh");
+      writeFileSync(join(root, "a.txt"), "changed\n");
+      const reloaded = mem.load().find((x) => x.id === e.id);
+      assert.deepEqual(mem.staleFilesOf(reloaded), ["a.txt"]);
+      assert.match(renderMemory(reloaded, mem.staleFilesOf(reloaded)), /may be out of date: a\.txt/);
+      rmSync(join(root, "a.txt"));
+      assert.deepEqual(mem.staleFilesOf(reloaded), ["a.txt"], "a deleted file counts too");
+      const old = mem.add({ type: "fact", text: "a note about no files" });
+      assert.deepEqual(mem.staleFilesOf(old), [], "a note with nothing to check is never judged");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe("handoff between models and automatic project memory", () => {
   test("a finished task saves one summary note automatically; a follow-up replaces it instead of adding another", async () => {
     const { root, p } = tinyRepo(); writeFileSync(join(root, "b.txt"), "x\n");

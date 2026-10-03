@@ -916,7 +916,7 @@ export async function main(argv: string[]): Promise<number> {
         return e ? 0 : 1;
       }
       const list = m.load(sub && MEMORY_TYPES.includes(sub as MemoryType) ? (sub as MemoryType) : undefined).filter((e) => args.flags.all || e.status === "active");
-      out(list.length ? list.map(renderMemory).join("\n") : "no memory entries");
+      out(list.length ? list.map((e) => renderMemory(e, m.staleFilesOf(e))).join("\n") : "no memory entries");
       return 0;
     }
     case "audit": {

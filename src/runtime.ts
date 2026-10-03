@@ -1135,7 +1135,7 @@ export function digestWithMemory(p: Paths, taskId: string, budget: number): stri
     // A different model (or a fresh session) is taking over: this is exactly when what the project has already
     // learned pays for itself, so the few notes most relevant to this task go in; the rest stay behind `recall`.
     const rel = mem.relevant(termsOf([state.goal ?? "", ...state.filesTouched, ...state.filesRead].join(" ")), [...state.filesTouched, ...state.filesRead], 5);
-    if (rel.length) shown = "\n\nPROJECT MEMORY (most relevant notes):\n" + rel.map((r) => `  - (${r.entry.type}) ${r.entry.text.slice(0, 240)}`).join("\n");
+    if (rel.length) shown = "\n\nPROJECT MEMORY (most relevant notes):\n" + rel.map((r) => { const st = mem.staleFilesOf(r.entry); return `  - (${r.entry.type}) ${r.entry.text.slice(0, 240)}${st.length ? ` [may be out of date: ${st.slice(0, 3).join(", ")} changed since]` : ""}`; }).join("\n");
   } catch {
     /* no memory store yet */
   }
@@ -1335,7 +1335,7 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       const query = String(d.query ?? "");
       const memory = openMemory(p);
       const hits = query ? memory.relevant(termsOf(query), [], 8).map((h) => h.entry) : memory.load().filter((e) => e.status === "active").slice(-8);
-      const raw = hits.length ? hits.map(renderMemory).join("\n") : "no matching memory";
+      const raw = hits.length ? hits.map((h) => renderMemory(h, memory.staleFilesOf(h))).join("\n") : "no matching memory";
       const capped = capSummary(raw);
       const text = `recall "${query}":\n${capped}`;
       appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text });

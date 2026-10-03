@@ -196,7 +196,7 @@ export async function serveMcp(p: Paths): Promise<void> {
         const q = String(a.query ?? "");
         const { termsOf } = await import("./terms.js");
         const hits = q ? memory.relevant(termsOf(q), [], 15).map((h) => h.entry) : memory.load().filter((e) => e.status === "active").slice(-20);
-        return hits.length ? hits.map(renderMemory).join("\n") : "no matching memory";
+        return hits.length ? hits.map((h) => renderMemory(h, memory.staleFilesOf(h))).join("\n") : "no matching memory";
       }
       default:
         throw new Error(`unknown tool ${name}`);

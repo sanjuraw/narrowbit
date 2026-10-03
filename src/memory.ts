@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { loadConfig, type Paths } from "./config.js";
 import { redact } from "./redact.js";
 import { termsOf } from "./terms.js";
@@ -17,6 +18,8 @@ export interface MemoryEntry {
   attempt?: string;
   result?: string;
   files?: string[];
+  /** "path:hash" for each file in `files` as it was when the note was saved — lets a later reader tell the note may be out of date. */
+  fileHashes?: string[];
   tags?: string[];
   source?: string;
   date: string;
@@ -31,7 +34,7 @@ export interface MemoryEntry {
 
 // ---------- Markdown + frontmatter (Obsidian-compatible) ----------
 
-const FM_KEYS = ["id", "type", "status", "date", "confidence", "files", "tags", "source", "supersededBy"] as const;
+const FM_KEYS = ["id", "type", "status", "date", "confidence", "files", "fileHashes", "tags", "source", "supersededBy"] as const;
 const SECTIONS: [keyof MemoryEntry, string][] = [
   ["reason", "Reason"],
   ["attempt", "Attempt"],
@@ -107,7 +110,7 @@ export function fromMarkdown(md: string, fallback: { id: string; type?: MemoryTy
     status: (["active", "superseded", "resolved"].includes(String(fm.status)) ? fm.status : "active") as MemoryEntry["status"],
   };
   for (const k of ["source", "supersededBy", "confidence"] as const) if (fm[k]) (e as any)[k] = String(fm[k]);
-  for (const k of ["files", "tags"] as const) if (Array.isArray(fm[k]) && (fm[k] as string[]).length) e[k] = fm[k] as string[];
+  for (const k of ["files", "fileHashes", "tags"] as const) if (Array.isArray(fm[k]) && (fm[k] as string[]).length) e[k] = fm[k] as string[];
   for (const p of parts.slice(1)) {
     const [title, ...rest] = p.split("\n");
     const sec = SECTIONS.find(([, t]) => t.toLowerCase() === title.trim().toLowerCase());
@@ -214,8 +217,34 @@ export class Memory {
     const scrub = (x: string) => redact(x).replace(/\b(password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b(\s*(?:is|=|:)\s*)(['"]?)([^\s'",;]{6,})\3/gi, "$1$2$3[REDACTED]$3");
     const clean = (x?: string) => (typeof x === "string" ? scrub(x) : x);
     const entry: MemoryEntry = { id: `${e.type.slice(0, 3)}-${shortId()}`, date: now(), status: "active", ...e, text: scrub(e.text), reason: clean(e.reason), attempt: clean(e.attempt), result: clean(e.result) };
+    if (entry.files?.length && !entry.fileHashes) entry.fileHashes = this.hashFiles(entry.files);
     entry.file = this.write(entry);
     return entry;
+  }
+
+  /** "path:hash" for each readable in-project file (a short content hash). Files that don't exist yet are left out. */
+  private hashFiles(files: string[]): string[] {
+    const out: string[] = [];
+    for (const f of files.slice(0, 12)) {
+      const h = fileHash(this.p.root, f);
+      if (h) out.push(`${f}:${h}`);
+    }
+    return out;
+  }
+
+  /**
+   * Files this note was about that have changed (or gone) since it was saved: the note may no longer be true. A note
+   * saved without hashes (older, hand-written, or about no files) is never judged — nothing is claimed it can't back.
+   */
+  staleFilesOf(e: MemoryEntry): string[] {
+    if (e.external || !e.fileHashes?.length) return [];
+    const stale: string[] = [];
+    for (const entry of e.fileHashes) {
+      const i = entry.lastIndexOf(":");
+      const path = entry.slice(0, i), saved = entry.slice(i + 1);
+      if (fileHash(this.p.root, path) !== saved) stale.push(path);
+    }
+    return stale;
   }
 
   setStatus(id: string, status: MemoryEntry["status"], supersededBy?: string): MemoryEntry | null {
@@ -262,9 +291,23 @@ export function openMemory(p: Paths): Memory {
   return new Memory(p, dirs);
 }
 
-export function renderMemory(e: MemoryEntry): string {
+/** A short content hash of a file inside the project, or null if it isn't a readable file there. */
+function fileHash(root: string, rel: string): string | null {
+  try {
+    const abs = resolve(root, rel);
+    if (abs !== root && !abs.startsWith(root + sep)) return null;
+    if (!lstatSync(abs).isFile()) return null;
+    return createHash("sha1").update(readFileSync(abs)).digest("hex").slice(0, 12);
+  } catch {
+    return null;
+  }
+}
+
+/** `stale`: files the note was about that have changed since it was saved (see Memory.staleFilesOf). */
+export function renderMemory(e: MemoryEntry, stale: string[] = []): string {
   const head = e.type === "failure" ? "FAILED APPROACH" : e.type.toUpperCase();
   const lines = [`${head} [${e.id}]: ${e.text.split("\n").slice(0, 3).join(" ").slice(0, 400)}`];
+  if (stale.length) lines.push(`  ⚠ may be out of date: ${stale.slice(0, 4).join(", ")} changed since this was saved — check the code before relying on it`);
   if (e.attempt) lines.push(`  attempt: ${e.attempt}`);
   if (e.result) lines.push(`  result: ${e.result}`);
   if (e.reason) lines.push(`  reason: ${e.reason}`);
