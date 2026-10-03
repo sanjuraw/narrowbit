@@ -4,7 +4,40 @@ Local, context-managed coding-agent runtime: **task + repository + durable evide
 
 Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens. If quality drops, Narrowbit has failed.
 
-## Handoff (2026-09-30, an independent Codex review found two real release blockers) — read this first
+## Handoff (2026-10-03, two repos, naming settled) — read this first
+
+**What this is.** A summary for whoever picks the project up next. The numbered entries 1–27 in the section below are the full record; this section says where things stand and what to do next.
+
+**Product.** Narrowbit: a local, provider-independent coding-agent runtime (CLI `narrowbit`, native Mac app, MCP server). Goal metric: correct work per unit of AI usage. Evidence (Hono, 40 real bug-fix tasks, n=1 each, caveats in the README): ~90% fewer tokens than the `mcpOnly` baseline at ~equal success; Codex 40/40, DeepSeek 39/40. A second language (Python/click) is worse: 6/8, ~3.3× the tokens. Don't claim more than that.
+
+**Repos (both PRIVATE; nothing is published to npm).**
+- `sanjuraw/narrowbit` — the runtime and app. Dev checkout `/Users/Shared/Projects/Narrowbit`; deployed clone `/Users/Shared/NarrowbitApp`; app `/Applications/Narrowbit.app`.
+- `sanjuraw/narrowbit-memory` — project memory (Markdown notes, "may be out of date" tracking, model-to-model hand-over, branching, MCP server). **Source of truth is `packages/memory/` in the runtime repo**; the memory repo is a mirror: change code in `narrowbit`, then run `scripts/sync-memory-repo.sh`. Boundary rule (test-enforced): the package imports only itself and `node:`.
+
+**State at handoff.** `main` = `64214a3`, pushed; CI green on `940c288`, the docs-only `64214a3` was still running when this was written (check it). Tests: unit 185, UI 82, memory package 6, all passing at the last code change. **The deployed app is at `9d0f4bc`** (branching + `agent --json`); the later commits only add package dev-dependencies, a sync script and notes, so nothing user-visible is waiting, but the in-app updater will offer them (package-lock changed, so it reinstalls). Working tree clean.
+
+**Decisions made, don't reopen without a reason.**
+- Name stays **Narrowbit**. "Harness" is a description, not a name. `narrowbit.com` is taken by someone unknown (the browser pane refused to load it; look at it with `curl` before assuming a conflict). Site will be **`narrowbit.dev`**; `.ai` rejected as too expensive. The user registers the domain; no site is built until the repo goes public, then one static page with the benchmark claims *and* their caveats.
+- Only two repos for now. Considered and not split: code index (likeliest third; loop and `verify` import it directly, boundary unclean), provider adapters, benchmark kit (maybe once Python-capable), compression, Mac shell.
+- Repo stays private; going public needs the user's explicit yes.
+- Fork lives on the user's message in the chat, not under Scout (Scout is the optional research-helper model).
+
+**Waiting on the user (do not do these unasked).**
+1. **October Bus connector test**: needs permission to download and run their Go daemon (state exact file, source and size first) to see whether Narrowbit's existing remote-MCP client can join a Bus with no new code.
+2. **Android APK** for a separate app of the user's: needs their `npx eas-cli login` and first interactive EAS build, or a local toolchain (Java 17 + Android SDK, ~5–6 GB) they have not approved.
+3. **npm publish** of either package, **making any repo public**, registering the domain.
+4. The Claude Code install on the shared Mac is owned by the second account, so the in-app "Update Claude" button fails for the the main profile; the user must run `claude update` as the second account.
+
+**Next steps, in order of value.**
+1. Check CI on `64214a3`; add a small CI workflow to the memory repo (build + 6 tests on Node 22).
+2. **Use the memory MCP server for real**: point Claude Code or Codex at `narrowbit-memory serve --root <repo>` and run an actual session. So far only the protocol is tested.
+3. **Measure the richer model-switch hand-over** (A/B: same task, switch Claude→Codex mid-way, with and without the new digest). The token benefit is claimed by design, not measured.
+4. One more independent audit pass (focus: connector, approval and subprocess surfaces) before any public flip; ten Codex rounds so far, each found real bugs.
+5. The older open-item list (scout at scale, parallel subtasks, Python task mining, per-provider usage-limit burn rate) is under entry 26 below.
+
+**Working rules (unchanged).** Measure before changing a default and cite numbers with caveats. No third-party installs or downloads without explicit OK. Never enter credentials into tools. Commit trailer `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`; repo-local git identity only. Bound every test run (`--test-timeout`), never overlap build/test chains, add a `test-ui/` case for every UI change, and keep backticks out of `ui-page.ts`'s page JS (`grep -c '`'` stays 3). After pulling to the deployed clone run `npm install` then `npm run build`, rebuild the Mac app only if `mac/` changed.
+
+## Prior handoff (2026-09-30, an independent Codex review found two real release blockers)
 
 **State.** `main` = `fe0f5fd` before this stretch's commit, pushed after. Tests: `npm test` 128, `npm run test:ui` 66, all passing. The user asked Codex (a different model, run independently, no shared context with this session) for a second opinion on public-release readiness. Codex found four issues; all four were independently re-verified against the actual code before any fix — not applied on trust. All four were real.
 
