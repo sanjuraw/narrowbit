@@ -2042,7 +2042,7 @@ describe("connector tools are described on demand, not listed in full every turn
       const r = await runTask(p, "see what the nb connector offers", { claudeBin: fake.bin, boss: false, maxSteps: 8 });
       const ev = readEvents(p, r.taskId);
       const results = ev.filter((e) => e.type === "tool_result").map((e) => e.summary);
-      assert.ok(results.some((t) => /^nb\.nb_symbol:/.test(t) && /JSON schema/.test(t) && /properties/.test(t)), "schema returned on request");
+      assert.ok(results.some((t) => /^nb\.nb_symbol:/.test(t) && /JSON schema/.test(t) && /properties/.test(t)), "schema returned on request; got: " + JSON.stringify(results).slice(0, 700));
       assert.ok(results.some((t) => /no tool "nope"/.test(t) && /nb_symbol/.test(t)), "an unknown tool lists the real ones");
       const first = ev.find((e) => e.type === "model_call").meta.context.parts.find((x) => x.kind === "instructions");
       assert.ok(first.tokens < 3500, "the fixed instructions stay small (names only: " + first.tokens + " est. tokens)");

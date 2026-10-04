@@ -12,4 +12,5 @@ regexes = [
   '''ghp_abcdefghijklmnopqrstuvwxyz0123456789''',
   '''ghp_a{36}''',
   '''NB-DIR-SECRET-5521''',
+  '''canary-SECRET-123''',
 ]
