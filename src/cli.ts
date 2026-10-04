@@ -32,7 +32,7 @@ import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
 import { fmtNum, now, sh } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
-import { trustRepo, untrustedReason } from "./trust.js";
+import { trustConfig, trustRepo, untrustedReason } from "./trust.js";
 
 interface Args {
   _: string[];
@@ -168,7 +168,7 @@ function requireTrust(root: string, args: { flags: Record<string, unknown> }): b
   if (!u) return true;
   if (args.flags.trust) {
     trustRepo(root, u.risks);
-    process.stderr.write(`narrowbit: trusting ${root} (its git filter programs were accepted; you'll be asked again if they change)\n`);
+    process.stderr.write(`narrowbit: trusting ${root} (what it listed was accepted; you'll be asked again if it changes)\n`);
     return true;
   }
   process.stderr.write(`narrowbit: ${u.message}\nIf you trust it, re-run with --trust.\n`);
@@ -807,6 +807,7 @@ export async function main(argv: string[]): Promise<number> {
         else eps[prov] = { ...eps[prov], baseUrl: url, ...(strFlag(args, "key-env") ? { keyEnv: strFlag(args, "key-env") } : {}) };
         ensureDirs(p);
         saveConfig(p, cfg);
+        trustConfig(p.root); // the file now holds only what was already accepted plus this explicit change
         out(`${prov}: ${url === "default" ? `back to ${PROVIDER_INFO[prov].baseUrl ?? "(no default)"}` : url}`);
         return 0;
       }

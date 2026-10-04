@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { isTrusted, repoConfigRisks } from "./trust.js";
 import { sh } from "./util.js";
 
 export const NB_DIR = ".narrowbit";
@@ -145,15 +146,30 @@ export function ensureDirs(p: Paths): void {
   if (!existsSync(gi)) writeFileSync(gi, "*\n");
 }
 
+const warned = new Set<string>();
+
 export function loadConfig(p: Paths): NarrowbitConfig {
   if (!existsSync(p.config)) return structuredClone(DEFAULT_CONFIG);
   const raw = JSON.parse(readFileSync(p.config, "utf8"));
-  return {
+  const cfg: NarrowbitConfig = {
     ...DEFAULT_CONFIG,
     ...raw,
     budget: { ...DEFAULT_CONFIG.budget, ...(raw.budget ?? {}) },
     verify: { ...(raw.verify ?? {}) },
   };
+  // A repo can ship its own config. Endpoint overrides and extra memory folders decide where your code and keys go
+  // and what notes are read, so they only count once the user has accepted them (trust.ts); until then they are
+  // dropped here, which covers every entry point (CLI, app, MCP) without each having to remember to check.
+  const risks = repoConfigRisks(raw);
+  if (risks.length && !isTrusted(p.root, risks)) {
+    cfg.memoryDirs = [];
+    if (cfg.agent?.endpoints) cfg.agent = { ...cfg.agent, endpoints: undefined };
+    if (!warned.has(p.root)) {
+      warned.add(p.root);
+      process.stderr.write(`narrowbit: ignoring the API endpoint / memory folder settings in ${p.config} — this repository isn't trusted yet (narrowbit agent --trust, or open it in the app).\n`);
+    }
+  }
+  return cfg;
 }
 
 export function saveConfig(p: Paths, c: NarrowbitConfig): void {

@@ -11,6 +11,12 @@ import { gitArgs } from "./util.js";
  * textconv). Clean/smudge filters are the exception: git-lfs and git-crypt rely on them, and replacing a git-crypt
  * filter could even commit decrypted secrets. So a repo that defines its own filter program is only opened after
  * the user says they trust it — the same idea as VS Code's workspace trust, scoped to this one real risk.
+ *
+ * The same goes for the repository's own `.narrowbit/config.json`, which a cloned repo can ship: an endpoint override
+ * (with the name of any environment variable to send as the key, or `{VAR}` in the URL) would send your code and
+ * secrets to an address the repo author picked, and `memoryDirs` would read notes from folders outside the repo into
+ * what the model sees. Those settings only take effect once the user has accepted exactly those values (config.ts
+ * loadConfig drops them until then); they are a separate decision from the git filters.
  */
 const GIT_LFS = /^git-lfs (clean -- %f|smudge( --skip)? -- %f|filter-process( --skip)?)$/;
 
@@ -40,6 +46,29 @@ export function gitConfigRisks(root: string): GitRisk[] {
   return risks;
 }
 
+/** Settings in a repo's `.narrowbit/config.json` that send data to, or read data from, places the repo author chose. */
+export function repoConfigRisks(raw: any): GitRisk[] {
+  const risks: GitRisk[] = [];
+  const eps = raw?.agent?.endpoints;
+  if (eps && typeof eps === "object") {
+    for (const [prov, ep] of Object.entries<any>(eps)) {
+      for (const f of ["baseUrl", "keyEnv"]) if (typeof ep?.[f] === "string" && ep[f].trim()) risks.push({ key: `narrowbit.agent.endpoints.${prov}.${f}`, value: ep[f] });
+    }
+  }
+  if (Array.isArray(raw?.memoryDirs)) for (const d of raw.memoryDirs) if (typeof d === "string" && d.trim()) risks.push({ key: "narrowbit.memoryDirs", value: d });
+  return risks;
+}
+
+const isConfigRisk = (r: GitRisk) => r.key.startsWith("narrowbit.");
+
+export function repoConfigRisksAt(root: string): GitRisk[] {
+  try {
+    return repoConfigRisks(JSON.parse(readFileSync(join(root, ".narrowbit", "config.json"), "utf8")));
+  } catch {
+    return [];
+  }
+}
+
 function storePath(): string {
   return join(homedir(), ".narrowbit", "trusted-repos.json");
 }
@@ -64,18 +93,28 @@ function load(): Record<string, string> {
   }
 }
 
-/** Trusted means: the user accepted exactly these filter programs for this folder. If they change, ask again. */
+/** Trusted means: the user accepted exactly these filter programs / config settings for this folder. If they change, ask again.
+ * Git filters and config settings are separate decisions (the config entry lives under "<folder>#config"). */
 export function isTrusted(root: string, risks: GitRisk[]): boolean {
-  if (!risks.length) return true;
-  return load()[canonical(root)] === fingerprint(risks);
+  const saved = load();
+  const ok = (list: GitRisk[], key: string) => !list.length || saved[key] === fingerprint(list);
+  return ok(risks.filter((r) => !isConfigRisk(r)), canonical(root)) && ok(risks.filter(isConfigRisk), `${canonical(root)}#config`);
 }
 
 export function trustRepo(root: string, risks: GitRisk[]): void {
   const all = load();
-  all[canonical(root)] = fingerprint(risks);
+  const git = risks.filter((r) => !isConfigRisk(r));
+  const cfg = risks.filter(isConfigRisk);
+  if (git.length) all[canonical(root)] = fingerprint(git);
+  if (cfg.length) all[`${canonical(root)}#config`] = fingerprint(cfg);
   const f = storePath();
   if (!existsSync(dirname(f))) mkdirSync(dirname(f), { recursive: true, mode: 0o700 });
   writeFileSync(f, JSON.stringify(all, null, 2) + "\n", { mode: 0o600 });
+}
+
+/** The user just set these config values themselves (`narrowbit models endpoint`, the app's endpoint field): accept what the file holds now. */
+export function trustConfig(root: string): void {
+  trustRepo(root, repoConfigRisksAt(root));
 }
 
 export function describeRisks(risks: GitRisk[]): string {
@@ -84,10 +123,12 @@ export function describeRisks(risks: GitRisk[]): string {
 
 /** The one check every entry point uses before running git in a folder: null if fine to open, else why not. */
 export function untrustedReason(root: string): { risks: GitRisk[]; message: string } | null {
-  const risks = gitConfigRisks(root);
+  const risks = [...gitConfigRisks(root), ...repoConfigRisksAt(root)];
   if (isTrusted(root, risks)) return null;
-  return {
-    risks,
-    message: `This repository's git settings name programs that git runs by itself on ordinary commands (like status and add):\n${describeRisks(risks)}\nOnly open it if you trust where it came from.`,
-  };
+  const git = risks.filter((r) => !isConfigRisk(r));
+  const cfg = risks.filter(isConfigRisk);
+  const parts: string[] = [];
+  if (git.length && !isTrusted(root, git)) parts.push(`This repository's git settings name programs that git runs by itself on ordinary commands (like status and add):\n${describeRisks(git)}`);
+  if (cfg.length && !isTrusted(root, cfg)) parts.push(`This repository's .narrowbit/config.json sets things that decide where your code and keys go, or what notes are read (custom API addresses, the environment variable sent as the key, extra memory folders):\n${describeRisks(cfg)}`);
+  return { risks, message: `${parts.join("\n\n")}\nOnly open it if you trust where it came from.` };
 }

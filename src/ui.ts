@@ -44,7 +44,7 @@ import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
 import { sh } from "./util.js";
 import { updateCli } from "./providers/models.js";
-import { trustRepo, untrustedReason } from "./trust.js";
+import { trustConfig, trustRepo, untrustedReason } from "./trust.js";
 import { discardTask, planDiscard } from "./checkpoints.js";
 
 /**
@@ -996,6 +996,7 @@ export function startUi(opts: UiOptions) {
           else delete eps[prov];
           ensureDirs(p);
           saveConfig(p, cfg);
+          trustConfig(p.root); // the file now holds only what was already accepted plus this explicit change
           return json(res, 200, state());
         }
         case "/api/run": {

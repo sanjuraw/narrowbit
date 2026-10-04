@@ -7,6 +7,9 @@ import type { Store } from "./store.js";
 import type { TaskRecord } from "./tasks.js";
 import { now } from "./util.js";
 
+/** One shell word, literally: inside single quotes nothing expands ($(…), backticks, $VAR). A leading "-" can't become an option. */
+const shellQuote = (f: string) => `'${(f.startsWith("-") ? `./${f}` : f).replace(/'/g, `'\\''`)}'`;
+
 export interface VerifyResult {
   ok: boolean;
   ran: boolean;
@@ -65,7 +68,7 @@ export async function verify(
   const mapped = relatedTests(store, ids, 12).map((t) => t.path);
   const focused = [...new Set([...changedTests, ...mapped])];
   if (opts.full || !cfg.verify.testFocused) await step("test", cfg.verify.test);
-  else if (focused.length) await step(`tests (focused: ${focused.length})`, cfg.verify.testFocused.replace("{files}", focused.map((f) => JSON.stringify(f)).join(" ")));
+  else if (focused.length) await step(`tests (focused: ${focused.length})`, cfg.verify.testFocused.replace("{files}", focused.map(shellQuote).join(" ")));
   else if (cfg.verify.test) steps.push({ name: "tests", ok: true, skipped: true, exit: 0, summary: "no tests mapped to changed files (run with --full for the whole suite)" });
 
   // Unexpected changes: modified files that were neither selected nor mapped tests nor dirty before the task.
