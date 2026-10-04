@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { isTrusted, repoConfigRisks } from "./trust.js";
 import { sh } from "./util.js";
@@ -127,16 +128,29 @@ export function paths(root: string): Paths {
 
 /** Find repo root: nearest ancestor containing .narrowbit, else git toplevel, else cwd. */
 export function findRoot(start = process.cwd()): string {
-  let dir = resolve(start);
+  const from = resolve(start);
+  const real = (d: string) => {
+    try {
+      return realpathSync(d);
+    } catch {
+      return d;
+    }
+  };
+  // Inside a git repository the project is that repository, or a folder inside it with its own .narrowbit/. The walk
+  // up stops at the repository's top folder, so a .narrowbit/ further up can't become the project — in particular the
+  // home folder's ~/.narrowbit, which holds Narrowbit's own settings and is never a project.
+  const g = sh("git", ["rev-parse", "--show-toplevel"], from);
+  const top = g.code === 0 && g.stdout.trim() ? real(g.stdout.trim()) : null;
+  const home = real(homedir());
+  let dir = from;
   for (;;) {
-    if (existsSync(join(dir, NB_DIR))) return dir;
+    if (real(dir) !== home && existsSync(join(dir, NB_DIR))) return dir;
+    if (top && real(dir) === top) return dir;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  const g = sh("git", ["rev-parse", "--show-toplevel"], start);
-  if (g.code === 0 && g.stdout.trim()) return g.stdout.trim();
-  return resolve(start);
+  return from;
 }
 
 export function ensureDirs(p: Paths): void {

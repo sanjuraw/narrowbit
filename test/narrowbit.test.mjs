@@ -3744,3 +3744,22 @@ describe("third review pass: shipped state can't choose where files are written,
     });
   });
 });
+
+describe("the project root is never a folder above the git repository", () => {
+  test("a .narrowbit/ in a parent folder (such as the home folder's own settings) doesn't capture a repo that has none yet", async () => {
+    const { findRoot } = await dist("config.js");
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), "nb-parent-")));
+    try {
+      mkdirSync(join(parent, ".narrowbit"));
+      const repo = join(parent, "work", "repo");
+      mkdirSync(join(repo, "src"), { recursive: true });
+      execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+      assert.equal(findRoot(join(repo, "src")), repo, "the repository itself, not the folder above it");
+      mkdirSync(join(repo, "src", ".narrowbit"));
+      assert.equal(findRoot(join(repo, "src")), join(repo, "src"), "a project folder inside the repo is still found first");
+      const loose = join(parent, "loose", "deep");
+      mkdirSync(loose, { recursive: true });
+      assert.equal(findRoot(loose), parent, "outside any repo, the nearest project folder above still counts");
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+});
