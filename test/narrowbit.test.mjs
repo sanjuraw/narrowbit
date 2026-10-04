@@ -3868,3 +3868,24 @@ describe("a remembered 'allow' stops covering a command once the agent has edite
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 });
+
+describe("suggested next prompt: deterministic, from how the task ended", () => {
+  test("rules: what each outcome suggests, and nothing for a plain answer", async () => {
+    const { suggestFollowUp, suggestionFromEvents } = await dist("followup.js");
+    const s = (o) => suggestFollowUp({ filesChanged: 0, summary: "", ...o });
+    assert.equal(s({ outcome: "done", filesChanged: 0 }), null, "a question that was answered: nothing to suggest");
+    assert.match(s({ outcome: "done", filesChanged: 2 }), /Review your changes/);
+    assert.match(s({ outcome: "done", filesChanged: 2, summary: "ok\n\n[Narrowbit: NOT verified — verify was not run after the last edit, so no check has confirmed these edits.]" }), /Run the tests/);
+    assert.match(s({ outcome: "max_steps" }), /Continue where you left off/);
+    assert.match(s({ outcome: "stopped" }), /Continue where you left off/);
+    assert.match(s({ outcome: "blocked" }), /different approach/);
+    assert.equal(s({ outcome: "error", errorKind: "limit" }), null, "a usage limit has its own card; no prompt helps");
+    assert.match(s({ outcome: "error" }), /Try again/);
+    // The same answer from a stored event log (a reopened conversation).
+    const ev = (type, summary, meta, actor = "system") => ({ actor, type, summary, meta });
+    assert.match(suggestionFromEvents([ev("edit", "edited a.ts", { path: "a.ts" }), ev("decision", "outcome: done", { outcome: "done", summary: "ok" })]), /Review your changes/);
+    assert.equal(suggestionFromEvents([ev("decision", "outcome: done", { outcome: "done", summary: "ok" })]), null);
+    assert.match(suggestionFromEvents([ev("decision", "outcome: max_steps", { outcome: "max_steps", summary: "" })]), /Continue/);
+    assert.equal(suggestionFromEvents([]), null, "nothing finished yet: nothing to suggest");
+  });
+});

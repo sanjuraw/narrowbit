@@ -304,6 +304,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .banner.warn { background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--text); }
 .banner.bad { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
 .banner ul { margin: 4px 0 6px; padding-left: 18px; }
+.sug-hint { font-size: 12px; color: var(--muted, #8a8a8a); padding: 0 2px 4px; }
+.sug-hint kbd { font: inherit; font-size: 11px; border: 1px solid var(--line-2, #444); border-radius: 4px; padding: 0 5px; }
 #input { width: 100%; border: 0; background: transparent; resize: none; outline: none; font-size: 15px; line-height: 1.5; max-height: 240px; min-height: 26px; padding: 2px 2px; }
 /* Two purpose-built rows instead of one flat row that wraps unpredictably: settings (attach, model,
    toggles) left-aligned and free to wrap on its own; actions (compact, usage, send) a tight cluster
@@ -508,6 +510,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         <div id="attached" class="attached hidden"></div>
         <div class="mention-pop hidden" id="mentionPop"></div>
         <textarea id="input" rows="1" placeholder="Describe a task… (@ to mention a file)"></textarea>
+        <div class="sug-hint hidden" id="sugHint"><kbd>Tab</kbd> to use the suggestion</div>
         <div class="cbar">
           <div class="cbar-actions">
             <button class="ghost hidden" id="compactBtn" title="Start a fresh session from a short summary of this chat — smaller context, nothing lost from the files or your saved notes">Compact</button>
@@ -1478,6 +1481,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (e.key === "ArrowUp") { e.preventDefault(); mention.sel = (mention.sel - 1 + mention.files.length) % mention.files.length; renderMentionPop(); return; }
       if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickMention(mention.sel); return; }
     }
+    if (e.key === "Tab" && !e.shiftKey && !e.isComposing && !input.value && activeSuggestion()) {
+      e.preventDefault();
+      input.value = view.suggestion;
+      autosize();
+      renderComposer();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(false); }
   });
   input.addEventListener("blur", function () { setTimeout(closeMention, 150); });
@@ -1487,7 +1497,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     api("/api/compact", { task: view.taskId }).then(function (r) { flash($("savedMsg"), "Compacting " + r.when); showToast("Compact requested — takes effect " + r.when + ". Notes saved to project memory are kept and listed in the summary."); })
       .catch(function (e) { banner("bad", e.message); });
   };
+  // The prompt Narrowbit suggests once a task has ended (computed on the server by rules; see followup.ts): ghost text in the
+  // empty box, Tab fills it in. Not offered while a task is running, or once you have started typing.
+  function activeSuggestion() { return view && view.suggestion && !viewingRun() ? view.suggestion : null; }
+  function renderSuggestion() { show($("sugHint"), !!activeSuggestion() && !input.value.trim()); }
   function renderComposer() {
+    renderSuggestion();
     var typing = input.value.trim().length > 0;
     var busy = !!(view && view.pendingNew && !view.taskId);   // a brand-new task that has no id yet can't take a message
     var P = S && S.providers && S.providers[S.selection.provider];
@@ -1504,7 +1519,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     show($("sendBtn"), !viewingRun() || typing);
     $("sendBtn").disabled = !S || (!!S.root && !S.initialized) || busy || !!(P && P.unavailable) || notReadyNoRoot;
     $("leadTog").checked = !!(S && S.lead);
-    input.placeholder = view && view.taskId ? "Ask for a follow-up or a change…" : S && S.root ? "Describe a task…" : "What do you want to build? Let's talk it through…";
+    input.placeholder = activeSuggestion() || (view && view.taskId ? "Ask for a follow-up or a change…" : S && S.root ? "Describe a task…" : "What do you want to build? Let's talk it through…");
     $("hint").textContent = !S ? "" : viewingRun() && typing ? "Enter to send — the agent gets it before its next step" : P && P.unavailable ? P.unavailable : notReadyNoRoot ? ((R[S.selection.provider] && R[S.selection.provider].detail) || "not signed in — pick a model that's ready") : !S.root ? "Enter to send · No folder needed yet — we'll create one when you're ready" : "Enter to send · Shift+Enter for a new line";
     if (S && S.root) show($("createProjectBar"), false);
   }
@@ -1571,6 +1586,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function send(force) {
     var text = input.value.trim();
     if (!text || $("sendBtn").disabled) return;
+    if (view) view.suggestion = null;
     if (S && !S.root) { sendDraft(text); return; }
     banner("", null);
     var cont = view && view.taskId ? view.taskId : null;
@@ -1676,6 +1692,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     api("/api/task/" + encodeURIComponent(id)).then(function (d) {
       if (!view || view.taskId !== id) return;
       d.events.forEach(function (e) { renderEvent(e, true); });
+      view.suggestion = d.suggestion || null; renderComposer();
       if (d.running) setWorking("Working…"); else loadChanges();
       // A conversation that was waiting on you while you were elsewhere shows its question again.
       (d.waiting || []).forEach(function (w) { if (w.type === "approval") onApproval(w); else if (w.type === "question") onQuestion(w); });
@@ -2134,6 +2151,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         var key = ev.taskId + ":" + ev.steps + ":" + ev.outcome;
         if (view && view.taskId === ev.taskId && !view.finished[key]) {
           view.finished[key] = true;
+          view.suggestion = ev.suggestion || null; renderComposer();
           view.working = null; placeWorking();
           loadChanges();
           if (native) native.postMessage({ type: "finished", text: ev.outcome + ": " + ev.summary });

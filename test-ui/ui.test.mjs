@@ -1596,6 +1596,56 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { page.close(); }
   });
 
+  test("a task that ends without finishing carries a suggested next prompt, on the finished event and when it is reopened", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    execFileSync("git", ["checkout", "--", "."], { cwd: repo });
+    fakeClaudeIn(fakeDir, [{ action: "read", path: "package.json" }, { action: "read", path: "package.json" }, { action: "read", path: "package.json" }]);
+    await fetch(`${app.base}/api/models`, { method: "POST", headers: H, body: JSON.stringify({ provider: "claude", effort: "medium", tiers: { explore: "sonnet", execute: "sonnet", escalate: "opus" }, boss: false }) });
+    // Start the run first: the stream sends nothing (not even headers) until there is something to replay, so opening it
+    // before any run exists would wait for the 25 s keep-alive.
+    const started = await fetch(`${app.base}/api/run`, { method: "POST", headers: H, body: JSON.stringify({ task: "keep reading", maxSteps: 2, askBeforeCommands: false }) });
+    assert.equal(started.status, 200, await started.clone().text());
+    const st = await approvalStream();
+    try {
+      const fin = await st.waitFor((e) => e.type === "finished", "the task to finish");
+      assert.equal(fin.outcome, "max_steps");
+      assert.match(fin.suggestion, /Continue where you left off/);
+      const reopened = await (await fetch(`${app.base}/api/task/${fin.taskId}`, { headers: H })).json();
+      assert.equal(reopened.suggestion, fin.suggestion, "reopening the conversation later offers the same suggestion");
+    } finally { st.stop(); }
+  });
+
+  test("the composer shows the suggestion as ghost text, Tab fills it in, and it goes away with a new chat", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const page = await openPage(app.url);
+    try {
+      await page.until(() => page.w.__nb && page.w.__nb.view(), "the page's conversation view");
+      const nb = page.w.__nb;
+      const v = nb.view(); v.taskId = "rt-sug"; v.pendingNew = false;
+      const sug = "Review your changes for mistakes before I commit them";
+      nb.stream({ type: "finished", taskId: "rt-sug", task: "rt-sug", outcome: "done", summary: "ok", steps: 3, changed: ["a.ts"], tokens: 1, costUsd: 0, suggestion: sug });
+      assert.equal(page.$("input").placeholder, sug, "the suggestion sits in the empty box as ghost text");
+      assert.ok(page.visible(page.$("sugHint")), "with a hint on how to take it");
+      page.$("input").dispatchEvent(new page.w.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+      assert.equal(page.$("input").value, sug, "Tab fills it in, ready to edit or send");
+      assert.ok(!page.visible(page.$("sugHint")), "the hint goes once there is text");
+      page.$("input").value = "";
+      page.$("input").dispatchEvent(new page.w.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+      assert.equal(page.$("input").value, sug, "still available while the box is empty");
+      page.$("input").value = "";
+      page.$("newBtn").click();   // closes the project (asynchronously), then shows a blank chat
+      await page.until(() => page.$("input").placeholder !== sug, "a new chat without the suggestion");
+      assert.match(page.$("input").placeholder, /Describe a task|What do you want to build/, "it shows the usual prompt");
+      page.$("input").dispatchEvent(new page.w.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+      assert.equal(page.$("input").value, "", "and Tab does nothing special");
+      await new Promise((r) => setTimeout(r, 400)); // the page's own follow-up request after a finished task
+    } finally {
+      page.close();
+      await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) }); // New task closed it
+    }
+  });
+
   test("an approval shows control characters as text, and 'Allow for this task' still matches the exact command", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     execFileSync("git", ["checkout", "--", "package.json"], { cwd: repo }); // the previous test left the agent's edit in the folder

@@ -45,6 +45,7 @@ import { uiPage } from "./ui-page.js";
 import { sh, visible } from "./util.js";
 import { updateCli } from "./providers/models.js";
 import { covered, editsSince, type Grant } from "./approvals.js";
+import { suggestFollowUp, suggestionFromEvents } from "./followup.js";
 import { shippedRisks, trustConfig, trustRepo, untrustedMessage, untrustedReason } from "./trust.js";
 import { discardTask, planDiscard } from "./checkpoints.js";
 
@@ -65,7 +66,7 @@ type StreamEvent = (
   | { type: "approval_resolved"; id: string; allowed: boolean }
   | { type: "question"; id: string; question: string; options: string[] }
   | { type: "question_resolved"; id: string; answer: string | null }
-  | { type: "finished"; outcome: string; summary: string; steps: number; taskId: string; changed: string[]; tokens: number; costUsd: number }
+  | { type: "finished"; outcome: string; summary: string; steps: number; taskId: string; changed: string[]; tokens: number; costUsd: number; suggestion?: string | null }
   | { type: "failed"; error: string }
 ) & { run?: string; task?: string | null };
 
@@ -558,13 +559,16 @@ export function startUi(opts: UiOptions) {
       .then((result) => {
         const s = fold(result.taskId, readEvents(p, result.taskId));
         const roles = Object.values(s.ledgerByRole);
+        const changed = (() => { const iso = readIsolated(p, result.taskId); return iso ? workingDiff(iso.dir).files : workingDiff(thisRun.root, thisRun.untrackedBefore).files; })();
+        const end = [...readEvents(p, result.taskId)].reverse().find((e) => e.type === "decision" && typeof e.meta?.outcome === "string");
         emit(thisRun, {
           type: "finished",
           outcome: result.outcome,
           summary: result.summary,
           steps: result.steps,
           taskId: result.taskId,
-          changed: (() => { const iso = readIsolated(p, result.taskId); return iso ? workingDiff(iso.dir).files : workingDiff(thisRun.root, thisRun.untrackedBefore).files; })(),
+          changed,
+          suggestion: suggestFollowUp({ outcome: result.outcome, summary: result.summary, filesChanged: changed.length, errorKind: typeof end?.meta?.errorKind === "string" ? (end.meta.errorKind as string) : undefined }),
           tokens: roles.reduce((a, r) => a + r.inputTokens + r.cacheCreationTokens + r.cacheReadTokens + r.outputTokens, 0),
           costUsd: roles.reduce((a, r) => a + r.costUsd, 0),
         });
@@ -695,7 +699,8 @@ export function startUi(opts: UiOptions) {
         const live = runOfTask(id);
         // Approvals and questions this task is waiting on, so opening it from the sidebar shows what it needs from you.
         const waiting = live ? live.events.filter((e) => (e.type === "approval" && live.pending.has(e.id)) || (e.type === "question" && live.questions.has(e.id))) : [];
-        return json(res, 200, { id, events: readEvents(paths(root), id), running: !!live, waiting });
+        const events = readEvents(paths(root), id);
+        return json(res, 200, { id, events, running: !!live, waiting, suggestion: live ? null : suggestionFromEvents(events) });
       }
 
       // Planning drafts: conversations before any project exists (planning.ts). Work with no repository
