@@ -3459,3 +3459,40 @@ describe("eleventh audit, part two: connector approvals show everything, Stop an
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 });
+
+describe("second independent pass: Stop cancels connector calls; trust warnings can't be spoofed", () => {
+  test("Stop cancels a connector call in flight and ends the connector with everything it started; one already stopped never starts", async () => {
+    const { callConnectorTool } = await dist("mcpClient.js");
+    const dir = mkdtempSync(join(tmpdir(), "nb-slowmcp-"));
+    const marker = `nb-slowmcp-${process.pid}`;
+    const server = join(dir, "server.js");
+    // A minimal MCP server that answers `initialize` and then never answers `tools/call`.
+    writeFileSync(server, `process.stdin.on("data", (d) => { for (const l of String(d).split("\\n")) { if (!l.trim()) continue; const m = JSON.parse(l); if (m.method === "initialize") console.log(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "slow", version: "0" } } })); } }); setInterval(() => {}, 1000);\n`);
+    const connector = { name: "slow", command: "node", args: [server, marker], env: {} };
+    const gone = () => { try { execFileSync("pgrep", ["-f", marker], { stdio: "ignore" }); return false; } catch { return true; } };
+    try {
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 700);
+      const t0 = Date.now();
+      await assert.rejects(callConnectorTool(connector, "anything", {}, 60_000, ac.signal), /stopped/);
+      assert.ok(Date.now() - t0 < 8000, `returned promptly after Stop (${Date.now() - t0} ms)`);
+      await new Promise((r) => setTimeout(r, 300));
+      assert.ok(gone(), "the connector process is gone");
+      await assert.rejects(callConnectorTool(connector, "anything", {}, 60_000, ac.signal), /stopped/);
+      assert.ok(gone(), "and a call asked for after Stop never starts one");
+    } finally { try { execFileSync("pkill", ["-f", marker]); } catch { /* already gone */ } rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("a trust warning shows control characters as text and says when a long value is cut", async () => {
+    const { describeRisks } = await dist("trust.js");
+    const text = describeRisks([
+      { key: "narrowbit.agent.endpoints.openrouter.baseUrl", value: "https://ok.example/v1\r\u001b[2K harmless‮" },
+      { key: "filter.x.clean", value: "a".repeat(3000) },
+    ]);
+    assert.doesNotMatch(text, /[\r\u001b‮]/, "no raw control character in the warning");
+    assert.match(text, /\\r/);
+    assert.match(text, /\\x1b/);
+    assert.match(text, /\+\d+ more characters/, "a value that is cut says so, so a hidden tail is never silent");
+    assert.ok(text.includes("a".repeat(500)), "most of a long value is still shown");
+  });
+});

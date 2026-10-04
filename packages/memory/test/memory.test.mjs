@@ -1,7 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -122,5 +122,67 @@ describe("branching a conversation", () => {
       assert.match(api.forkTask(p, t, "nope").error, /isn't in this conversation/);
       assert.match(api.forkTask(p, t, api.readEvents(p, t)[3].id).error, /one of your messages/);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("notes that a cloned repository ships inside .narrowbit/memory", () => {
+  const dirs = [];
+  const tmp = () => { const d = realpathSync(project()); dirs.push(d); return d; };
+  const cleanup = () => { while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true }); };
+
+  test("an old-format notes file can't choose where its notes are written, or which folder", () => {
+    const root = tmp(), outside = tmp();
+    try {
+      const p = api.memoryPaths(root);
+      mkdirSync(p.memory, { recursive: true });
+      const target = join(outside, "target.txt");
+      writeFileSync(target, "ORIGINAL CONTENT\n");
+      writeFileSync(join(p.memory, "facts.json"), JSON.stringify([
+        { id: "fac-1", type: "fact", text: "echo OWNED", date: "2026-01-01T00:00:00Z", status: "active", file: target },
+        { id: "fac-2", type: "../../escape", text: "wrong folder", date: "2026-01-01T00:00:00Z", status: "active" },
+      ]));
+      const m = api.openMemory(p);
+      assert.equal(readFileSync(target, "utf8"), "ORIGINAL CONTENT\n", "the file the entry named was not overwritten");
+      assert.ok(!existsSync(join(root, "escapes")) && !existsSync(join(root, "escape")), "an entry can't pick a folder outside the notes");
+      const migrated = m.load().find((e) => e.text === "echo OWNED");
+      assert.ok(migrated, "the valid entry is still migrated");
+      assert.ok(migrated.file.startsWith(p.memory + "/"), "to a path the notes folder chose itself");
+    } finally { cleanup(); }
+  });
+
+  test("a note that is a symlink is never read, and a symlinked notes folder is not followed or written through", () => {
+    const root = tmp(), outside = tmp();
+    try {
+      const p = api.memoryPaths(root);
+      mkdirSync(join(p.memory, "facts"), { recursive: true });
+      writeFileSync(join(outside, "secret.txt"), "aws_secret_access_key = CANARY-OUTSIDE-FILE-8812\n");
+      symlinkSync(join(outside, "secret.txt"), join(p.memory, "facts", "leak.md"));
+      mkdirSync(join(outside, "vault"));
+      writeFileSync(join(outside, "vault", "diary.md"), "# Diary\nCANARY-OUTSIDE-DIR-5521\n");
+      symlinkSync(join(outside, "vault"), join(p.memory, "decisions"));
+      const texts = () => JSON.stringify(api.openMemory(p).load());
+      assert.doesNotMatch(texts(), /CANARY-OUTSIDE/, "nothing outside the project is read through a link");
+
+      // The whole notes folder pointing elsewhere.
+      const root2 = tmp();
+      const p2 = api.memoryPaths(root2);
+      mkdirSync(join(root2, ".narrowbit"), { recursive: true });
+      symlinkSync(join(outside, "vault"), p2.memory);
+      const m2 = api.openMemory(p2);
+      assert.doesNotMatch(JSON.stringify(m2.load()), /CANARY-OUTSIDE/, "a symlinked notes folder isn't read");
+      const before = readdirSync(join(outside, "vault")).sort();
+      try { m2.add({ type: "fact", text: "must not land outside" }); } catch { /* refusing is fine */ }
+      assert.deepEqual(readdirSync(join(outside, "vault")).sort(), before, "and nothing is written through it");
+    } finally { cleanup(); }
+  });
+
+  test("a folder the user listed as extra notes may still hold links: they chose that folder", () => {
+    const root = tmp(), vault = tmp(), elsewhere = tmp();
+    try {
+      writeFileSync(join(elsewhere, "linked.md"), "# Linked\nVAULT-LINK-OK\n");
+      symlinkSync(join(elsewhere, "linked.md"), join(vault, "linked.md"));
+      const p = { ...api.memoryPaths(root), extraDirs: [vault] };
+      assert.match(JSON.stringify(api.openMemory(p).load()), /VAULT-LINK-OK/);
+    } finally { cleanup(); }
   });
 });

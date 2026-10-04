@@ -17,7 +17,7 @@ export class SignInRequired extends Error {
   }
 }
 
-export async function openHttpSession(c: Connector, timeoutMs: number): Promise<HttpSession> {
+export async function openHttpSession(c: Connector, timeoutMs: number, stop?: AbortSignal): Promise<HttpSession> {
   if (!c.url) throw new Error(`${c.name}: no URL`);
   const url = c.url;
   let sessionId: string | null = null;
@@ -30,7 +30,7 @@ export async function openHttpSession(c: Connector, timeoutMs: number): Promise<
     const token = await accessToken(c.name, url);
     if (token && !headers.authorization && !headers.Authorization) headers.authorization = `Bearer ${token}`;
     const left = Math.max(1000, deadline - Date.now());
-    const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(left) });
+    const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: stop ? AbortSignal.any([AbortSignal.timeout(left), stop]) : AbortSignal.timeout(left) });
     if (r.status === 401 && retryAuth && (await accessToken(c.name, url, true))) return post(body, false);
     if (r.status === 401) throw new SignInRequired(c.name);
     return r;

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { gitArgs } from "./util.js";
+import { gitArgs, visible } from "./util.js";
 
 /**
  * Some git settings in a repository's own config name a program git runs by itself on ordinary commands. Narrowbit
@@ -118,7 +118,10 @@ export function trustConfig(root: string): void {
 }
 
 export function describeRisks(risks: GitRisk[]): string {
-  return risks.map((r) => `  ${r.key} = ${r.value.length > 120 ? r.value.slice(0, 117) + "..." : r.value}`).join("\n");
+  // What the user is asked to accept must be readable as written: control characters are spelled out (they could erase or
+  // replace the warning in a terminal), and a value that is cut says how much is missing instead of hiding its tail.
+  const MAX = 1000;
+  return risks.map((r) => `  ${visible(r.key)} = ${visible(r.value.slice(0, MAX))}${r.value.length > MAX ? ` [+${r.value.length - MAX} more characters not shown]` : ""}`).join("\n");
 }
 
 /** The one check every entry point uses before running git in a folder: null if fine to open, else why not. */

@@ -21,8 +21,9 @@ interface ToolCallResult {
   isError: boolean;
 }
 
-function withConnector<T>(c: Connector, timeoutMs: number, onReady: (send: (msg: object) => void, onMessage: (fn: (msg: any) => void) => void, done: (v: T | PromiseLike<T>) => void, fail: (e: Error) => void) => void): Promise<T> {
+function withConnector<T>(c: Connector, timeoutMs: number, signal: AbortSignal | undefined, onReady: (send: (msg: object) => void, onMessage: (fn: (msg: any) => void) => void, done: (v: T | PromiseLike<T>) => void, fail: (e: Error) => void) => void): Promise<T> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error(`${c.name}: stopped by the user`));
     const child = spawn(c.command, c.args, { stdio: ["pipe", "pipe", "pipe"], detached: true, env: { ...process.env, ...c.env } });
     let settled = false;
     let stderr = "";
@@ -35,11 +36,13 @@ function withConnector<T>(c: Connector, timeoutMs: number, onReady: (send: (msg:
       } finally {
         // The whole process group: a connector started through a wrapper (npx, uvx) would otherwise outlive it.
         try { process.kill(-child.pid!, "SIGTERM"); } catch { child.kill(); }
+        setTimeout(() => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ } }, 3000).unref();
       }
     };
     const done = (v: T | PromiseLike<T>) => finish(() => resolve(v));
     const fail = (e: Error) => finish(() => reject(e));
     const timer = setTimeout(() => fail(new Error(`${c.name}: timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
+    signal?.addEventListener("abort", () => fail(new Error(`${c.name}: stopped by the user`)), { once: true });
     child.on("error", (e) => fail(new Error(`${c.name}: couldn't start "${c.command}" (${e.message}) — is it installed?`)));
     child.stderr.on("data", (d) => {
       stderr = (stderr + String(d)).slice(-2000);
@@ -91,7 +94,7 @@ export async function listConnectorTools(c: Connector, timeoutMs = 15_000): Prom
 }
 
 function listStdioTools(c: Connector, timeoutMs: number): Promise<McpTool[]> {
-  return withConnector<McpTool[]>(c, timeoutMs, (send, onMessage, done, fail) => {
+  return withConnector<McpTool[]>(c, timeoutMs, undefined, (send, onMessage, done, fail) => {
     initialize(send, onMessage, () => send({ jsonrpc: "2.0", id: 2, method: "tools/list" }), fail);
     onMessage((m) => {
       if (m.id === 2) {
@@ -102,19 +105,19 @@ function listStdioTools(c: Connector, timeoutMs: number): Promise<McpTool[]> {
   });
 }
 
-export async function callConnectorTool(c: Connector, tool: string, args: Record<string, unknown>, timeoutMs = 60_000): Promise<ToolCallResult> {
+export async function callConnectorTool(c: Connector, tool: string, args: Record<string, unknown>, timeoutMs = 60_000, signal?: AbortSignal): Promise<ToolCallResult> {
   if (c.url) {
-    const s = await openHttpSession(c, timeoutMs);
+    const s = await openHttpSession(c, timeoutMs, signal);
     const r = await s.request("tools/call", { name: tool, arguments: args });
     const content = Array.isArray(r?.content) ? r.content : [];
     const text = content.map((part: any) => (typeof part?.text === "string" ? part.text : JSON.stringify(part))).join("\n");
     return { text: text || "(no output)", isError: !!r?.isError };
   }
-  return callStdioTool(c, tool, args, timeoutMs);
+  return callStdioTool(c, tool, args, timeoutMs, signal);
 }
 
-function callStdioTool(c: Connector, tool: string, args: Record<string, unknown>, timeoutMs: number): Promise<ToolCallResult> {
-  return withConnector<ToolCallResult>(c, timeoutMs, (send, onMessage, done, fail) => {
+function callStdioTool(c: Connector, tool: string, args: Record<string, unknown>, timeoutMs: number, signal?: AbortSignal): Promise<ToolCallResult> {
+  return withConnector<ToolCallResult>(c, timeoutMs, signal, (send, onMessage, done, fail) => {
     initialize(send, onMessage, () => send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: tool, arguments: args } }), fail);
     onMessage((m) => {
       if (m.id === 2) {

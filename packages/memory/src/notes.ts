@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { basename, isAbsolute, join, resolve, sep } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { MemoryPaths } from "./paths.js";
 import { redact } from "./redact.js";
 import { termsOf } from "./terms.js";
@@ -139,11 +139,20 @@ function slug(text: string): string {
  * Extra read-only folders (e.g. project notes in an existing vault) come from config `memoryDirs`.
  */
 export class Memory {
+  /**
+   * False when the notes folder (or `.narrowbit/` around it) is a symlink. A cloned repository can ship either one, aimed
+   * at a folder of the user's own: reading through it would show the model files the repo was never given, and writing
+   * would put notes (or, via an old-format file, anything) there. Such a store is treated as absent and refuses writes.
+   */
+  private readonly regular: boolean;
+
   constructor(
     private p: MemoryPaths,
     private extraDirs: string[] = [],
   ) {
-    if (existsSync(p.memory)) {
+    const isLink = (f: string) => { try { return lstatSync(f).isSymbolicLink(); } catch { return false; } };
+    this.regular = !isLink(p.memory) && !isLink(dirname(p.memory));
+    if (this.regular && existsSync(p.memory)) {
       // Visible structure for humans browsing the vault; hand-written notes get their type from the folder.
       for (const t of MEMORY_TYPES) mkdirSync(this.dir(t), { recursive: true, mode: 0o700 });
       this.migrateJson();
@@ -162,7 +171,13 @@ export class Memory {
       if (!existsSync(f)) continue;
       try {
         const list = JSON.parse(readFileSync(f, "utf8")) as MemoryEntry[];
-        for (const e of list) this.write(e);
+        for (const e of list) {
+          // The file is data from the repository: it decides neither where a note is written (`file`) nor which folder
+          // (`type`), only the note's own text. Entries that aren't shaped like notes are skipped.
+          if (!e || typeof e !== "object" || !MEMORY_TYPES.includes(e.type) || typeof e.text !== "string" || typeof e.id !== "string") continue;
+          const { file: _f, external: _x, ...clean } = e;
+          this.write({ ...clean, id: /^[\w.-]{1,80}$/.test(clean.id) ? clean.id : `${e.type.slice(0, 3)}-${shortId()}` });
+        }
         renameSync(f, f + ".migrated");
       } catch {
         /* leave the file for manual inspection */
@@ -171,9 +186,12 @@ export class Memory {
   }
 
   private write(e: MemoryEntry): string {
+    if (!this.regular) throw new Error("the notes folder is a symlink (or sits inside one) — refusing to write through it");
+    if (!MEMORY_TYPES.includes(e.type)) throw new Error(`unknown memory type: ${e.type}`);
     const dir = this.dir(e.type);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    let file = e.file;
+    // A note is only ever rewritten in place if it is a regular file inside the notes folder.
+    let file = e.file && resolve(e.file).startsWith(resolve(this.p.memory) + sep) && !(existsSync(e.file) && lstatSync(e.file).isSymbolicLink()) ? e.file : undefined;
     if (!file) {
       file = join(dir, `${slug(e.text)}.md`);
       if (existsSync(file)) file = join(dir, `${slug(e.text)}-${e.id.split("-").pop()}.md`);
@@ -187,6 +205,9 @@ export class Memory {
     if (!existsSync(dir) || depth > 4) return;
     for (const ent of readdirSync(dir, { withFileTypes: true })) {
       if (ent.name.startsWith(".")) continue;
+      // The project's own notes are never read through a link (see `regular`). A folder the user listed as extra notes
+      // is theirs, so a vault that uses links keeps working.
+      if (!external && ent.isSymbolicLink()) continue;
       const abs = join(dir, ent.name);
       if (ent.isDirectory()) {
         const t = MEMORY_TYPES.find((x) => ent.name === `${x}s` || ent.name === x);
@@ -204,7 +225,7 @@ export class Memory {
 
   load(type?: MemoryType): MemoryEntry[] {
     const out: MemoryEntry[] = [];
-    this.readDir(this.p.memory, undefined, false, out);
+    if (this.regular) this.readDir(this.p.memory, undefined, false, out);
     for (const d of this.extraDirs) this.readDir(d, undefined, true, out);
     return type ? out.filter((e) => e.type === type) : out;
   }

@@ -1377,8 +1377,13 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
         appendEvent(p, taskId, { actor: "user", type: "tool_result", summary: text, meta: { server: serverName, tool: toolName, declined: true } });
         return text;
       }
+      if (signal?.aborted) {
+        const text = `connector: stopped by the user before ${serverName}.${toolName} was sent`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { server: serverName, tool: toolName } });
+        return text;
+      }
       try {
-        const r = await callConnectorTool(connector, toolName, d.args ?? {});
+        const r = await callConnectorTool(connector, toolName, d.args ?? {}, undefined, signal);
         // Every other action (read/grep/search/run) redacts at its source (package.ts/query.ts/
         // compress.ts) before capSummary/writeEvidence ever see it — an external connector's output
         // is the one kind of text this runtime doesn't control the origin of, so it needs the same
