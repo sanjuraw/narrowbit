@@ -1517,6 +1517,43 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     ctl.abort();
   });
 
+  test("an approval shows control characters as text, and 'Allow for this task' still matches the exact command", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    execFileSync("git", ["checkout", "--", "package.json"], { cwd: repo }); // the previous test left the agent's edit in the folder
+    const sneaky = "node -e 1 # \r\u001b[2Kharmless";
+    fakeClaudeIn(fakeDir, [{ action: "run", command: sneaky }, { action: "run", command: sneaky }, { action: "done", summary: "done" }]);
+    await fetch(`${app.base}/api/models`, { method: "POST", headers: H, body: JSON.stringify({ provider: "claude", effort: "medium", tiers: { explore: "sonnet", execute: "sonnet", escalate: "opus" }, boss: false }) });
+    const started = await fetch(`${app.base}/api/run`, { method: "POST", headers: H, body: JSON.stringify({ task: "run it twice", askBeforeCommands: true }) });
+    assert.equal(started.status, 200, await started.clone().text());
+    const ctl = new AbortController();
+    const stream = await fetch(`${app.base}/api/stream?t=${app.token}`, { signal: ctl.signal });
+    const reader = stream.body.getReader();
+    let buf = ""; const events = []; let pending = null;
+    const waitFor = async (pred, what) => {
+      const t0 = Date.now();
+      for (;;) {
+        const hit = events.find(pred); if (hit) return hit;
+        if (Date.now() - t0 > 20000) throw new Error("timed out waiting for " + what + " — saw " + JSON.stringify(events.map((e) => e.type)));
+        pending = pending || reader.read();
+        const got = await Promise.race([pending, new Promise((r) => setTimeout(() => r(null), 200))]);
+        if (!got) continue;
+        pending = null;
+        if (got.done) break;
+        buf += new TextDecoder().decode(got.value); let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) { const chunk = buf.slice(0, i); buf = buf.slice(i + 2); const m = /^data: (.*)$/m.exec(chunk); if (m) events.push(JSON.parse(m[1])); }
+      }
+    };
+    const first = await waitFor((e) => e.type === "approval", "the approval");
+    assert.doesNotMatch(first.command, /[\r\u001b]/, "no raw control character reaches the page's approval text");
+    assert.match(first.command, /\\r/);
+    assert.match(first.command, /\\x1b/);
+    assert.equal(first.key, sneaky, "what 'allow for this task' remembers is the exact command");
+    await fetch(`${app.base}/api/approve`, { method: "POST", headers: H, body: JSON.stringify({ id: first.id, decision: "task" }) });
+    await waitFor((e) => e.type === "finished", "the task to finish");
+    assert.equal(events.filter((e) => e.type === "approval").length, 1, "the identical second command was covered by the allowance");
+    ctl.abort();
+  });
+
   test("a folder that already has files isn't committed as a project until the user has seen them and said yes", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     const full = fresh("hasfiles"), empty = fresh("empty");

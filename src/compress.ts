@@ -308,16 +308,27 @@ export interface RunResult {
   rendered: string;
 }
 
-export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number; cwd?: string } = {}): Promise<RunResult> {
+export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number; cwd?: string; signal?: AbortSignal } = {}): Promise<RunResult> {
   const t0 = Date.now();
   return new Promise((resolveP) => {
-    const child = spawn(command, { cwd: opts.cwd ?? p.root, shell: true, env: { ...process.env, CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" } });
     const chunks: Buffer[] = [];
-    child.stdout.on("data", (d) => chunks.push(d));
-    child.stderr.on("data", (d) => chunks.push(d));
-    const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? 10 * 60_000);
-    child.on("close", (code, signal) => {
+    let finished = false;
+    let timer: NodeJS.Timeout | undefined;
+    let giveUp: NodeJS.Timeout | undefined;
+    let killTree = (_sig: NodeJS.Signals) => {};
+    const stop = () => {
+      killTree("SIGTERM");
+      setTimeout(() => killTree("SIGKILL"), 3000).unref();
+      // A stray process holding the output pipes would keep 'close' from firing: stop waiting for it.
+      giveUp = setTimeout(() => finish(null, "SIGKILL"), 5000);
+    };
+    const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (finished) return;
+      finished = true;
       clearTimeout(timer);
+      clearTimeout(giveUp);
+      opts.signal?.removeEventListener("abort", stop);
+      process.removeListener("exit", killOnExit);
       const raw = Buffer.concat(chunks).toString("utf8");
       const exit = code ?? (signal ? 124 : 1);
       const logName = `${shortId()}.log`;
@@ -345,6 +356,27 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
         ms: Date.now() - t0,
         rendered,
       });
-    });
+    };
+    const killOnExit = () => killTree("SIGKILL");
+    if (opts.signal?.aborted) {
+      chunks.push(Buffer.from("(stopped by the user before it started — not run)\n"));
+      return finish(130, null);
+    }
+    // Its own process group, so Stop and the timeout can end everything the command started: killing only the shell
+    // left a background process (a dev server, a hung test) running, and the call waited for it.
+    const child = spawn(command, { cwd: opts.cwd ?? p.root, shell: true, detached: true, env: { ...process.env, CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" } });
+    killTree = (sig) => {
+      try {
+        process.kill(-child.pid!, sig);
+      } catch {
+        try { child.kill(sig); } catch { /* already gone */ }
+      }
+    };
+    process.once("exit", killOnExit);
+    opts.signal?.addEventListener("abort", stop, { once: true });
+    child.stdout.on("data", (d) => chunks.push(d));
+    child.stderr.on("data", (d) => chunks.push(d));
+    timer = setTimeout(stop, opts.timeoutMs ?? 10 * 60_000);
+    child.on("close", (code, signal) => finish(code, signal));
   });
 }

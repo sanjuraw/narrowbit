@@ -130,3 +130,13 @@ export function isGitConfigInclude(root: string, abs: string, realAbs?: string |
   const mine = new Set([resolve(abs), real(abs), ...(realAbs ? [resolve(realAbs)] : [])]);
   return targets.some((t) => mine.has(t) || mine.has(real(t)));
 }
+
+/** Shows control characters and text-direction overrides as visible escapes, so a command can't use them to look like
+ * something else in a terminal prompt (a carriage return plus an erase sequence can overwrite what the user is reading).
+ * Tabs and newlines stay as they are. */
+export function visible(s: string): string {
+  return s.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (c) => {
+    const n = c.charCodeAt(0);
+    return n === 13 ? "\\r" : n < 0x100 ? `\\x${n.toString(16).padStart(2, "0")}` : `\\u${n.toString(16)}`;
+  });
+}

@@ -1,6 +1,6 @@
 import { test, describe, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve, isAbsolute } from "node:path";
@@ -3374,5 +3374,88 @@ describe("eleventh audit: a repo's own config can't redirect keys or read outsid
         assert.ok(ok.length > 0, "with --trust it goes ahead");
       } finally { rmSync(root, { recursive: true, force: true }); }
     });
+  });
+});
+
+describe("eleventh audit, part two: connector approvals show everything, Stop and timeouts stop things, the terminal prompt can't be spoofed", () => {
+  const realHome = process.env.HOME;
+  let home;
+  before(() => { home = mkdtempSync(join(tmpdir(), "nb-dhome-")); process.env.HOME = home; saveConnector("nb", "node", [join(here, "..", "bin", "narrowbit.js"), "mcp"]); });
+  after(() => { process.env.HOME = realHome; rmSync(home, { recursive: true, force: true }); });
+  const gone = (pattern) => { try { execFileSync("pgrep", ["-f", pattern], { stdio: "ignore" }); return false; } catch { return true; } };
+
+  test("a connector approval shows every argument, is keyed to the exact call, and a call too large to review is refused", async () => {
+    const { root, p } = tinyRepo();
+    const call = (query) => JSON.stringify({ action: "connector", server: "nb", tool: "nb_search", args: { query } });
+    const fake = fakeClaude([call("x".repeat(400) + "-TAIL-ONE"), call("x".repeat(400) + "-TAIL-TWO"), call("y".repeat(9000)), JSON.stringify({ action: "done", summary: "ok" })]);
+    const asked = [];
+    try {
+      const r = await runTask(p, "use the connector", { claudeBin: fake.bin, boss: false, maxSteps: 10, approve: async (label, warning, key) => { asked.push({ label, key }); return true; } });
+      assert.equal(asked.length, 2, "the oversized call was refused without asking");
+      assert.ok(asked[0].label.includes("-TAIL-ONE") && asked[1].label.includes("-TAIL-TWO"), "the end of the arguments is shown, not cut off");
+      assert.ok(asked[0].key && asked[1].key && asked[0].key !== asked[1].key, "two calls that start the same still have different approval keys");
+      const results = readEvents(p, r.taskId).filter((e) => e.type === "tool_result").map((e) => e.summary).join("\n");
+      assert.match(results, /too large to review/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("a command's timeout stops everything it started, not just the shell", async () => {
+    const { runCommand } = await dist("compress.js");
+    const { root, p } = tinyRepo();
+    const tag = `sleep 17.${process.pid % 1000}`;
+    try {
+      const t0 = Date.now();
+      await runCommand(p, `${tag} & echo started; wait`, { timeoutMs: 800 });
+      assert.ok(Date.now() - t0 < 8000, `returned promptly after the timeout (${Date.now() - t0} ms)`);
+      assert.ok(gone(tag), "the background process is gone too");
+    } finally { try { execFileSync("pkill", ["-f", tag]); } catch { /* already gone */ } rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("Stop reaches a running command: it is killed with everything it started, and one already stopped never starts", async () => {
+    const { runCommand } = await dist("compress.js");
+    const { root, p } = tinyRepo();
+    const tag = `sleep 18.${process.pid % 1000}`;
+    try {
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 500);
+      const t0 = Date.now();
+      await runCommand(p, `${tag} & echo started; wait`, { signal: ac.signal });
+      assert.ok(Date.now() - t0 < 8000, `returned promptly after Stop (${Date.now() - t0} ms)`);
+      assert.ok(gone(tag), "everything it started is gone");
+      await runCommand(p, "touch NEVER-STARTED", { signal: ac.signal });
+      assert.ok(!existsSync(join(root, "NEVER-STARTED")), "a command asked to run after Stop does not start");
+    } finally { try { execFileSync("pkill", ["-f", tag]); } catch { /* already gone */ } rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("after Stop, the rest of a batch does not run — not the command, and not the edit that follows it", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([JSON.stringify([{ action: "run", command: "touch RAN" }, { action: "edit", path: "a.txt", old: "hello", new: "changed" }]), JSON.stringify({ action: "done", summary: "x" })]);
+    const ac = new AbortController();
+    try {
+      const r = await runTask(p, "do two things", { claudeBin: fake.bin, boss: false, maxSteps: 6, signal: ac.signal, approve: async () => { ac.abort(); return true; } });
+      assert.equal(r.outcome, "stopped");
+      assert.ok(!existsSync(join(root, "RAN")), "the command did not run");
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "hello\n", "the later edit did not apply");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("control characters in a command are shown, not obeyed, in the terminal approval text", async () => {
+    const { visible } = await dist("util.js");
+    assert.equal(visible("npm test -- --run"), "npm test -- --run");
+    assert.equal(visible("a\tb\nc"), "a\tb\nc", "tabs and newlines stay readable");
+    const v = visible("echo hi # \r\u001b[2K\u001b[1Aharmless‮");
+    assert.doesNotMatch(v, /[\r\u001b‮]/);
+    assert.match(v, /\\r/);
+    assert.match(v, /\\x1b/);
+    assert.match(v, /\\u202e/);
+    const { root } = tinyRepo();
+    const fake = fakeClaude([JSON.stringify({ action: "run", command: "echo hi # \r\u001b[2Kharmless" }), JSON.stringify({ action: "done", summary: "x" })]);
+    try {
+      nb(root, "index");
+      const r = spawnSync(process.execPath, [BIN, "agent", "do it", "--force", "--max-steps", "4"], { cwd: root, encoding: "utf8", env: { ...process.env, NARROWBIT_CLAUDE: fake.bin } });
+      assert.match(r.stderr, /not run \(no terminal to ask\)/);
+      assert.doesNotMatch(r.stderr, /[\u001b]/, "no raw escape reached the terminal");
+      assert.match(r.stderr, /\\x1b/, "it is shown as text instead");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 });

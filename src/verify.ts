@@ -35,7 +35,7 @@ export async function verify(
   cfg: NarrowbitConfig,
   store: Store,
   task: TaskRecord | null,
-  opts: { full?: boolean; base?: string; approve?: (command: string) => Promise<boolean> } = {},
+  opts: { full?: boolean; base?: string; approve?: (command: string) => Promise<boolean>; signal?: AbortSignal } = {},
 ): Promise<VerifyResult> {
   const base = opts.base ?? task?.head ?? "HEAD";
   const changed = changedSince(p.root, base).filter((f) => !f.startsWith(".narrowbit/"));
@@ -47,7 +47,7 @@ export async function verify(
       steps.push({ name, ok: false, exit: -1, summary: "declined by user — not run; this check is unconfirmed, not passing" });
       return;
     }
-    const run = await runCommand(p, cmd);
+    const run = await runCommand(p, cmd, { signal: opts.signal });
     // Exit 127 is the shell saying the command doesn't exist here (mypy/ruff named in pyproject.toml
     // but not installed in the active environment, say). That is a missing tool, not failing code:
     // counting it as a failure made every verify red on tests that passed, and repeated failed

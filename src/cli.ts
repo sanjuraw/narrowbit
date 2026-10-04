@@ -30,7 +30,7 @@ import { listConnectorTools } from "./mcpClient.js";
 import { getSkill, listSkills, removeSkill, renameSkill, saveSkill } from "./skills.js";
 import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
-import { fmtNum, now, sh } from "./util.js";
+import { fmtNum, now, sh, visible } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
 import { trustConfig, trustRepo, untrustedReason } from "./trust.js";
 
@@ -514,22 +514,23 @@ export async function main(argv: string[]): Promise<number> {
       const allowFlag = !!args.flags["allow-commands"];
       let allowTask = false;
       const notRun: string[] = [];
-      const approve = async (command: string, warning?: string): Promise<boolean> => {
+      const approve = async (command: string, warning?: string, key?: string): Promise<boolean> => {
         if (allowFlag) {
           // The user opted out of prompts entirely; still say when the agent changed what a command runs.
-          if (warning) process.stderr.write(`      ! ${warning}\n`);
+          if (warning) process.stderr.write(`      ! ${visible(warning)}\n`);
           return true;
         }
         // "[a]lways for this task" covered commands as they were; a changed definition is asked about again.
-        if (allowTask && !warning) return true;
-        if (warning) process.stderr.write(`      ⚠ ${warning}\n`);
+        // (a connector call is never covered by "always": each one is asked about)
+        if (allowTask && !warning && !key) return true;
+        if (warning) process.stderr.write(`      ⚠ ${visible(warning)}\n`);
         if (!process.stdin.isTTY) {
-          process.stderr.write(`      ! not run (no terminal to ask): ${command}   — pass --allow-commands to let the agent run commands unattended\n`);
+          process.stderr.write(`      ! not run (no terminal to ask): ${visible(command)}   — pass --allow-commands to let the agent run commands unattended\n`);
           notRun.push(command);
           return false;
         }
         const rl = createInterface({ input: process.stdin, output: process.stderr });
-        const a = (await rl.question(`      run \`${command}\`? [y]es / [n]o / [a]lways for this task: `)).trim().toLowerCase();
+        const a = (await rl.question(`      run \`${visible(command)}\`? [y]es / [n]o / [a]lways for this task: `)).trim().toLowerCase();
         rl.close();
         if (a === "a") allowTask = true;
         const yes = a === "y" || a === "a";
@@ -570,7 +571,7 @@ export async function main(argv: string[]): Promise<number> {
         effort: sel.effort,
         claudeBin: typeof args.flags["claude-bin"] === "string" ? args.flags["claude-bin"] : undefined,
         compactThreshold: args.flags["compact-threshold"] ? Number(args.flags["compact-threshold"]) : undefined,
-        log: (line) => process.stderr.write(line + "\n"),
+        log: (line) => process.stderr.write(visible(line) + "\n"), // progress lines echo commands the model chose
         onEvent: json ? (event) => void process.stdout.write(JSON.stringify({ type: "event", event }) + "\n") : undefined,
       });
       // Untracked files already sitting in the tree before this task started (e.g. from `narrowbit init`,
@@ -608,7 +609,7 @@ export async function main(argv: string[]): Promise<number> {
       say(`task: ${result.taskId}  (full log: .narrowbit/runtime/${result.taskId}/events.jsonl)`);
       // A declined command (including verify's own checks) means the agent could not confirm its work; say so
       // here, next to the DONE line, instead of leaving it as one easy-to-miss line mid-run.
-      if (notRun.length) say(`note: ${notRun.length} command(s) were not run (${[...new Set(notRun)].slice(0, 3).join("; ")}) — this result is NOT verified by them. Re-run with --allow-commands, or approve them at the prompt.`);
+      if (notRun.length) say(`note: ${notRun.length} command(s) were not run (${[...new Set(notRun)].slice(0, 3).map(visible).join("; ")}) — this result is NOT verified by them. Re-run with --allow-commands, or approve them at the prompt.`);
       if (result.outcome !== "done" && changed.length) say(`tip: review the diff before trusting this — the task did not report a clean completion.`);
       return result.outcome === "done" ? 0 : result.outcome === "blocked" ? 1 : 2;
     }

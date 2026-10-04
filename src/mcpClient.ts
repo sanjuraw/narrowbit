@@ -23,7 +23,7 @@ interface ToolCallResult {
 
 function withConnector<T>(c: Connector, timeoutMs: number, onReady: (send: (msg: object) => void, onMessage: (fn: (msg: any) => void) => void, done: (v: T | PromiseLike<T>) => void, fail: (e: Error) => void) => void): Promise<T> {
   return new Promise((resolve, reject) => {
-    const child = spawn(c.command, c.args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, ...c.env } });
+    const child = spawn(c.command, c.args, { stdio: ["pipe", "pipe", "pipe"], detached: true, env: { ...process.env, ...c.env } });
     let settled = false;
     let stderr = "";
     const finish = (fn: () => void) => {
@@ -33,7 +33,8 @@ function withConnector<T>(c: Connector, timeoutMs: number, onReady: (send: (msg:
       try {
         fn();
       } finally {
-        child.kill();
+        // The whole process group: a connector started through a wrapper (npx, uvx) would otherwise outlive it.
+        try { process.kill(-child.pid!, "SIGTERM"); } catch { child.kill(); }
       }
     };
     const done = (v: T | PromiseLike<T>) => finish(() => resolve(v));

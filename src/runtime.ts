@@ -382,7 +382,7 @@ export interface RuntimeOptions {
   /** Asked before a shell command (or connector call) runs. `warning` is set when the agent itself changed a file
    * that decides what this command does (see scriptWarning) — the approver should then ask again even if the
    * user earlier allowed the same command text for the whole task. */
-  approve?: (command: string, warning?: string) => Promise<boolean>;
+  approve?: (command: string, warning?: string, key?: string) => Promise<boolean>;
   /** Puts the model's question to the user and resolves with their answer (null = nobody can answer).
    * Unset in benchmarks and non-interactive runs: the model is told to make its best assumption instead. */
   ask?: (question: string, options: string[]) => Promise<string | null>;
@@ -454,6 +454,9 @@ async function discoverConnectors(): Promise<string> {
   );
   return `\n\nConnected external tools:\n${lines.join("\n")}`;
 }
+
+/** The most connector-call argument text the approval will ask about; larger calls are refused rather than shown cut off. */
+const MAX_REVIEWABLE_ARGS = 8000;
 
 /** Which adapter a call to `provider` actually goes through — an endpoint-configured API/local server if
  * one's set for it, else the provider's own CLI adapter. The one place this branch is written, reused by
@@ -548,7 +551,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   let checkedSinceEdit = false;
   // Repo-relative paths this task has edited, so an approval can say when a command's own definition changed.
   const editedPaths = new Set<string>();
-  const approveWithContext: RuntimeOptions["approve"] = opts.approve ? (command) => opts.approve!(command, scriptWarning(command, editedPaths)) : undefined;
+  const approveWithContext: RuntimeOptions["approve"] = opts.approve ? (command, _warning, key) => opts.approve!(command, scriptWarning(command, editedPaths), key) : undefined;
   let lastVerifyHead = "";
   const doneChallenges = new Set<string>();
 
@@ -870,6 +873,11 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     let lastCheckFailed = false;
 
     for (let i = 0; i < decisions.length; i++) {
+      // Stop reaches every action of the batch, not only the next model call: what comes after it must not run.
+      if (opts.signal?.aborted) {
+        stopReason = "stopped by the user";
+        break;
+      }
       const decision = decisions[i];
       const tag = decisions.length > 1 ? `[${i + 1}/${decisions.length}] ` : "";
 
@@ -955,7 +963,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       });
       let resultText: string;
       try {
-        resultText = await executeAction(p, taskId, decision, approveWithContext, opts.ask, asks, gate);
+        resultText = await executeAction(p, taskId, decision, approveWithContext, opts.ask, asks, gate, opts.signal);
       } catch (e: any) {
         resultText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
@@ -1103,7 +1111,7 @@ function checkFailedLabel(d: Decision, result: string): string {
 }
 
 /** Executes one action and returns the (capped) result text to feed back as the next turn's prompt. */
-async function executeAction(p: Paths, taskId: string, d: Decision, approve?: RuntimeOptions["approve"], ask?: RuntimeOptions["ask"], asks?: { n: number }, gate?: { testFirst: boolean; sawRed: boolean }): Promise<string> {
+async function executeAction(p: Paths, taskId: string, d: Decision, approve?: RuntimeOptions["approve"], ask?: RuntimeOptions["ask"], asks?: { n: number }, gate?: { testFirst: boolean; sawRed: boolean }, signal?: AbortSignal): Promise<string> {
   switch (d.action) {
     case "ask": {
       const question = String(d.question ?? "").trim();
@@ -1271,7 +1279,7 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
         appendEvent(p, taskId, { actor: "user", type: "tool_result", summary: text, meta: { command, declined: true } });
         return text;
       }
-      const r = await runCommand(p, command);
+      const r = await runCommand(p, command, { signal });
       const capped = capOutput(r.rendered);
       const handle = writeEvidence(p, taskId, "command", r.rendered, capped);
       appendEvent(p, taskId, { actor: "system", type: "command", summary: capped, evidenceRef: handle.id, meta: { command: d.command, exit: r.exit } });
@@ -1280,7 +1288,7 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
     case "verify": {
       const cfg = loadConfig(p);
       const store = openStore(p);
-      const v = await verify(p, cfg, store, null, { approve });
+      const v = await verify(p, cfg, store, null, { approve, signal });
       store.close();
       const capped = capOutput(v.report);
       const handle = writeEvidence(p, taskId, "command", v.report, capped);
@@ -1352,8 +1360,19 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       }
       // Anything an external service can do (create an issue, post a message) leaves this machine, so like a
       // shell command it waits for the user's OK wherever approvals are on.
-      const label = `connector: ${serverName}.${toolName} ${redact(JSON.stringify(d.args ?? {})).slice(0, 300)}`;
-      if (approve && !(await approve(label))) {
+      // The approval must show what will be sent: every argument, not a cut-off start (a long harmless prefix would hide
+      // the rest), and the "allow for this task" key is the exact call, so a second call that merely starts the same
+      // way is asked about again. Too large to read properly = refused, and the model is told to send less.
+      const argsJson = JSON.stringify(d.args ?? {});
+      if (argsJson.length > MAX_REVIEWABLE_ARGS) {
+        const text = `connector: refused ${serverName}.${toolName} — its arguments (${argsJson.length} characters) are too large to review before they are sent; send less, or split it into smaller calls`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { server: serverName, tool: toolName } });
+        return text;
+      }
+      const shown = redact(argsJson);
+      const label = `connector: ${serverName}.${toolName} ${shown}${shown !== argsJson ? "   (values that look like secrets are hidden in this view but are sent)" : ""}`;
+      const key = `connector:${sha1(`${serverName}\0${toolName}\0${argsJson}`)}`;
+      if (approve && !(await approve(label, undefined, key))) {
         const text = `connector: the user declined ${serverName}.${toolName} — do not retry it; take a different approach or ask the user`;
         appendEvent(p, taskId, { actor: "user", type: "tool_result", summary: text, meta: { server: serverName, tool: toolName, declined: true } });
         return text;
