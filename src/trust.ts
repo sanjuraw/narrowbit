@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { gitArgs, visible } from "./util.js";
@@ -25,12 +25,23 @@ export interface GitRisk {
   value: string;
 }
 
-/** Filter programs this repo's local config (and anything it includes) would run. Reading config runs nothing. */
+/** Filter programs this repo's own config (repository and worktree level, and anything they include) would run.
+ * Reading config runs nothing. The worktree level matters: with `extensions.worktreeConfig` git also reads
+ * `.git/config.worktree`, which `git config --local` does not show. */
 export function gitConfigRisks(root: string): GitRisk[] {
-  const r = spawnSync("git", gitArgs(root, ["config", "--local", "--includes", "--list", "-z"]), { cwd: root, encoding: "utf8" });
-  if (r.status !== 0 || !r.stdout) return [];
+  const entries: string[] = [];
+  const scoped = spawnSync("git", gitArgs(root, ["config", "--includes", "--list", "-z", "--show-scope"]), { cwd: root, encoding: "utf8" });
+  if (scoped.status === 0) {
+    // With -z and --show-scope the output alternates: scope, then "key\nvalue".
+    const t = scoped.stdout.split("\0");
+    for (let i = 0; i + 1 < t.length; i += 2) if (t[i] === "local" || t[i] === "worktree") entries.push(t[i + 1]);
+  } else {
+    // An older git without --show-scope: the repository level only.
+    const old = spawnSync("git", gitArgs(root, ["config", "--local", "--includes", "--list", "-z"]), { cwd: root, encoding: "utf8" });
+    if (old.status === 0) entries.push(...old.stdout.split("\0"));
+  }
   const risks: GitRisk[] = [];
-  for (const entry of r.stdout.split("\0")) {
+  for (const entry of entries) {
     if (!entry) continue;
     const nl = entry.indexOf("\n");
     const key = (nl < 0 ? entry : entry.slice(0, nl)).toLowerCase();
@@ -78,15 +89,49 @@ export function shippedRisks(root: string): GitRisk[] {
   if (!existsSync(dir)) return [];
   let files: string[] = [];
   if (existsSync(join(root, ".git"))) {
-    const r = spawnSync("git", gitArgs(root, ["ls-files", "-z", "--", ".narrowbit"]), { cwd: root, encoding: "utf8" });
+    // :(icase) because on a case-insensitive filesystem a committed ".NARROWBIT/" is read as ".narrowbit/".
+    const r = spawnSync("git", gitArgs(root, ["ls-files", "-z", "--", ":(icase).narrowbit"]), { cwd: root, encoding: "utf8" });
     if (r.status === 0) files = r.stdout.split("\0").filter(Boolean);
   } else {
-    try { files = readdirSync(dir).map((n) => `.narrowbit/${n}`); } catch { /* unreadable: treated as empty */ }
+    files = walkFiles(root, ".narrowbit");
   }
   if (!files.length) return [];
   files.sort();
   const shown = files.slice(0, 12).join(", ") + (files.length > 12 ? ` … and ${files.length - 12} more` : "");
-  return [{ key: "shipped.narrowbit", value: `${files.length} file(s) shipped with the repository: ${shown}` }];
+  // What was accepted is the content, not only the names: a later pull that rewrites a skill or a task log asks again.
+  return [{ key: "shipped.narrowbit", value: `${files.length} file(s) shipped with the repository: ${shown} [content id ${contentId(root, files)}]` }];
+}
+
+/** Every file under `rel` (links are listed by name, never followed), capped so a huge tree can't stall opening a folder. */
+function walkFiles(root: string, rel: string, out: string[] = []): string[] {
+  if (out.length >= 5000) return out;
+  let names: string[] = [];
+  try { names = readdirSync(join(root, rel), { withFileTypes: true }).map((d) => (d.isDirectory() ? `${d.name}/` : d.name)); } catch { return out; }
+  for (const n of names) {
+    if (out.length >= 5000) break;
+    if (n.endsWith("/")) walkFiles(root, `${rel}/${n.slice(0, -1)}`, out);
+    else out.push(`${rel}/${n}`);
+  }
+  return out;
+}
+
+/** A short digest of the files' names and current contents (a link counts as its target text, a huge file as its size). */
+function contentId(root: string, files: string[]): string {
+  const h = createHash("sha256");
+  for (const f of [...files].sort()) {
+    h.update(f + "\0");
+    try {
+      const abs = join(root, f);
+      const st = lstatSync(abs);
+      if (st.isSymbolicLink()) h.update("link:" + readlinkSync(abs));
+      else if (st.size > 10_000_000) h.update("size:" + st.size);
+      else h.update(readFileSync(abs));
+    } catch {
+      h.update("missing");
+    }
+    h.update("\0");
+  }
+  return h.digest("hex").slice(0, 16);
 }
 
 export function repoConfigRisksAt(root: string): GitRisk[] {
@@ -157,6 +202,17 @@ export function describeRisks(risks: GitRisk[]): string {
 /** The one check every entry point uses before running git in a folder: null if fine to open, else why not. */
 export function untrustedReason(root: string): { risks: GitRisk[]; message: string } | null {
   const risks = [...gitConfigRisks(root), ...repoConfigRisksAt(root), ...shippedRisks(root)];
+  if (isTrusted(root, risks)) return null;
+  return { risks, message: untrustedMessage(root, risks) };
+}
+
+/**
+ * The check for entry points that run unattended (the MCP server, the prompt hook): nobody can be asked there, and their
+ * command line may even come from the repository. Git filters and a shipped `.narrowbit/` block them; the config settings
+ * don't need to, because `loadConfig` already drops those until the user has accepted them.
+ */
+export function untrustedForUnattended(root: string): { risks: GitRisk[]; message: string } | null {
+  const risks = [...gitConfigRisks(root), ...shippedRisks(root)];
   if (isTrusted(root, risks)) return null;
   return { risks, message: untrustedMessage(root, risks) };
 }

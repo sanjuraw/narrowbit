@@ -186,3 +186,65 @@ describe("notes that a cloned repository ships inside .narrowbit/memory", () => 
     } finally { cleanup(); }
   });
 });
+
+describe("writes never follow a link out of the project", () => {
+  const dirs = [];
+  const tmp = () => { const d = realpathSync(project()); dirs.push(d); return d; };
+  const cleanup = () => { while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true }); };
+
+  test("a notes sub-folder that is a symlink is refused, and a link squatting on a note's file name isn't written through", () => {
+    const root = tmp(), outside = tmp(), scratch = tmp();
+    try {
+      const p = api.memoryPaths(root);
+      mkdirSync(p.memory, { recursive: true });
+      symlinkSync(outside, join(p.memory, "facts"));
+      assert.throws(() => api.openMemory(p).add({ type: "fact", text: "must not land outside" }));
+      assert.deepEqual(readdirSync(outside), [], "nothing was created through the linked folder");
+
+      // The file names a note will get are predictable; a link on each must not be followed.
+      const p2 = api.memoryPaths(tmp());
+      const learned = api.openMemory(p2).add({ type: "fact", text: "same words" }).file;
+      const primary = learned.split("/").pop();
+      const root3 = tmp();
+      const p3 = api.memoryPaths(root3);
+      mkdirSync(join(p3.memory, "facts"), { recursive: true });
+      const victim = join(outside, "victim.txt");
+      writeFileSync(victim, "VICTIM ORIGINAL\n");
+      writeFileSync(join(p3.memory, "facts.json"), JSON.stringify([{ id: "fac-evil", type: "fact", text: "same words", date: "2026-01-01T00:00:00Z", status: "active" }]));
+      symlinkSync(victim, join(p3.memory, "facts", primary));
+      symlinkSync(victim, join(p3.memory, "facts", primary.replace(/\.md$/, "-evil.md")));
+      api.openMemory(p3);
+      assert.equal(readFileSync(victim, "utf8"), "VICTIM ORIGINAL\n", "the file behind the links was not overwritten");
+    } finally { cleanup(); }
+  });
+
+  test("a runtime folder (or task folder) that is a symlink gets no events or evidence, and a linked events file is not read", () => {
+    const root = tmp(), outside = tmp();
+    try {
+      const p = api.memoryPaths(root);
+      mkdirSync(join(root, ".narrowbit"), { recursive: true });
+      symlinkSync(outside, p.runtime);
+      assert.throws(() => api.appendEvent(p, "rt-x", { actor: "user", type: "decision", summary: "WRITTEN-THROUGH-LINK" }));
+      assert.throws(() => api.writeEvidence(p, "rt-x", "other", "WRITTEN-THROUGH-LINK", "s"));
+      assert.deepEqual(readdirSync(outside), [], "nothing was created through the linked folder");
+
+      const root2 = tmp(), elsewhere = tmp();
+      const p2 = api.memoryPaths(root2);
+      mkdirSync(join(p2.runtime, "rt-y"), { recursive: true });
+      writeFileSync(join(elsewhere, "log.jsonl"), JSON.stringify({ actor: "user", type: "decision", summary: "FORGED-FROM-OUTSIDE", id: "e1", taskId: "rt-y", at: "2026-01-01T00:00:00Z" }) + "\n");
+      symlinkSync(join(elsewhere, "log.jsonl"), join(p2.runtime, "rt-y", "events.jsonl"));
+      assert.deepEqual(api.readEvents(p2, "rt-y"), [], "a linked log is not history");
+      assert.throws(() => api.appendEvent(p2, "rt-y", { actor: "user", type: "decision", summary: "must not append through the link" }));
+      assert.doesNotMatch(readFileSync(join(elsewhere, "log.jsonl"), "utf8"), /must not append/);
+    } finally { cleanup(); }
+  });
+
+  test("a task id that isn't a plain name is refused", () => {
+    const root = tmp();
+    try {
+      const p = api.memoryPaths(root);
+      assert.throws(() => api.appendEvent(p, "../../escape", { actor: "user", type: "decision", summary: "x" }), /task id/);
+      assert.throws(() => api.taskDir(p, "a/b"), /task id/);
+    } finally { cleanup(); }
+  });
+});

@@ -1,8 +1,10 @@
 import { redact } from "./redact.js";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { MemoryPaths } from "./paths.js";
 import { now, shortId } from "./util.js";
+import { dirname } from "node:path";
+import { appendNoFollow, assertPlain, isLink, TASK_ID } from "./safefs.js";
 
 /**
  * Owned-runtime append-only ledger (CLAUDE.md "Handoff"): every model call, tool call, edit,
@@ -44,6 +46,8 @@ export interface Event {
 }
 
 export function taskDir(p: MemoryPaths, taskId: string): string {
+  // A task id becomes a folder name: only plain names (no "..", no "/"), whatever a shipped file or a request claims.
+  if (!TASK_ID.test(taskId)) throw new Error(`invalid task id: ${JSON.stringify(taskId).slice(0, 60)}`);
   return join(p.runtime, taskId);
 }
 
@@ -53,7 +57,10 @@ function eventsFile(p: MemoryPaths, taskId: string): string {
 
 export function ensureTaskDir(p: MemoryPaths, taskId: string): string {
   const dir = taskDir(p, taskId);
+  const chain = [dirname(p.runtime), p.runtime, dir, join(dir, "evidence")];
+  assertPlain(...chain);
   mkdirSync(join(dir, "evidence"), { recursive: true, mode: 0o700 });
+  assertPlain(...chain);
   return dir;
 }
 
@@ -62,7 +69,7 @@ export function appendEvent(p: MemoryPaths, taskId: string, e: Omit<Event, "id" 
   // Summaries carry model text and shell commands, either of which can contain a secret.
   const meta = e.meta && typeof e.meta.command === "string" ? { ...e.meta, command: redact(e.meta.command) } : e.meta;
   const full: Event = { actor: e.actor, type: e.type, summary: redact(e.summary), evidenceRef: e.evidenceRef, tokens: e.tokens, meta, id: e.id ?? shortId(), taskId, at: e.at ?? now() };
-  appendFileSync(eventsFile(p, taskId), JSON.stringify(full) + "\n", { mode: 0o600 });
+  appendNoFollow(eventsFile(p, taskId), JSON.stringify(full) + "\n");
   for (const fn of listeners.get(taskId) ?? []) fn(full);
   return full;
 }
@@ -82,6 +89,8 @@ export function subscribe(taskId: string, fn: (e: Event) => void): () => void {
 
 export function readEvents(p: MemoryPaths, taskId: string): Event[] {
   const f = eventsFile(p, taskId);
+  // A log reached through a link (a shipped one pointing at someone else's file) is not this task's history.
+  if (isLink(dirname(p.runtime)) || isLink(p.runtime) || isLink(taskDir(p, taskId)) || isLink(f)) return [];
   if (!existsSync(f)) return [];
   return readFileSync(f, "utf8")
     .split("\n")

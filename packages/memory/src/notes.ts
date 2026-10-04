@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { MemoryPaths } from "./paths.js";
 import { redact } from "./redact.js";
+import { assertPlain, isLink } from "./safefs.js";
 import { termsOf } from "./terms.js";
 import { now, shortId } from "./util.js";
 
@@ -189,16 +190,29 @@ export class Memory {
     if (!this.regular) throw new Error("the notes folder is a symlink (or sits inside one) — refusing to write through it");
     if (!MEMORY_TYPES.includes(e.type)) throw new Error(`unknown memory type: ${e.type}`);
     const dir = this.dir(e.type);
+    assertPlain(dir); // a shipped `memory/facts -> <elsewhere>` must not become the place notes are written
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    // A note is only ever rewritten in place if it is a regular file inside the notes folder.
-    let file = e.file && resolve(e.file).startsWith(resolve(this.p.memory) + sep) && !(existsSync(e.file) && lstatSync(e.file).isSymbolicLink()) ? e.file : undefined;
-    if (!file) {
-      file = join(dir, `${slug(e.text)}.md`);
-      if (existsSync(file)) file = join(dir, `${slug(e.text)}-${e.id.split("-").pop()}.md`);
-    }
     const { file: _f, external: _x, ...data } = e;
-    writeFileSync(file, toMarkdown(data as MemoryEntry), { mode: 0o600 });
-    return file;
+    const md = toMarkdown(data as MemoryEntry);
+    // A note is only ever rewritten in place if it is a regular file inside the notes folder.
+    if (e.file && resolve(e.file).startsWith(resolve(this.p.memory) + sep) && !isLink(e.file)) {
+      writeFileSync(e.file, md, { mode: 0o600 });
+      return e.file;
+    }
+    // A new note gets the first free name, created exclusively: a link someone placed on a predictable name makes
+    // that attempt fail (EEXIST, even for a dangling link) instead of being written through.
+    const base = slug(e.text);
+    const names = [`${base}.md`, `${base}-${e.id.split("-").pop()}.md`, ...Array.from({ length: 40 }, (_, i) => `${base}-${i + 2}.md`)];
+    for (const name of names) {
+      const file = join(dir, name);
+      try {
+        writeFileSync(file, md, { mode: 0o600, flag: "wx" });
+        return file;
+      } catch (err: any) {
+        if (err?.code !== "EEXIST") throw err;
+      }
+    }
+    throw new Error("couldn't find a free file name for the note");
   }
 
   private readDir(dir: string, type: MemoryType | undefined, external: boolean, out: MemoryEntry[], depth = 0) {

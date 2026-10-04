@@ -32,7 +32,7 @@ import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
 import { fmtNum, now, sh, visible } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
-import { trustConfig, trustRepo, untrustedReason } from "./trust.js";
+import { trustConfig, trustRepo, untrustedForUnattended, untrustedReason } from "./trust.js";
 
 interface Args {
   _: string[];
@@ -258,6 +258,7 @@ export async function main(argv: string[]): Promise<number> {
     }
     case "task": {
       requireInit(p);
+      if (!requireTrust(p.root, args)) return 2;
       let text = pos.join(" ");
       if (args.flags["error-file"]) text += "\n\n" + readFileSync(String(args.flags["error-file"]), "utf8").slice(0, 20_000);
       if (!text.trim()) text = await readStdin();
@@ -1099,6 +1100,7 @@ export async function main(argv: string[]): Promise<number> {
     }
     case "claude": {
       requireInit(p);
+      if (!requireTrust(p.root, args)) return 2;
       const text = pos.join(" ");
       if (!text) {
         process.stderr.write("usage: narrowbit claude \"<task>\" [-- <claude args>]\n");
@@ -1121,6 +1123,9 @@ export async function main(argv: string[]): Promise<number> {
       // Hooks must never break the user's session: swallow all errors.
       try {
         const stdin = await readStdin();
+        // Unattended: a repository that ships its own settings/notes/history gets no context from here until you have
+        // accepted it yourself (narrowbit init or agent --trust in a terminal).
+        if (untrustedForUnattended(p.root)) return 0;
         if (pos[0] === "prompt") {
           const o = await hookPrompt(p, stdin);
           if (o) out(o);
@@ -1131,6 +1136,13 @@ export async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case "mcp": {
+      // Started by another tool (its config may even come from the repository), so a `--trust` here is not honoured:
+      // accept the repository yourself in a terminal first (narrowbit init --trust, or agent --trust).
+      const u = untrustedForUnattended(p.root);
+      if (u) {
+        process.stderr.write(`narrowbit mcp: not starting — ${u.message}\nAccept it yourself in a terminal (narrowbit init --trust); this server ignores --trust so a repository can't pass it for you.\n`);
+        return 2;
+      }
       ensureDirs(p);
       await serveMcp(p);
       return 0;
