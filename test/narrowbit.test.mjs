@@ -3843,3 +3843,28 @@ describe("low-severity audit items: browser launch, connector redirects and size
     }
   });
 });
+
+describe("a remembered 'allow' stops covering a command once the agent has edited files, and says what changed", () => {
+  test("the allowance rules: ends at the next edit, 'whole task' keeps going, connector calls and warnings behave as before", async () => {
+    const { covered, editsSince } = await dist("approvals.js");
+    const grant = { always: false, editLen: 1 };
+    assert.equal(covered(undefined, undefined, undefined, ["a.ts"]), false, "no grant, no cover");
+    assert.equal(covered(grant, undefined, undefined, ["a.ts"]), true, "nothing edited since it was allowed");
+    assert.equal(covered(grant, undefined, undefined, ["a.ts", "b.test.ts"]), false, "an edit since: asked again");
+    assert.deepEqual(editsSince(grant, ["a.ts", "b.test.ts", "b.test.ts", "c.ts"]), ["b.test.ts", "c.ts"], "lists what changed, once each");
+    assert.equal(covered({ always: true, editLen: 0 }, undefined, undefined, ["a.ts", "b.ts"]), true, "the explicit whole-task choice keeps covering after edits");
+    assert.equal(covered({ always: true, editLen: 0 }, "the agent edited package.json", undefined, ["package.json"]), false, "a script-file warning still asks, whatever was chosen");
+    assert.equal(covered(grant, undefined, "connector:abc", ["a.ts", "b.ts"]), true, "a connector call is keyed to the exact call, so edits don't matter");
+  });
+
+  test("the runtime tells the approver which files the agent has edited so far, in order", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([JSON.stringify([{ action: "run", command: "echo one" }, { action: "edit", path: "a.txt", old: "hello", new: "changed" }, { action: "run", command: "echo two" }]), JSON.stringify({ action: "verify" }), JSON.stringify({ action: "done", summary: "x" })]);
+    const seen = [];
+    try {
+      await runTask(p, "edit and run", { claudeBin: fake.bin, boss: false, maxSteps: 8, approve: async (command, warning, key, edits) => { seen.push({ command, edits: [...edits] }); return true; } });
+      assert.deepEqual(seen[0], { command: "echo one", edits: [] });
+      assert.deepEqual(seen[1], { command: "echo two", edits: ["a.txt"] });
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});

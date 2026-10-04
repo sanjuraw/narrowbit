@@ -1662,11 +1662,11 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   document.addEventListener("keydown", function (e) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); newTask(); }
     if (e.key === "Escape") { closeDrawer(); closeSide(); }
-    // 1 / 2 / 3 answer a pending approval when you're not typing.
+    // 1 / 2 / 3 / 4 answer a pending approval when you're not typing.
     var typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
     if (!typing && !e.metaKey && !e.ctrlKey && view) {
       var ids = Object.keys(view.approvals).filter(function (id) { return !view.approvals[id].done; });
-      if (ids.length && (e.key === "1" || e.key === "2" || e.key === "3")) { e.preventDefault(); view.approvals[ids[0]].decide(e.key === "1" ? "once" : e.key === "2" ? "task" : "deny"); }
+      if (ids.length && (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4")) { e.preventDefault(); view.approvals[ids[0]].decide(e.key === "1" ? "once" : e.key === "2" ? "task" : e.key === "4" ? "always" : "deny"); }
     }
   });
 
@@ -2032,6 +2032,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var isConn = ev.command.indexOf("connector: ") === 0;
     var box = el("div", { cls: "approval" }, el("div", { cls: "ah", text: isConn ? "Use this connector tool?" : "Run this command?" }), el("pre", { text: isConn ? ev.command.slice(11) : ev.command }));
     if (ev.warning) box.appendChild(el("div", { cls: "approval-warn", text: "⚠ " + ev.warning }));
+    if (ev.changes && ev.changes.length) box.appendChild(el("div", { cls: "approval-warn approval-change", text: "Since you allowed this command, the agent edited: " + ev.changes.join(", ") }));
     var btns = el("div", { cls: "btns" });
     var a = { box: box, btns: btns, done: false };
     a.decide = function (d) {
@@ -2040,7 +2041,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       api("/api/approve", { id: ev.id, decision: d }).catch(function (e) { banner("bad", e.message); });
     };
     btns.appendChild(el("button", { cls: "primary", onclick: function () { a.decide("once"); } }, "Allow once ", el("kbd", { text: "1" })));
-    btns.appendChild(el("button", { onclick: function () { a.decide("task"); } }, "Allow for this task ", el("kbd", { text: "2" })));
+    // A command runs code the agent can edit, so the usual remembered allowance ends at the agent's next edit; the whole-task
+    // choice is separate. A connector call is keyed to the exact call, so edits don't change it and one choice is enough.
+    btns.appendChild(el("button", { onclick: function () { a.decide("task"); } }, isConn ? "Allow this call for the task " : "Allow until files change ", el("kbd", { text: "2" })));
+    if (!isConn) btns.appendChild(el("button", { onclick: function () { a.decide("always"); } }, "Allow for the whole task ", el("kbd", { text: "4" })));
     btns.appendChild(el("button", { cls: "danger", onclick: function () { a.decide("deny"); } }, "Deny ", el("kbd", { text: "3" })));
     box.appendChild(btns);
     view.approvals[ev.id] = a;

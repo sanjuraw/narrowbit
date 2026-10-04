@@ -44,6 +44,7 @@ import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
 import { sh, visible } from "./util.js";
 import { updateCli } from "./providers/models.js";
+import { covered, editsSince, type Grant } from "./approvals.js";
 import { shippedRisks, trustConfig, trustRepo, untrustedMessage, untrustedReason } from "./trust.js";
 import { discardTask, planDiscard } from "./checkpoints.js";
 
@@ -60,7 +61,7 @@ type StreamEvent = (
   | { type: "start"; task: string; continueTask: string | null; selection: string; lead: boolean }
   | { type: "log"; line: string }
   | { type: "event"; event: Event }
-  | { type: "approval"; id: string; command: string; warning?: string; key?: string }
+  | { type: "approval"; id: string; command: string; warning?: string; key?: string; editLen?: number; changes?: string[] }
   | { type: "approval_resolved"; id: string; allowed: boolean }
   | { type: "question"; id: string; question: string; options: string[] }
   | { type: "question_resolved"; id: string; answer: string | null }
@@ -78,7 +79,8 @@ interface Run {
   /** Questions the agent has put to the user, waiting for an answer. */
   questions: Map<string, (answer: string | null) => void>;
   /** Commands the user allowed for the rest of this task. */
-  allowed: Set<string>;
+  /** "Allow for this task" grants by command (or connector-call key); see approvals.ts for when one still covers it. */
+  allowed: Map<string, Grant>;
   running: boolean;
   /** Messages typed while the task was working, handed to it before its next model call. */
   queue: string[];
@@ -493,7 +495,7 @@ export function startUi(opts: UiOptions) {
       controller: new AbortController(),
       pending: new Map(),
       questions: new Map(),
-      allowed: new Set(),
+      allowed: new Map(),
       running: true,
       queue: [],
       compactRequested: false,
@@ -535,18 +537,20 @@ export function startUi(opts: UiOptions) {
         return new Promise<string | null>((res) => thisRun.questions.set(id, res));
       },
       approve: askBeforeCommands
-        ? (command, warning, key) => {
+        ? (command, warning, key, edits = []) => {
             // After Stop nothing more is approved, however it was allowed before.
             if (thisRun.controller.signal.aborted) return Promise.resolve(false);
-            // "Allow for this task" covered the command as it was then. If the agent has since changed what the
-            // command runs (warning set), that permission no longer describes it: ask again. A connector call is
-            // keyed to the exact call (`key`), not to the text shown.
-            if (thisRun.allowed.has(key ?? command) && !warning) return Promise.resolve(true);
+            // "Allow for this task" covered the command as it was then; approvals.ts says when that still holds (it ends at the
+            // agent's next edit unless "for the whole task" was chosen, and a warning always asks). A connector call is keyed
+            // to the exact call (`key`), not to the text shown.
+            const grant = thisRun.allowed.get(key ?? command);
+            if (covered(grant, warning, key, edits)) return Promise.resolve(true);
+            const changes = grant && !key ? editsSince(grant, edits) : [];
             const id = `${thisRun.id}-a${++approvalSeq}`;
             // The page shows the command with control characters and direction overrides spelled out; `key` carries the
             // exact thing that "allow for this task" remembers.
             const shown = visible(command);
-            emit(thisRun, { type: "approval", id, command: shown, ...(warning ? { warning } : {}), ...(key || shown !== command ? { key: key ?? command } : {}) });
+            emit(thisRun, { type: "approval", id, command: shown, editLen: edits.length, ...(warning ? { warning } : {}), ...(changes.length ? { changes } : {}), ...(key || shown !== command ? { key: key ?? command } : {}) });
             return new Promise<boolean>((res) => thisRun.pending.set(id, res));
           }
         : undefined,
@@ -573,14 +577,14 @@ export function startUi(opts: UiOptions) {
     return { status: 200, body: { ok: true, isolated: sharesFolder, run: thisRun.id } };
   };
 
-  const resolveApproval = (id: string, decision: "once" | "task" | "deny") => {
+  const resolveApproval = (id: string, decision: "once" | "task" | "always" | "deny") => {
     const run = [...runs.values()].find((x) => x.pending.has(id));
     const r = run?.pending.get(id);
     if (!run || !r) return false;
     run.pending.delete(id);
-    const ev = run.events.find((e) => e.type === "approval" && e.id === id) as { command: string; key?: string } | undefined;
+    const ev = run.events.find((e) => e.type === "approval" && e.id === id) as { command: string; key?: string; editLen?: number } | undefined;
     const cmd = ev?.key ?? ev?.command;
-    if (decision === "task" && cmd) run.allowed.add(cmd);
+    if ((decision === "task" || decision === "always") && cmd) run.allowed.set(cmd, { always: decision === "always", editLen: ev?.editLen ?? 0 });
     emit(run, { type: "approval_resolved", id, allowed: decision !== "deny" });
     r(decision !== "deny");
     return true;
@@ -1069,7 +1073,7 @@ export function startUi(opts: UiOptions) {
           }
         }
         case "/api/approve": {
-          const decision = body.decision === "task" ? "task" : body.decision === "once" ? "once" : "deny";
+          const decision = body.decision === "task" ? "task" : body.decision === "always" ? "always" : body.decision === "once" ? "once" : "deny";
           return json(res, resolveApproval(String(body.id ?? ""), decision) ? 200 : 404, { ok: true });
         }
         case "/api/answer": {

@@ -1517,6 +1517,85 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     ctl.abort();
   });
 
+  const approvalStream = async () => {
+    const ctl = new AbortController();
+    const stream = await fetch(`${app.base}/api/stream?t=${app.token}`, { signal: ctl.signal });
+    const reader = stream.body.getReader();
+    let buf = ""; const events = []; let pending = null;
+    const waitFor = async (pred, what) => {
+      const t0 = Date.now();
+      for (;;) {
+        const hit = events.find(pred); if (hit) return hit;
+        if (Date.now() - t0 > 20000) throw new Error("timed out waiting for " + what + " — saw " + JSON.stringify(events.map((e) => e.type)));
+        pending = pending || reader.read();
+        const got = await Promise.race([pending, new Promise((r) => setTimeout(() => r(null), 200))]);
+        if (!got) continue;
+        pending = null;
+        if (got.done) break;
+        buf += new TextDecoder().decode(got.value); let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) { const chunk = buf.slice(0, i); buf = buf.slice(i + 2); const m = /^data: (.*)$/m.exec(chunk); if (m) events.push(JSON.parse(m[1])); }
+      }
+    };
+    return { events, waitFor, stop: () => ctl.abort() };
+  };
+
+  test("'Allow until files change' ends at the agent's next edit and shows what changed; 'for the whole task' keeps going", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    execFileSync("git", ["checkout", "--", "package.json"], { cwd: repo });
+    writeFileSync(join(repo, "util.js"), "module.exports = 1;\n");
+    execFileSync("git", ["add", "-A"], { cwd: repo });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "util"], { cwd: repo });
+    const run = { action: "run", command: "node -e 1" };
+    const edit = (n) => ({ action: "edit", path: "util.js", old: `= ${n};`, new: `= ${n + 1};` });
+    fakeClaudeIn(fakeDir, [run, edit(1), run, edit(2), run, { action: "done", summary: "done" }]);
+    await fetch(`${app.base}/api/models`, { method: "POST", headers: H, body: JSON.stringify({ provider: "claude", effort: "medium", tiers: { explore: "sonnet", execute: "sonnet", escalate: "opus" }, boss: false }) });
+    const started = await fetch(`${app.base}/api/run`, { method: "POST", headers: H, body: JSON.stringify({ task: "run, edit, run", askBeforeCommands: true }) });
+    assert.equal(started.status, 200, await started.clone().text());
+    const st = await approvalStream();
+    try {
+      const first = await st.waitFor((e) => e.type === "approval", "the first approval");
+      assert.equal(first.changes, undefined, "nothing edited yet");
+      await fetch(`${app.base}/api/approve`, { method: "POST", headers: H, body: JSON.stringify({ id: first.id, decision: "task" }) });
+      const second = await st.waitFor((e) => e.type === "approval" && e.id !== first.id, "a second approval after the edit");
+      assert.deepEqual(second.changes, ["util.js"], "it says which file changed since the command was allowed");
+      await fetch(`${app.base}/api/approve`, { method: "POST", headers: H, body: JSON.stringify({ id: second.id, decision: "always" }) });
+      await st.waitFor((e) => e.type === "finished", "the task to finish");
+      assert.equal(st.events.filter((e) => e.type === "approval").length, 2, "after 'whole task' the third run (after another edit) was not asked about");
+    } finally { st.stop(); execFileSync("git", ["checkout", "--", "util.js"], { cwd: repo }); }
+  });
+
+  test("the approval card offers the allowances, sends the right choice for each, and shows the files that changed", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const page = await openPage(app.url);
+    try {
+      const sent = [];
+      await page.until(() => page.w.__nb && page.w.__nb.view(), "the page's conversation view");
+      page.w.fetch = (url, opts) => { if (String(url).includes("/api/approve")) sent.push(JSON.parse(opts.body)); return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true }), text: async () => "{}" }); };
+      const nb = page.w.__nb;
+      const v = nb.view(); v.taskId = "rt-card"; v.pendingNew = false;
+      const card = (id, extra = {}) => { nb.stream({ type: "approval", id, task: "rt-card", command: "npm test", ...extra }); return [...page.w.document.querySelectorAll(".approval")].pop(); };
+      const labels = (box) => [...box.querySelectorAll("button")].map((b) => b.textContent.replace(/\s+/g, " ").trim());
+      const click = (box, re) => [...box.querySelectorAll("button")].find((b) => re.test(b.textContent)).click();
+
+      const first = card("a1");
+      const l1 = labels(first);
+      assert.ok(l1.some((l) => /^Allow once/.test(l)) && l1.some((l) => /^Allow until files change/.test(l)) && l1.some((l) => /^Allow for the whole task/.test(l)) && l1.some((l) => /^Deny/.test(l)), l1.join(" | "));
+      assert.equal(first.querySelector(".approval-change"), null, "nothing changed yet, so no note");
+      click(first, /^Allow until files change/);
+      const second = card("a2", { changes: ["util.js", "tests/util.test.js"] });
+      assert.match(second.querySelector(".approval-change").textContent, /util\.js, tests\/util\.test\.js/, "says which files changed since it was allowed");
+      click(second, /^Allow for the whole task/);
+      const third = card("a3");
+      page.w.document.dispatchEvent(new page.w.KeyboardEvent("keydown", { key: "4", bubbles: true }));
+      const fourth = card("a4");
+      page.w.document.dispatchEvent(new page.w.KeyboardEvent("keydown", { key: "2", bubbles: true }));
+      const conn = card("a5", { command: "connector: gh.create_issue {}" });
+      assert.ok(!labels(conn).some((l) => /whole task/.test(l)), "a connector call keeps its single 'this call' choice");
+      assert.deepEqual(sent.map((x) => [x.id, x.decision]), [["a1", "task"], ["a2", "always"], ["a3", "always"], ["a4", "task"]]);
+    } finally { page.close(); }
+  });
+
   test("an approval shows control characters as text, and 'Allow for this task' still matches the exact command", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     execFileSync("git", ["checkout", "--", "package.json"], { cwd: repo }); // the previous test left the agent's edit in the folder

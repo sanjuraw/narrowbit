@@ -382,7 +382,7 @@ export interface RuntimeOptions {
   /** Asked before a shell command (or connector call) runs. `warning` is set when the agent itself changed a file
    * that decides what this command does (see scriptWarning) — the approver should then ask again even if the
    * user earlier allowed the same command text for the whole task. */
-  approve?: (command: string, warning?: string, key?: string) => Promise<boolean>;
+  approve?: (command: string, warning?: string, key?: string, edits?: readonly string[]) => Promise<boolean>;
   /** Puts the model's question to the user and resolves with their answer (null = nobody can answer).
    * Unset in benchmarks and non-interactive runs: the model is told to make its best assumption instead. */
   ask?: (question: string, options: string[]) => Promise<string | null>;
@@ -551,7 +551,10 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   let checkedSinceEdit = false;
   // Repo-relative paths this task has edited, so an approval can say when a command's own definition changed.
   const editedPaths = new Set<string>();
-  const approveWithContext: RuntimeOptions["approve"] = opts.approve ? (command, _warning, key) => opts.approve!(command, scriptWarning(command, editedPaths), key) : undefined;
+  // Every applied edit, in order (a path can repeat): what an approver needs to tell whether the agent has changed anything
+  // since a remembered "allow" was given.
+  const editLog: string[] = [];
+  const approveWithContext: RuntimeOptions["approve"] = opts.approve ? (command, _warning, key) => opts.approve!(command, scriptWarning(command, editedPaths), key, editLog) : undefined;
   let lastVerifyHead = "";
   const doneChallenges = new Set<string>();
 
@@ -978,7 +981,11 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       const editRefused = decision.action === "edit" && !resultText.startsWith("edited ");
       if (decision.action === "edit" && !editRefused) {
         editsApplied++;
-        if (decision.path) editedPaths.add(relative(p.root, resolve(p.root, String(decision.path))).split("\\").join("/"));
+        if (decision.path) {
+          const rel = relative(p.root, resolve(p.root, String(decision.path))).split("\\").join("/");
+          editedPaths.add(rel);
+          editLog.push(rel);
+        }
         editedSinceVerify = true;
         checkedSinceEdit = false;
         checkpointNow(p, taskId, steps, resultText.startsWith("edited ") ? resultText.slice(0, 100) : `edit ${decision.path ?? ""}`);

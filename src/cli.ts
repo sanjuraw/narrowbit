@@ -32,6 +32,7 @@ import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
 import { fmtNum, launcherPage, now, sh, visible } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
+import { covered, editsSince, type Grant } from "./approvals.js";
 import { trustConfig, trustRepo, untrustedForUnattended, untrustedReason } from "./trust.js";
 
 interface Args {
@@ -513,28 +514,33 @@ export async function main(argv: string[]): Promise<number> {
       // The agent runs shell commands, and it reads files that can contain instructions aimed at it, so
       // like the app the terminal asks first. --allow-commands opts out (scripts, or a repo you trust).
       const allowFlag = !!args.flags["allow-commands"];
-      let allowTask = false;
+      let grant: Grant | undefined;
       const notRun: string[] = [];
-      const approve = async (command: string, warning?: string, key?: string): Promise<boolean> => {
+      const approve = async (command: string, warning?: string, key?: string, edits: readonly string[] = []): Promise<boolean> => {
         if (allowFlag) {
           // The user opted out of prompts entirely; still say when the agent changed what a command runs.
           if (warning) process.stderr.write(`      ! ${visible(warning)}\n`);
           return true;
         }
-        // "[a]lways for this task" covered commands as they were; a changed definition is asked about again.
-        // (a connector call is never covered by "always": each one is asked about)
-        if (allowTask && !warning && !key) return true;
+        // An allowance covers commands until the agent edits a file (or for the whole task if you chose that); approvals.ts has
+        // the rules, shared with the app. (a connector call is never covered by it: each one is asked about)
+        if (!key && covered(grant, warning, undefined, edits)) return true;
         if (warning) process.stderr.write(`      ⚠ ${visible(warning)}\n`);
+        if (grant && !key) {
+          const changed = editsSince(grant, edits);
+          if (changed.length) process.stderr.write(`      ↻ since you allowed commands, the agent edited: ${visible(changed.join(", "))}\n`);
+        }
         if (!process.stdin.isTTY) {
           process.stderr.write(`      ! not run (no terminal to ask): ${visible(command)}   — pass --allow-commands to let the agent run commands unattended\n`);
           notRun.push(command);
           return false;
         }
         const rl = createInterface({ input: process.stdin, output: process.stderr });
-        const a = (await rl.question(`      run \`${visible(command)}\`? [y]es / [n]o / [a]lways for this task: `)).trim().toLowerCase();
+        const a = (await rl.question(`      run \`${visible(command)}\`? [y]es / [n]o / [a]llow until the agent edits a file / [w]hole task: `)).trim().toLowerCase();
         rl.close();
-        if (a === "a") allowTask = true;
-        const yes = a === "y" || a === "a";
+        if (a === "a") grant = { always: false, editLen: edits.length };
+        if (a === "w") grant = { always: true, editLen: edits.length };
+        const yes = a === "y" || a === "a" || a === "w";
         if (!yes) notRun.push(command);
         return yes;
       };
