@@ -1,7 +1,7 @@
 import { test, describe, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync, lstatSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync, lstatSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve, isAbsolute, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -3761,5 +3761,85 @@ describe("the project root is never a folder above the git repository", () => {
       mkdirSync(loose, { recursive: true });
       assert.equal(findRoot(loose), parent, "outside any repo, the nearest project folder above still counts");
     } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+});
+
+describe("low-severity audit items: browser launch, connector redirects and sizes, OAuth endpoints", () => {
+  const listen = (handler) => new Promise((r) => { const srv = createHttp(handler); srv.listen(0, "127.0.0.1", () => r({ srv, base: `http://127.0.0.1:${srv.address().port}` })); });
+  const rpc = (body) => JSON.stringify({ jsonrpc: "2.0", id: body.id, result: body.method === "initialize" ? { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "t", version: "0" } } : { tools: [{ name: "t1" }] } });
+
+  test("the app's address (with its token) never appears on a command line: the browser is pointed at a private launcher file", async () => {
+    const { launcherPage } = await dist("util.js");
+    const url = "http://127.0.0.1:4747/?t=SECRETTOKEN123";
+    const file = launcherPage(url);
+    try {
+      assert.ok(!file.includes("SECRETTOKEN123"), "the path handed to `open` has no token in it");
+      assert.match(readFileSync(file, "utf8"), /SECRETTOKEN123/, "the page sends the browser to the real address");
+      assert.equal(statSync(file).mode & 0o777, 0o600, "readable only by you");
+      assert.equal(statSync(dirname(file)).mode & 0o777, 0o700);
+    } finally { rmSync(dirname(file), { recursive: true, force: true }); }
+  });
+
+  test("a connector's redirect to another host is refused (its headers never leave), a same-host one is followed", async () => {
+    const { openHttpSession } = await dist("mcpHttp.js");
+    const other = []; 
+    const B = await listen((req, res) => { other.push(req.headers["x-api-key"] ?? null); res.writeHead(200); res.end("{}"); });
+    const A = await listen((req, res) => {
+      let b = ""; req.on("data", (d) => (b += d));
+      req.on("end", () => {
+        if (req.url === "/away") { res.writeHead(307, { location: `${B.base}/stolen` }); return res.end(); }
+        if (req.url === "/old") { res.writeHead(307, { location: "/new" }); return res.end(); }
+        const m = JSON.parse(b || "{}");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(rpc(m));
+      });
+    });
+    try {
+      const mk = (path) => ({ name: "r", command: "", args: [], url: A.base + path, headers: { "x-api-key": "key-that-must-stay-home" } });
+      await assert.rejects(openHttpSession(mk("/away"), 5000), /redirect/i);
+      assert.deepEqual(other, [], "the other host received nothing, not even the request");
+      const s = await openHttpSession(mk("/old"), 5000);
+      assert.deepEqual(await s.request("tools/list"), { tools: [{ name: "t1" }] }, "a redirect within the same host still works");
+    } finally { A.srv.close(); B.srv.close(); }
+  });
+
+  test("a connector reply larger than the limit is refused instead of buffered, over HTTP and over stdio", async () => {
+    const { openHttpSession } = await dist("mcpHttp.js");
+    const { listConnectorTools } = await dist("mcpClient.js");
+    const big = Buffer.alloc(1024 * 1024, 97);
+    const A = await listen((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      let i = 0;
+      const pump = () => { while (i++ < 40) if (!res.write(big)) return res.once("drain", pump); res.end(); };
+      pump();
+    });
+    const dir = mkdtempSync(join(tmpdir(), "nb-bigmcp-"));
+    const marker = `nb-bigmcp-${process.pid}`;
+    const server = join(dir, "server.js");
+    writeFileSync(server, `process.stdin.once("data", () => { const chunk = "a".repeat(1024 * 1024); let n = 0; const t = setInterval(() => { process.stdout.write(chunk); if (++n >= 40) clearInterval(t); }, 5); }); setInterval(() => {}, 1000);\n`);
+    try {
+      const t0 = Date.now();
+      await assert.rejects(openHttpSession({ name: "big", command: "", args: [], url: A.base + "/x" }, 20000), /too large/i);
+      await assert.rejects(listConnectorTools({ name: "bigstdio", command: "node", args: [server, marker], env: {} }, 20000), /too large/i);
+      assert.ok(Date.now() - t0 < 15000, "refused promptly");
+    } finally { A.srv.close(); try { execFileSync("pkill", ["-f", marker]); } catch { /* already gone */ } rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("sign-in discovery refuses endpoints a server advertises that aren't plain http(s), or that point at link-local/metadata addresses", async () => {
+    const { startSignIn } = await dist("oauth.js");
+    const bad = [
+      { authorization_endpoint: "javascript:alert(1)", token_endpoint: "http://127.0.0.1:1/t", registration_endpoint: "http://127.0.0.1:1/r" },
+      { authorization_endpoint: "http://127.0.0.1:1/a", token_endpoint: "http://169.254.169.254/latest/meta-data", registration_endpoint: "http://127.0.0.1:1/r" },
+      { authorization_endpoint: "http://127.0.0.1:1/a", token_endpoint: "http://127.0.0.1:1/t", registration_endpoint: "file:///etc/passwd" },
+    ];
+    for (const meta of bad) {
+      const S = await listen((req, res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        if (req.url === "/.well-known/oauth-protected-resource") return res.end(JSON.stringify({ authorization_servers: [S.base] }));
+        res.end(JSON.stringify(meta));
+      });
+      try { await assert.rejects(startSignIn("x", S.base + "/mcp", "http://127.0.0.1:1/cb"), /not a safe|unsafe|refus/i, JSON.stringify(meta)); }
+      finally { S.srv.close(); }
+    }
   });
 });

@@ -30,7 +30,7 @@ import { listConnectorTools } from "./mcpClient.js";
 import { getSkill, listSkills, removeSkill, renameSkill, saveSkill } from "./skills.js";
 import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
-import { fmtNum, now, sh, visible } from "./util.js";
+import { fmtNum, launcherPage, now, sh, visible } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
 import { trustConfig, trustRepo, untrustedForUnattended, untrustedReason } from "./trust.js";
 
@@ -626,7 +626,7 @@ export async function main(argv: string[]): Promise<number> {
         restartOnUpdate: fromApp && process.env.NARROWBIT_SHELL_RESTART === "1",
         onListening: (url) => {
           out(`narrowbit ui: ${url}`);
-          if (!fromApp && !args.flags["no-open"] && process.platform === "darwin") sh("open", [url], process.cwd());
+          if (!fromApp && !args.flags["no-open"] && process.platform === "darwin") sh("open", [launcherPage(url)], process.cwd());
           else if (!fromApp) out("open that address in a browser; Ctrl+C to stop");
         },
       });

@@ -68,21 +68,60 @@ interface AsMeta {
   registration_endpoint?: string;
 }
 
+/**
+ * An address a server advertises (where to register, where to exchange the code, where the browser goes) is used by this
+ * machine or opened in your browser, so it must be a plain web address and not point somewhere the server has no business
+ * sending you: never a link-local/metadata address (169.254.x.x, fe80::), and a loopback/private one only when the MCP
+ * server you configured is itself local or private. Anything over plain http must be local too.
+ */
+function hostKind(host: string): "link-local" | "local" | "public" {
+  const h = host.replace(/^\[|\]$/g, "").toLowerCase();
+  if (/^169\.254\./.test(h) || /^fe[89ab][0-9a-f]:/.test(h)) return "link-local";
+  if (h === "localhost" || h.endsWith(".localhost") || h === "::1" || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h) || /^f[cd][0-9a-f]{2}:/.test(h) || h === "0.0.0.0") return "local";
+  return "public";
+}
+
+class UnsafeEndpoint extends Error {}
+
+function assertSafeEndpoint(value: unknown, what: string, mcpUrl: string): string {
+  let u: URL;
+  try {
+    u = new URL(String(value));
+  } catch {
+    throw new UnsafeEndpoint(`${what} is not a safe address (not a URL)`);
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") throw new UnsafeEndpoint(`${what} is not a safe address (${u.protocol} is not a web address)`);
+  const kind = hostKind(u.hostname);
+  if (kind === "link-local") throw new UnsafeEndpoint(`${what} is not a safe address (${u.hostname} is a link-local address)`);
+  const mcpLocal = hostKind(new URL(mcpUrl).hostname) !== "public";
+  if (kind === "local" && !mcpLocal) throw new UnsafeEndpoint(`${what} is not a safe address (${u.hostname} is a local address, but the server you configured isn't)`);
+  if (u.protocol === "http:" && kind === "public") throw new UnsafeEndpoint(`${what} is not a safe address (plain http to a public host)`);
+  return u.href;
+}
+
 /** Finds the authorization server for an MCP server URL (RFC 9728 protected-resource metadata, then RFC 8414). */
 export async function discover(mcpUrl: string): Promise<AsMeta> {
   const u = new URL(mcpUrl);
   let issuer = u.origin;
   try {
     const rm = await getJson(`${u.origin}/.well-known/oauth-protected-resource`);
-    if (Array.isArray(rm.authorization_servers) && rm.authorization_servers[0]) issuer = String(rm.authorization_servers[0]).replace(/\/+$/, "");
-  } catch {
+    if (Array.isArray(rm.authorization_servers) && rm.authorization_servers[0]) issuer = assertSafeEndpoint(rm.authorization_servers[0], "the authorization server", mcpUrl).replace(/\/+$/, "");
+  } catch (e) {
+    if (e instanceof UnsafeEndpoint) throw e;
     /* the MCP server may be its own authorization server */
   }
   for (const path of ["/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"]) {
     try {
       const m = await getJson(issuer + path);
-      if (m.authorization_endpoint && m.token_endpoint) return m as AsMeta;
-    } catch {
+      if (m.authorization_endpoint && m.token_endpoint) {
+        return {
+          authorization_endpoint: assertSafeEndpoint(m.authorization_endpoint, "the sign-in page", mcpUrl),
+          token_endpoint: assertSafeEndpoint(m.token_endpoint, "the token address", mcpUrl),
+          ...(m.registration_endpoint ? { registration_endpoint: assertSafeEndpoint(m.registration_endpoint, "the registration address", mcpUrl) } : {}),
+        };
+      }
+    } catch (e) {
+      if (e instanceof UnsafeEndpoint) throw e;
       /* try the next well-known path */
     }
   }

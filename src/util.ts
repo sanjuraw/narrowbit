@@ -1,8 +1,8 @@
 export { now, shortId, estimateTokens } from "narrowbit-memory";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { chmodSync, existsSync, lstatSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 export function sha1(data: string | Buffer): string {
@@ -139,4 +139,19 @@ export function visible(s: string): string {
     const n = c.charCodeAt(0);
     return n === 13 ? "\\r" : n < 0x100 ? `\\x${n.toString(16).padStart(2, "0")}` : `\\u${n.toString(16)}`;
   });
+}
+
+/**
+ * A page that sends the browser to `url`, in a folder only this user can read. The app's address carries its access token;
+ * handing that to `open` as an argument would show it on the command line, where other accounts on this Mac can read it
+ * (`ps`). The path of this file is all that is passed instead. It removes itself shortly after.
+ */
+export function launcherPage(url: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "narrowbit-open-"));
+  chmodSync(dir, 0o700);
+  const file = join(dir, "open.html");
+  const esc = url.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  writeFileSync(file, `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${esc}"><title>Narrowbit</title><a href="${esc}">Open Narrowbit</a>\n`, { mode: 0o600 });
+  setTimeout(() => rmSync(dir, { recursive: true, force: true }), 30_000).unref();
+  return file;
 }

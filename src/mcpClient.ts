@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import type { Connector } from "./connectors.js";
-import { openHttpSession } from "./mcpHttp.js";
+import { MAX_REPLY, openHttpSession } from "./mcpHttp.js";
 
 /**
  * A minimal MCP client over stdio: spawn a connector, do the initialize handshake, then either list
@@ -54,6 +54,7 @@ function withConnector<T>(c: Connector, timeoutMs: number, signal: AbortSignal |
     const handlers: ((msg: any) => void)[] = [];
     child.stdout.on("data", (d) => {
       buf += String(d);
+      if (buf.length > MAX_REPLY) return fail(new Error(`${c.name}: a reply is too large (over ${MAX_REPLY / 1024 / 1024} MB) — refused`));
       let nl;
       while ((nl = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, nl);

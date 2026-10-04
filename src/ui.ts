@@ -178,12 +178,26 @@ function taskHistory(p: Paths, limit = 40, tag?: { project: string; root: string
  * *current* project's full history on every state() call (unchanged from before); scanning a further
  * handful of recent ones on top is the same order of work, not a new class of cost.
  */
+const trustMemo = new Map<string, { stamp: string; ok: boolean }>();
+/** Whether a recent project is one the user has accepted as it is now. It costs a few git calls, so the answer is kept until
+ * the repository itself changes (its index or HEAD — any commit, pull or `git add -f`) or its .narrowbit/ folder does. */
+function recentIsTrusted(r: string): boolean {
+  const mtime = (f: string) => { try { return String(statSync(f).mtimeMs); } catch { return "-"; } };
+  const stamp = [join(r, ".git", "index"), join(r, ".git", "HEAD"), join(r, ".narrowbit")].map(mtime).join("|");
+  const hit = trustMemo.get(r);
+  if (hit && hit.stamp === stamp) return hit.ok;
+  const ok = !untrustedReason(r);
+  trustMemo.set(r, { stamp, ok });
+  return ok;
+}
+
 function mergedHistory(root: string | null, limit = 40) {
   const rows = taskHistory(draftsPaths(), limit, { project: "Planning", root: null });
   for (const r of loadRecent().slice(0, 10)) {
     if (r === root || !existsSync(r)) continue; // the open project's own history is added by the caller, already tagged
     const p = paths(r);
     if (!existsSync(p.db)) continue; // not a Narrowbit project (never initialized) — nothing to scan
+    if (!recentIsTrusted(r)) continue; // its task logs aren't shown until the project has been accepted again
     rows.push(...taskHistory(p, limit, { project: basename(r), root: r }));
   }
   return rows.sort((a, b) => b.last.localeCompare(a.last)).slice(0, limit);
@@ -458,6 +472,10 @@ export function startUi(opts: UiOptions) {
     if (sharesFolder) isolate = true;
     const p = paths(root);
     if (!existsSync(p.db)) return { status: 400, body: { error: "set up Narrowbit in this repository first" } };
+    // Trust was decided when the folder was opened; the folder can change after that (a pull, an extracted archive), so a
+    // task asks again before it reads settings, notes or earlier task logs from it.
+    const stale = untrustedReason(root);
+    if (stale) return { status: 409, body: { error: "untrusted", message: stale.message, risks: stale.risks, path: root } };
     const g = gitState(root);
     const cfg = loadConfig(p);
     const sel = resolveSelection(effAgent(cfg));
@@ -1150,7 +1168,8 @@ export function startUi(opts: UiOptions) {
           if (!root) return json(res, 400, { error: "no repository open" });
           const base = join(root, ".narrowbit", "rewind-trash");
           const want = resolve(String(body.path ?? ""));
-          if (!existsSync(want) || !existsSync(base) || !realpathSync(want).startsWith(realpathSync(base) + "/")) return json(res, 400, { error: "that isn't a recovery folder" });
+          // A folder, never a file: `open` on a recovered file would launch it (a .command or .app that a task left there).
+          if (!existsSync(want) || !existsSync(base) || !realpathSync(want).startsWith(realpathSync(base) + "/") || !statSync(want).isDirectory()) return json(res, 400, { error: "that isn't a recovery folder" });
           const r = spawnSync("open", [want], { encoding: "utf8" });
           if (r.status !== 0) return json(res, 500, { error: (r.stderr || "couldn't open it").trim() });
           return json(res, 200, { ok: true });
