@@ -91,7 +91,8 @@ export function shippedRisks(root: string): GitRisk[] {
   if (existsSync(join(root, ".git"))) {
     // :(icase) because on a case-insensitive filesystem a committed ".NARROWBIT/" is read as ".narrowbit/".
     const r = spawnSync("git", gitArgs(root, ["ls-files", "-z", "--", ":(icase).narrowbit"]), { cwd: root, encoding: "utf8" });
-    if (r.status === 0) files = r.stdout.split("\0").filter(Boolean);
+    // Only what is really inside the folder: some git versions also match a sibling such as ".narrowbitignore" here.
+    if (r.status === 0) files = r.stdout.split("\0").filter((f) => f.toLowerCase().startsWith(".narrowbit/"));
   } else {
     files = walkFiles(root, ".narrowbit");
   }

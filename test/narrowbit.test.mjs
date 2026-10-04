@@ -3513,10 +3513,16 @@ describe("a .narrowbit/ folder the repository ships (task history, skills, memor
 
   test("your own .narrowbit/ (created here, never committed) raises no question", async () => {
     await withTempHome(async () => {
-      const { untrustedReason } = await dist("trust.js");
+      const { untrustedReason, shippedRisks } = await dist("trust.js");
       const { root } = tinyRepo();
       try {
         writeFileSync(join(root, ".narrowbit", "extra.txt"), "task logs and an index are created all the time\n");
+        assert.equal(untrustedReason(root), null);
+        // A committed .narrowbitignore sits next to the folder, not in it (some git versions match it by prefix).
+        writeFileSync(join(root, ".narrowbitignore"), "dist/\n");
+        execFileSync("git", ["add", "-f", ".narrowbitignore"], { cwd: root });
+        execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "ignore file"], { cwd: root });
+        assert.equal(shippedRisks(root).length, 0, "a tracked .narrowbitignore is not a shipped .narrowbit/ folder");
         assert.equal(untrustedReason(root), null);
       } finally { rmSync(root, { recursive: true, force: true }); }
     });
