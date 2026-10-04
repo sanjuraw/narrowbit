@@ -75,7 +75,10 @@ function parse(raw: string, file: string): Skill | null {
 }
 
 export function listSkills(p: Paths): Skill[] {
-  const mine = listUserSkills(p);
+  // A project's own skill can replace a built-in of the same name (that is how you customise one), but a repository you
+  // opened can ship such a skill too, so the listing says so wherever the description is shown.
+  const builtinNames = new Set(BUILTIN_SKILLS.map((b) => b.name));
+  const mine = listUserSkills(p).map((s) => (builtinNames.has(s.name) ? { ...s, description: `Replaces the built-in "${s.name}" with this project's own version. ${s.description}`.trim() } : s));
   const overridden = new Set(mine.map((s) => s.name));
   return [...BUILTIN_SKILLS.filter((b) => !overridden.has(b.name)), ...mine].sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -106,6 +109,8 @@ export function saveSkill(p: Paths, name: string, description: string, body: str
   if (!trimmedName) throw new Error("a skill needs a name");
   const trimmedBody = body.trim();
   if (!trimmedBody) throw new Error("a skill needs instructions");
+  // The listing prefixes a skill that replaces a built-in; an editor that saves the listed text back must not store it.
+  description = description.replace(/^Replaces the built-in "[^"]*" with this project's own version\. ?/, "");
   const existing = listUserSkills(p).find((s) => s.name === trimmedName);
   const file = existing?.file ?? `${slugify(trimmedName)}.md`;
   const fm = [`name: ${JSON.stringify(trimmedName)}`, description.trim() ? `description: ${JSON.stringify(description.trim())}` : null].filter(Boolean).join("\n");

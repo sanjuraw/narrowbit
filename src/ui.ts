@@ -44,7 +44,7 @@ import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
 import { sh, visible } from "./util.js";
 import { updateCli } from "./providers/models.js";
-import { trustConfig, trustRepo, untrustedReason } from "./trust.js";
+import { shippedRisks, trustConfig, trustRepo, untrustedMessage, untrustedReason } from "./trust.js";
 import { discardTask, planDiscard } from "./checkpoints.js";
 
 /**
@@ -712,6 +712,12 @@ export function startUi(opts: UiOptions) {
             // is only done once the user has seen what's there and said yes; an empty or new folder needs no question.
             const broad = tooBroadForProject(dir);
             if (broad) return json(res, 400, { error: `Refusing to make ${dir} a project — ${broad}, and it would commit everything inside it. Pick or create a folder just for this project.` });
+            // An unzipped download can already contain a .narrowbit/ folder; it is accepted before it is used, like a committed one.
+            const shipped = existsSync(dir) ? shippedRisks(dir) : [];
+            if (shipped.length) {
+              if (body.trust !== true) return json(res, 409, { error: "untrusted", message: untrustedMessage(dir, shipped), risks: shipped, path: dir });
+              trustRepo(dir, shipped);
+            }
             if (existsSync(dir) && body.confirmCreate !== true) {
               const entries = readdirSync(dir).filter((n) => n !== ".DS_Store");
               if (entries.length) {

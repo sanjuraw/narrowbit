@@ -1554,6 +1554,36 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     ctl.abort();
   });
 
+  test("a repo that ships its own .narrowbit/ folder (committed, or in an unzipped download) is only opened after an explicit 'trust'", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const open = (path, extra = {}) => fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path, ...extra }) });
+    const cloned = fresh("shipped-git"), zipped = fresh("shipped-zip");
+    try {
+      execFileSync("git", ["init", "-q", "-b", "main"], { cwd: cloned });
+      mkdirSync(join(cloned, ".narrowbit", "runtime", "rt-x"), { recursive: true });
+      writeFileSync(join(cloned, ".narrowbit", "runtime", "rt-x", "events.jsonl"), "{}\n");
+      writeFileSync(join(cloned, "a.txt"), "x\n");
+      execFileSync("git", ["add", "-f", "-A"], { cwd: cloned });
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"], { cwd: cloned });
+      const r1 = await open(cloned);
+      assert.equal(r1.status, 409);
+      const j = await r1.json();
+      assert.equal(j.error, "untrusted");
+      assert.deepEqual(j.risks.map((r) => r.key), ["shipped.narrowbit"]);
+      assert.match(j.message, /ships its own \.narrowbit/);
+      assert.equal((await open(cloned, { trust: true })).status, 200, "an explicit trust opens it");
+      assert.equal((await open(cloned)).status, 200, "and it's remembered");
+
+      mkdirSync(join(zipped, ".narrowbit", "skills"), { recursive: true });
+      writeFileSync(join(zipped, ".narrowbit", "skills", "x.md"), "x\n");
+      writeFileSync(join(zipped, "notes.txt"), "x\n");
+      const z1 = await open(zipped);
+      assert.equal(z1.status, 409);
+      assert.equal((await z1.json()).error, "untrusted", "asked about the shipped folder before anything else (not just 'create a project?')");
+      assert.ok(!existsSync(join(zipped, ".git")), "nothing was git-initialised by asking");
+    } finally { rmSync(cloned, { recursive: true, force: true }); rmSync(zipped, { recursive: true, force: true }); }
+  });
+
   test("a folder that already has files isn't committed as a project until the user has seen them and said yes", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     const full = fresh("hasfiles"), empty = fresh("empty");

@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { gitArgs, visible } from "./util.js";
@@ -59,7 +59,35 @@ export function repoConfigRisks(raw: any): GitRisk[] {
   return risks;
 }
 
-const isConfigRisk = (r: GitRisk) => r.key.startsWith("narrowbit.");
+/** Three separate decisions, each remembered under its own key: git filters, the repo's config settings, and a shipped .narrowbit/. */
+type Scope = "git" | "config" | "shipped";
+const scopeOf = (r: GitRisk): Scope => (r.key.startsWith("narrowbit.") ? "config" : r.key.startsWith("shipped.") ? "shipped" : "git");
+const isConfigRisk = (r: GitRisk) => scopeOf(r) === "config";
+const storeKey = (root: string, scope: Scope) => (scope === "git" ? canonical(root) : `${canonical(root)}#${scope}`);
+const SCOPES: Scope[] = ["git", "config", "shipped"];
+
+/**
+ * A repository can ship its own `.narrowbit/` folder (committed with `git add -f`, or inside a downloaded archive). It can
+ * hold past task logs that a "continue" treats as what the earlier work already established, skills (instructions the model
+ * follows, even ones named like a built-in), memory notes and settings. The user's own `.narrowbit/` is never committed
+ * (it keeps itself out of git), so files git tracks under it — or a `.narrowbit/` in a folder that isn't a git repository
+ * at all — came from someone else, and are accepted once, per set of files, before they are used.
+ */
+export function shippedRisks(root: string): GitRisk[] {
+  const dir = join(root, ".narrowbit");
+  if (!existsSync(dir)) return [];
+  let files: string[] = [];
+  if (existsSync(join(root, ".git"))) {
+    const r = spawnSync("git", gitArgs(root, ["ls-files", "-z", "--", ".narrowbit"]), { cwd: root, encoding: "utf8" });
+    if (r.status === 0) files = r.stdout.split("\0").filter(Boolean);
+  } else {
+    try { files = readdirSync(dir).map((n) => `.narrowbit/${n}`); } catch { /* unreadable: treated as empty */ }
+  }
+  if (!files.length) return [];
+  files.sort();
+  const shown = files.slice(0, 12).join(", ") + (files.length > 12 ? ` … and ${files.length - 12} more` : "");
+  return [{ key: "shipped.narrowbit", value: `${files.length} file(s) shipped with the repository: ${shown}` }];
+}
 
 export function repoConfigRisksAt(root: string): GitRisk[] {
   try {
@@ -93,20 +121,22 @@ function load(): Record<string, string> {
   }
 }
 
-/** Trusted means: the user accepted exactly these filter programs / config settings for this folder. If they change, ask again.
- * Git filters and config settings are separate decisions (the config entry lives under "<folder>#config"). */
+/** Trusted means: the user accepted exactly these filter programs / config settings / shipped files for this folder. If they
+ * change, ask again. Each kind is a separate decision, remembered under its own key. */
 export function isTrusted(root: string, risks: GitRisk[]): boolean {
   const saved = load();
-  const ok = (list: GitRisk[], key: string) => !list.length || saved[key] === fingerprint(list);
-  return ok(risks.filter((r) => !isConfigRisk(r)), canonical(root)) && ok(risks.filter(isConfigRisk), `${canonical(root)}#config`);
+  return SCOPES.every((sc) => {
+    const list = risks.filter((r) => scopeOf(r) === sc);
+    return !list.length || saved[storeKey(root, sc)] === fingerprint(list);
+  });
 }
 
 export function trustRepo(root: string, risks: GitRisk[]): void {
   const all = load();
-  const git = risks.filter((r) => !isConfigRisk(r));
-  const cfg = risks.filter(isConfigRisk);
-  if (git.length) all[canonical(root)] = fingerprint(git);
-  if (cfg.length) all[`${canonical(root)}#config`] = fingerprint(cfg);
+  for (const sc of SCOPES) {
+    const list = risks.filter((r) => scopeOf(r) === sc);
+    if (list.length) all[storeKey(root, sc)] = fingerprint(list);
+  }
   const f = storePath();
   if (!existsSync(dirname(f))) mkdirSync(dirname(f), { recursive: true, mode: 0o700 });
   writeFileSync(f, JSON.stringify(all, null, 2) + "\n", { mode: 0o600 });
@@ -126,12 +156,21 @@ export function describeRisks(risks: GitRisk[]): string {
 
 /** The one check every entry point uses before running git in a folder: null if fine to open, else why not. */
 export function untrustedReason(root: string): { risks: GitRisk[]; message: string } | null {
-  const risks = [...gitConfigRisks(root), ...repoConfigRisksAt(root)];
+  const risks = [...gitConfigRisks(root), ...repoConfigRisksAt(root), ...shippedRisks(root)];
   if (isTrusted(root, risks)) return null;
-  const git = risks.filter((r) => !isConfigRisk(r));
-  const cfg = risks.filter(isConfigRisk);
+  return { risks, message: untrustedMessage(root, risks) };
+}
+
+/** What the user is asked to accept: only the kinds they haven't accepted yet are described. */
+export function untrustedMessage(root: string, risks: GitRisk[]): string {
+  const open = (sc: Scope) => {
+    const list = risks.filter((r) => scopeOf(r) === sc);
+    return list.length && !isTrusted(root, list) ? list : [];
+  };
+  const git = open("git"), cfg = open("config"), shipped = open("shipped");
   const parts: string[] = [];
-  if (git.length && !isTrusted(root, git)) parts.push(`This repository's git settings name programs that git runs by itself on ordinary commands (like status and add):\n${describeRisks(git)}`);
-  if (cfg.length && !isTrusted(root, cfg)) parts.push(`This repository's .narrowbit/config.json sets things that decide where your code and keys go, or what notes are read (custom API addresses, the environment variable sent as the key, extra memory folders):\n${describeRisks(cfg)}`);
-  return { risks, message: `${parts.join("\n\n")}\nOnly open it if you trust where it came from.` };
+  if (git.length) parts.push(`This repository's git settings name programs that git runs by itself on ordinary commands (like status and add):\n${describeRisks(git)}`);
+  if (cfg.length) parts.push(`This repository's .narrowbit/config.json sets things that decide where your code and keys go, or what notes are read (custom API addresses, the environment variable sent as the key, extra memory folders):\n${describeRisks(cfg)}`);
+  if (shipped.length) parts.push(`This repository ships its own .narrowbit/ folder. It can hold settings, project memory notes, skills (instructions the model follows) and past task logs that a new task would treat as earlier work it can rely on:\n${describeRisks(shipped)}`);
+  return `${parts.join("\n\n")}\nOnly open it if you trust where it came from.`;
 }
