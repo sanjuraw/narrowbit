@@ -86,7 +86,13 @@ const SCOPES: Scope[] = ["git", "config", "shipped"];
  */
 export function shippedRisks(root: string): GitRisk[] {
   const dir = join(root, ".narrowbit");
-  if (!existsSync(dir)) return [];
+  // The folder itself as a symlink (git tracks that as a single entry, so it would otherwise count as "no files"): its
+  // contents are wherever it points. Reported so the reason is visible; set-up refuses it regardless of the answer.
+  try {
+    if (lstatSync(dir).isSymbolicLink()) return [{ key: "shipped.narrowbit", value: `.narrowbit is a symlink to ${visible(readlinkSync(dir)).slice(0, 200)} — its contents would be read from, and state written to, that location` }];
+  } catch {
+    return [];
+  }
   let files: string[] = [];
   if (existsSync(join(root, ".git"))) {
     // :(icase) because on a case-insensitive filesystem a committed ".NARROWBIT/" is read as ".narrowbit/".

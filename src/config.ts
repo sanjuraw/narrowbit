@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { isTrusted, repoConfigRisks } from "./trust.js";
@@ -153,11 +153,21 @@ export function findRoot(start = process.cwd()): string {
   return from;
 }
 
+/** Throws if `.narrowbit` or one of the folders inside it is a symlink. A repository can ship such a link (git tracks a
+ * symlink as one entry), and creating state "inside" it would put the config, index and logs wherever it points. */
+export function assertStateNotLinked(p: Paths, extra: string[] = []): void {
+  for (const d of [p.nb, p.memory, p.tasks, p.logs, p.benchmarks, p.sessions, p.runtime, p.skills, ...extra]) {
+    let linked = false;
+    try { linked = lstatSync(d).isSymbolicLink(); } catch { /* not there yet */ }
+    if (linked) throw new Error(`${d} is a symlink — Narrowbit won't keep its state through a link (remove it, or replace it with a real folder)`);
+  }
+}
+
 export function ensureDirs(p: Paths): void {
+  assertStateNotLinked(p);
   for (const d of [p.nb, p.memory, p.tasks, p.logs, p.benchmarks, p.sessions, p.runtime, p.skills]) mkdirSync(d, { recursive: true, mode: 0o700 });
-  // Self-ignoring: Narrowbit state never shows up in git status or diffs.
-  const gi = join(p.nb, ".gitignore");
-  if (!existsSync(gi)) writeFileSync(gi, "*\n");
+  // Self-ignoring: Narrowbit state never shows up in git status or diffs. "wx": never through a link squatting on the name.
+  try { writeFileSync(join(p.nb, ".gitignore"), "*\n", { flag: "wx" }); } catch { /* already there */ }
 }
 
 const warned = new Set<string>();

@@ -3709,6 +3709,53 @@ describe("third review pass: shipped state can't choose where files are written,
     });
   });
 
+  test("a repository that ships .narrowbit as a symlink is flagged, and set-up never creates state through it", async () => {
+    await withTempHome(async () => {
+      const { shippedRisks, untrustedReason } = await dist("trust.js");
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "nb-lnk-")));
+      const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-out-")));
+      try {
+        execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+        writeFileSync(join(root, "a.txt"), "hello\n");
+        symlinkSync(outside, join(root, ".narrowbit"));
+        execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "-f", "a.txt", ".narrowbit"], { cwd: root });
+        execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"], { cwd: root });
+        assert.ok(shippedRisks(root).length, "a tracked .narrowbit symlink is a shipped-folder risk");
+        assert.ok(untrustedReason(root), "so the folder is asked about");
+        assert.throws(() => ensureDirs(paths(root)), /symlink/);
+        const r = spawnSync("node", [BIN, "init", "--trust"], { cwd: root, encoding: "utf8", env: { ...process.env } });
+        assert.notEqual(r.status, 0, "init refuses even with --trust");
+        assert.deepEqual(readdirSync(outside), [], "nothing was created in the linked folder");
+      } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+    });
+  });
+
+  test("isolation refuses a linked worktrees folder before creating anything", async () => {
+    const { ensureIsolated } = await dist("isolate.js");
+    const { root, p } = tinyRepo();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-out-")));
+    try {
+      symlinkSync(outside, join(p.nb, "worktrees"));
+      assert.throws(() => ensureIsolated(p, "rt-iso2"), /symlink/);
+      assert.deepEqual(readdirSync(outside), [], "no copy was made outside the project");
+      assert.doesNotMatch(execFileSync("git", ["worktree", "list"], { cwd: root, encoding: "utf8" }), /rt-iso2/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  test("renaming a skill onto another skill's name is refused: the other skill keeps its instructions", async () => {
+    const { saveSkill, renameSkill, getSkill } = await dist("skills.js");
+    const { root, p } = tinyRepo();
+    try {
+      saveSkill(p, "First", "", "first body");
+      saveSkill(p, "Second", "", "second body");
+      assert.throws(() => renameSkill(p, "First", "Second"), /already/);
+      assert.equal(getSkill(p, "Second").body, "second body");
+      assert.equal(getSkill(p, "First").body, "first body", "and the renamed one is still there");
+      assert.throws(() => renameSkill(p, "First", "second"), /already/, "a name that lands on the same file is a collision too");
+      assert.equal(renameSkill(p, "First", "Third").name, "Third", "a free name still works");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test("a linked skill file is neither listed nor written through: saving never overwrites a file outside the project", async () => {
     const { listSkills, saveSkill } = await dist("skills.js");
     const { root, p } = tinyRepo();

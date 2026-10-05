@@ -51,7 +51,13 @@ export function ensureIsolated(p: Paths, taskId: string): Marker {
   const root = p.root;
   if (sh("git", ["rev-parse", "HEAD"], root).code !== 0) throw new Error("Isolated mode needs a git repository with at least one commit.");
   if (!/^rt-[\w-]+$/.test(taskId)) throw new Error("bad task id");
-  if (lstatSync(p.nb).isSymbolicLink()) throw new Error("Couldn't create the separate copy: .narrowbit is a symlink.");
+  // The whole path, before anything is created: a linked `worktrees` would put the copy outside the project, where
+  // readIsolated (rightly) refuses to recognise it, so it could be neither applied nor discarded.
+  for (const d of [p.nb, join(p.nb, "worktrees"), join(p.nb, "worktree-index"), p.runtime, join(p.runtime, taskId)]) {
+    let linked = false;
+    try { linked = lstatSync(d).isSymbolicLink(); } catch { /* not there yet */ }
+    if (linked) throw new Error(`Couldn't create the separate copy: ${d} is a symlink. Your folder is untouched and the task didn't start.`);
+  }
   const dir = worktreeDir(p, taskId);
   mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
   const add = sh("git", [...NO_HOOKS, "worktree", "add", "--detach", dir, "HEAD"], root);

@@ -145,6 +145,9 @@ export function renameSkill(p: Paths, oldName: string, newName: string): Skill {
   if (!trimmed) throw new Error("a skill needs a name");
   const newFile = `${slugify(trimmed)}.md`;
   if (skillsFolderLinked(p)) throw new Error("the skills folder is a symlink — refusing to write through it");
+  // Another skill already has that name, or its file: renaming onto it would replace its instructions.
+  const taken = listUserSkills(p).find((o) => o.file !== s.file && (o.name === trimmed || o.file === newFile));
+  if (taken || (s.file !== newFile && existsSync(join(p.skills, newFile)))) throw new Error(`a skill named "${taken?.name ?? trimmed}" already exists — rename or remove it first`);
   if (s.file && s.file !== newFile && existsSync(join(p.skills, s.file))) renameSync(join(p.skills, s.file), join(p.skills, newFile));
   return saveSkill(p, trimmed, s.description, s.body);
 }
