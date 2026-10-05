@@ -4,13 +4,13 @@ import type { NarrowbitConfig, Paths } from "./config.js";
 import { changedHunks } from "./git.js";
 import { Memory, openMemory, renderMemory } from "./memory.js";
 import { detectStack, rank, relatedTests, topLevelMap, type FeatureVec, type RankedFile, type RankResult, type SymbolHit } from "./ranker.js";
-import { redact } from "./redact.js";
+import { redact, redactBlocksKeepingLines } from "./redact.js";
 import { loadWeights } from "./train.js";
 import type { Store } from "./store.js";
 import type { Level, SelectedItem, TaskRecord } from "./tasks.js";
 import { parseTask, type ParsedTask } from "./taskparse.js";
 import { termsOf } from "./terms.js";
-import { estimateTokens, now, shortId, realRel, isGitInternal, sourceText } from "./util.js";
+import { estimateTokens, now, shortId, realRel, isGitInternal, isSecretFile, sourceText } from "./util.js";
 
 const SNIPPET_MAX_LINES = 140;
 
@@ -20,8 +20,8 @@ export function readLines(root: string, path: string, start: number, end: number
     // Refuse anything that really lands outside the project or inside .git: this is the one reader behind the MCP
     // `nb_lines` tool and the package builder, and neither has its own path check.
     const rel = realRel(root, join(root, path));
-    if (rel === null || isGitInternal(rel) || isGitInternal(path)) return "";
-    text = readFileSync(join(root, path), "utf8");
+    if (rel === null || isGitInternal(rel) || isGitInternal(path) || isSecretFile(rel)) return "";
+    text = redactBlocksKeepingLines(readFileSync(join(root, path), "utf8"));
   } catch {
     return "";
   }

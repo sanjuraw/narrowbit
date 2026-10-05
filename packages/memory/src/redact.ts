@@ -3,6 +3,11 @@
  * (context packages, MCP responses, compressed command output).
  */
 const PATTERNS: [RegExp, string][] = [
+  // .env / shell style: NAME_WITH_SECRET=value. Token-shaped values are caught below; this catches the rest (a database
+  // password, a session secret). Upper-case names at the start of a line only, values of 8+ characters, so ordinary code
+  // and numbers like MAX_TOKENS=4096 are left alone. Not "[REDACTED …]": the commit check reads that prefix as a certain
+  // credential, and a placeholder in a .env.example is only a hint.
+  [/(?<=^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_?KEY|CREDENTIALS?|ACCESS_?KEY)[A-Z0-9_]*[ \t]*=[ \t]*)(?!\[|\*\*\*)["']?[^\s#"'][^\r\n#]{6,}/gm, "[redacted value]"],
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]"],
   [/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED AWS KEY]"],
   [/\bsk-(?:ant-|proj-|live_|test_)?[A-Za-z0-9_-]{20,}\b/g, "[REDACTED KEY]"],
@@ -63,4 +68,17 @@ export function findSecrets(text: string): { label: string; certain: boolean; li
     }
   }
   return found;
+}
+
+/**
+ * Redacts private-key blocks line for line: every line of a block is replaced by one marker line, so line numbers stay
+ * what they were. A reader that shows only some lines of a file (a window in the middle of a key) must redact the whole
+ * file first; otherwise the BEGIN/END lines are outside the window and the key's body passes as ordinary text. A block
+ * with a BEGIN but no END (a cut-off file) is redacted to the end.
+ */
+export function redactBlocksKeepingLines(text: string): string {
+  const mark = (block: string) => block.split("\n").map(() => "[REDACTED PRIVATE KEY]").join("\n");
+  return text
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, mark)
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*$/g, mark);
 }

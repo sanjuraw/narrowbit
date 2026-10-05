@@ -264,3 +264,14 @@ export function sourceText(root: string, file: string, maxBytes = Infinity): str
     return null;
   }
 }
+
+/**
+ * A file whose whole purpose is to hold credentials (.env, private keys, keystores…). The index already leaves these out;
+ * this is the same list for reads, so a model that simply asks for the file by name doesn't get it either. A template
+ * (.env.example, .env.sample…) is meant to be read and is allowed.
+ */
+export function isSecretFile(relPath: string): boolean {
+  const base = relPath.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  if (/^\.env(\..+)?$/.test(base)) return !/\.(example|sample|template|dist|defaults?)$/.test(base);
+  return /\.(pem|key|p12|pfx|keystore)$/.test(base) || /^id_(rsa|ed25519|ecdsa|dsa)/.test(base) || /^credentials.*\.json$/.test(base) || /^secrets\..+/.test(base);
+}

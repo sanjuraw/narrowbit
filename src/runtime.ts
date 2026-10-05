@@ -22,7 +22,7 @@ import { redact } from "./redact.js";
 import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
 import { termsOf } from "./terms.js";
-import { estimateTokens, sha1, sh, shortId, isGitInternal, isGitConfigInclude, isNarrowbitOwn, realRel } from "./util.js";
+import { estimateTokens, sha1, sh, shortId, isGitInternal, isGitConfigInclude, isNarrowbitOwn, isSecretFile, realRel } from "./util.js";
 import { verify } from "./verify.js";
 
 /**
@@ -1178,6 +1178,11 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       const path = String(d.path ?? "");
       if (isGitInternal(path)) {
         const text = `read ${path}: refused — files inside .git are git's own internals, not part of the task`;
+        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
+        return text;
+      }
+      if (isSecretFile(relative(p.root, resolve(p.root, path)))) {
+        const text = `read ${path}: refused — this looks like a secrets file (.env, a private key, a keystore…). Its contents are not sent to the model. If you need a setting's name or an example value, look at .env.example or ask the user.`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
         return text;
       }

@@ -3709,6 +3709,52 @@ describe("third review pass: shipped state can't choose where files are written,
     });
   });
 
+  describe("what reaches the model from a file read (nineteenth audit, part 3)", () => {
+    const secretsRepo = () => {
+      const { root, p } = tinyRepo();
+      writeFileSync(join(root, ".env"), "DB_PASSWORD=hunter2hunter2\nSESSION_SECRET=7f3a9c1e5b8d2f4a6c0e9b1d\n");
+      writeFileSync(join(root, ".env.example"), "DB_PASSWORD=\nPORT=3000\n");
+      writeFileSync(join(root, "key.pem"), ["-----BEGIN RSA PRIVATE KEY-----", "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMx", "VTLw7onLRnrq0/IzW7yWR7QkrmBL7jTK", "-----END RSA PRIVATE KEY-----", ""].join("\n"));
+      writeFileSync(join(root, "deploy.sh"), ["#!/bin/sh", "cat <<'EOF'", "-----BEGIN RSA PRIVATE KEY-----", "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMx", "VTLw7onLRnrq0/IzW7yWR7QkrmBL7jTK", "-----END RSA PRIVATE KEY-----", "EOF", ""].join("\n"));
+      return { root, p };
+    };
+
+    test("readLines returns nothing for a secrets file, and nothing of a key even when the window misses its BEGIN and END lines", async () => {
+      const { readLines } = await dist("package.js");
+      const { root } = secretsRepo();
+      try {
+        assert.equal(readLines(root, ".env", 1, 10), "");
+        assert.equal(readLines(root, "key.pem", 1, 10), "");
+        assert.match(readLines(root, ".env.example", 1, 10), /PORT=3000/, "a template is meant to be read");
+        const middle = readLines(root, "deploy.sh", 4, 5);
+        assert.doesNotMatch(middle, /MIIEow|VTLw7o/, "key material inside an ordinary file, read in the middle");
+        assert.match(readLines(root, "deploy.sh", 1, 2), /#!\/bin\/sh/, "the rest of the file reads normally");
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
+    test("the agent's read action refuses a secrets file and says why, and sends none of its contents", async () => {
+      const { root, p } = secretsRepo();
+      const fake = fakeClaude([JSON.stringify({ action: "read", path: ".env" }), JSON.stringify({ action: "done", summary: "could not read it" })]);
+      try {
+        const r = await runTask(p, "what database password does .env hold?", { claudeBin: fake.bin, boss: false, maxSteps: 4 });
+        const results = readEvents(p, r.taskId).filter((e) => e.type === "tool_result").map((e) => e.summary).join("\n");
+        assert.match(results, /refused — this looks like a secrets file/);
+        assert.doesNotMatch(JSON.stringify(readEvents(p, r.taskId)), /hunter2hunter2|7f3a9c1e5b8d2f4a6c0e9b1d/);
+      } finally { rmSync(fake.dir, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
+    });
+
+    test("checkpoint ids from a log are only ever full commit hashes", async () => {
+      const { listCheckpoints } = await dist("checkpoints.js");
+      const { appendEvent: add } = await dist("events.js");
+      const { root, p } = tinyRepo();
+      try {
+        add(p, "rt-cp", { actor: "system", type: "checkpoint", summary: "x", meta: { step: 1, commit: "--index-output=/tmp/nb-x" } });
+        add(p, "rt-cp", { actor: "system", type: "checkpoint", summary: "y", meta: { step: 2, commit: "a".repeat(40) } });
+        assert.deepEqual(listCheckpoints(p, "rt-cp").map((c) => c.commit), ["a".repeat(40)]);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  });
+
   describe("the full filesystem sweep (seventeenth audit): reads, deletes, hard links and helper worktrees", () => {
     const outsideDir = () => realpathSync(mkdtempSync(join(tmpdir(), "nb-out-")));
     const canary = (dir, name, text = "PRIVATE\n") => { const f = join(dir, name); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, text); return f; };

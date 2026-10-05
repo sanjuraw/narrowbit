@@ -71,7 +71,7 @@ export function checkpointNow(p: Paths, taskId: string, step: number, summary: s
 /** Every checkpoint recorded for a task, in order taken. */
 export function listCheckpoints(p: Paths, taskId: string): Checkpoint[] {
   return readEvents(p, taskId)
-    .filter((e) => e.type === "checkpoint" && typeof e.meta?.commit === "string")
+    .filter((e) => e.type === "checkpoint" && typeof e.meta?.commit === "string" && /^[0-9a-f]{40,64}$/.test(e.meta.commit))
     .map((e) => ({ id: e.id, step: Number(e.meta?.step ?? 0), summary: String(e.summary ?? ""), at: e.at, commit: String(e.meta?.commit) }));
 }
 

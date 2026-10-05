@@ -424,3 +424,27 @@ describe("a note's file fingerprints are never taken through a link", () => {
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
   });
 });
+
+describe("secrets that are not token-shaped", () => {
+  test("NAME=value lines with a secret-looking name are redacted; ordinary settings are not", () => {
+    const out = api.redact("DB_PASSWORD=hunter2hunter2\nexport SESSION_SECRET=7f3a9c1e5b8d2f4a\nMAX_TOKENS=4096\nNEXT_PUBLIC_X=1\nconst password = 'in code';\nAPI_TOKEN=change-me");
+    assert.match(out, /DB_PASSWORD=\[redacted value\]/);
+    assert.match(out, /SESSION_SECRET=\[redacted value\]/);
+    assert.match(out, /MAX_TOKENS=4096/, "a short number under a TOKEN-ish name stays");
+    assert.match(out, /NEXT_PUBLIC_X=1/);
+    assert.match(out, /const password = 'in code';/, "ordinary code is left alone");
+    assert.doesNotMatch(out, /hunter2hunter2|7f3a9c1e5b8d2f4a/);
+    // a placeholder is only a hint to the commit check, never a "certain" credential
+    assert.equal(api.findSecrets("API_TOKEN=change-me-please").some((f) => f.certain), false);
+  });
+
+  test("a private key is redacted line for line, so a window in the middle of it shows nothing", () => {
+    const key = ["-----BEGIN RSA PRIVATE KEY-----", "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMx", "VTLw7onLRnrq0/IzW7yWR7QkrmBL7jTK", "-----END RSA PRIVATE KEY-----"].join("\n");
+    const text = `line one\n${key}\nline six`;
+    const out = api.redactBlocksKeepingLines(text);
+    assert.equal(out.split("\n").length, text.split("\n").length, "line numbers are unchanged");
+    assert.doesNotMatch(out.split("\n").slice(2, 4).join("\n"), /MIIEow|VTLw7o/);
+    assert.match(out, /^line one\n/); assert.match(out, /\nline six$/);
+    assert.doesNotMatch(api.redactBlocksKeepingLines("-----BEGIN PRIVATE KEY-----\nABCDEF123456\n"), /ABCDEF123456/, "a cut-off block is redacted to the end");
+  });
+});

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync, lstatSync, readlinkSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
@@ -137,6 +137,14 @@ function readBody(req: IncomingMessage, limit = 1_000_000): Promise<any> {
 }
 
 /** Defence in depth for a page that only ever runs on loopback: no sniffing, no framing, no referrer. */
+/** The app token compared in constant time (a plain `!==` stops at the first differing character). */
+function tokenMatches(given: unknown, token: string): boolean {
+  if (typeof given !== "string") return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(token);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 const SEC_HEADERS = { "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "no-referrer" };
 
 function json(res: ServerResponse, status: number, body: unknown) {
@@ -634,7 +642,7 @@ export function startUi(opts: UiOptions) {
       }
       if (!url.pathname.startsWith("/api/")) return json(res, 404, { error: "not found" });
       const given = url.pathname === "/api/stream" ? url.searchParams.get("t") : req.headers["x-narrowbit-token"];
-      if (given !== token) return json(res, 401, { error: "missing or wrong token — reopen the app" });
+      if (!tokenMatches(given, token)) return json(res, 401, { error: "missing or wrong token — reopen the app" });
       const route = `${req.method} ${url.pathname}`;
 
       if (route === "GET /api/state") return json(res, 200, state());
