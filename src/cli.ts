@@ -61,7 +61,7 @@ function parseArgs(argv: string[]): Args {
 
 const VALUE_FLAGS = new Set([
   "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip",
-  "max-steps", "attach", "scout", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description", "env",
+  "max-steps", "attach", "scout", "memory-inject", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description", "env",
 ]);
 
 const HELP = `narrowbit — a local, context-managed coding agent
@@ -571,6 +571,7 @@ export async function main(argv: string[]): Promise<number> {
         maxSteps,
         boss: args.flags["boss"] ? true : (cfg.agent?.boss ?? false),
         reviewOnly: !!args.flags["review-only"],
+        memoryInject: args.flags["memory-inject"] === "top" || args.flags["memory-inject"] === "top-fresh" ? (args.flags["memory-inject"] as "top" | "top-fresh") : undefined, // experimental
         planApproval: !!args.flags["approve-plan"],
         continueTask: strFlag(args, "continue"),
         provider: sel.provider,

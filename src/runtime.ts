@@ -394,6 +394,10 @@ export interface RuntimeOptions {
   boss?: boolean;
   /** Skip the up-front plan call but still run the diff review before "done" (see the `boss` doc above). Useful with
    * `reviewer` set to a different model/provider: a cheap second opinion without the plan call's extra cost. */
+  /** Experimental, off by default (the memory token experiment): put the most relevant project notes into a new task's first
+   * prompt, at most about 350 tokens. "top-fresh" also says, per note, whether the files it is about have changed since it was
+   * saved ("you can rely on it" / "may be out of date"). Nothing here is measured to save tokens yet. */
+  memoryInject?: "top" | "top-fresh";
   reviewOnly?: boolean;
   /** Put the lead's plan to the user before work starts (via `ask`): Approve, or Ask for changes, then one
    * revision. Needs `boss` and `ask`; a no-op otherwise (nobody to ask, or there's no plan to show). */
@@ -435,6 +439,35 @@ export interface RuntimeResult {
   actionCounts: Record<string, number>;
   /** How many times the session was retired and restarted with a deterministic summary. */
   compactions: number;
+}
+
+/**
+ * The notes injected into a new task's first prompt when `memoryInject` is on: the one or two most relevant to the task text,
+ * each cut short, about 200 tokens in all. Only notes that actually match the task (a score above zero) go in.
+ */
+export function digestForFirstPrompt(p: Paths, taskText: string, mode: "top" | "top-fresh"): string {
+  let mem;
+  try {
+    mem = openMemory(p);
+  } catch {
+    return "";
+  }
+  const lines: string[] = [];
+  let used = 0;
+  for (const h of mem.relevant(termsOf(taskText), [], 2)) {
+    if (h.score <= 0) continue;
+    let label = "";
+    if (mode === "top-fresh" && h.entry.fileHashes?.length) {
+      label = mem.staleFilesOf(h.entry).length
+        ? " [the files it is about have changed since it was saved: it may be out of date, check before relying on it]"
+        : " [the files it is about are unchanged since it was saved: you can rely on it without re-reading them]";
+    }
+    const line = `- (${h.entry.type}) ${h.entry.text.slice(0, 600)}${h.entry.text.length > 600 ? "…" : ""}${label}`;
+    if (used + line.length > 1300) break;
+    lines.push(line);
+    used += line.length;
+  }
+  return lines.length ? `Notes saved from earlier work on this project:\n${lines.join("\n")}` : "";
 }
 
 /** One discovery call per configured connector, in parallel, at task start only (not per turn).
@@ -679,8 +712,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const part = (kind: string, label: string, text: string): Part => ({ kind, label, tokens: estimateTokens(text) });
   let nextParts: Part[] = [];
   const scoutBlock = scoutReport ? `Research report from a scout who has already read the code (unverified; trust the code over it, and read a file yourself before editing it):\n${scoutReport}\n\n` : "";
-  let nextPrompt = `Task: ${taskText}\n\n${mentionBlock}${plan ? renderPlanForWorker(plan) + "\n\n" : ""}${scoutBlock}Respond with your first action as JSON.`;
-  nextParts = [part("task", "your request", taskText), ...(mentionBlock ? [part("mentions", "files mentioned with @", mentionBlock)] : []), ...(plan ? [part("plan", "the lead's plan", renderPlanForWorker(plan))] : []), ...(scoutReport ? [part("scout", "the scout's research report", scoutReport)] : []), part("instructions", "Narrowbit's instructions (sent once per session)", systemPrompt)];
+  const memoryBlock = opts.memoryInject && !continuing ? digestForFirstPrompt(p, taskText, opts.memoryInject) : "";
+  let nextPrompt = `Task: ${taskText}\n\n${mentionBlock}${memoryBlock ? memoryBlock + "\n\n" : ""}${plan ? renderPlanForWorker(plan) + "\n\n" : ""}${scoutBlock}Respond with your first action as JSON.`;
+  nextParts = [part("task", "your request", taskText), ...(mentionBlock ? [part("mentions", "files mentioned with @", mentionBlock)] : []), ...(memoryBlock ? [part("memory", "project notes (experimental)", memoryBlock)] : []), ...(plan ? [part("plan", "the lead's plan", renderPlanForWorker(plan))] : []), ...(scoutReport ? [part("scout", "the scout's research report", scoutReport)] : []), part("instructions", "Narrowbit's instructions (sent once per session)", systemPrompt)];
   // callModel's costUsd is Claude Code's CUMULATIVE cost for the whole resumed session, not a
   // per-call charge (confirmed by direct measurement: it strictly increases call over call, unlike
   // every other usage field, which the Anthropic API reports per-request). Track the running total

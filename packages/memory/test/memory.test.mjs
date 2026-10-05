@@ -248,3 +248,24 @@ describe("writes never follow a link out of the project", () => {
     } finally { cleanup(); }
   });
 });
+
+describe("the automatic task note carries what is expensive to re-derive", () => {
+  test("it names the exact change and the command that passed", () => {
+    const root = project();
+    try {
+      const p = api.memoryPaths(root);
+      api.ensureMemoryDirs(p);
+      api.appendEvent(p, "rt-n", { actor: "model", type: "decision", summary: "goal", meta: { goal: "fix the accept header parser" } });
+      api.appendEvent(p, "rt-n", { actor: "system", type: "edit", summary: "edited", meta: { path: "src/accept.ts", old: "split(',')", new: "split(/,(?=[^;]*)/)" } });
+      api.appendEvent(p, "rt-n", { actor: "system", type: "command", summary: "ok", meta: { command: "npm test -- accept", exit: 1 } });
+      api.appendEvent(p, "rt-n", { actor: "system", type: "command", summary: "ok", meta: { command: "npm test -- accept.test", exit: 0 } });
+      api.appendEvent(p, "rt-n", { actor: "model", type: "decision", summary: "done: the parser split on commas inside quoted parameters; now it splits only at top level" });
+      const n = api.recordTaskNote(p, "rt-n");
+      assert.match(n.text, /Change: src\/accept\.ts: `split\(','\)` -> `split\(\/,\(\?=\[\^;\]\*\)\/\)`/);
+      assert.match(n.text, /Passing check: npm test -- accept\.test\./);
+      assert.doesNotMatch(n.text, /Passing check: npm test -- accept\.$/m);
+      api.appendEvent(p, "rt-n", { actor: "system", type: "command", summary: "ok", meta: { command: "cat package.json", exit: 0 } });
+      assert.match(api.recordTaskNote(p, "rt-n").text, /Passing check: npm test -- accept\.test\./, "a command that is not a check (cat) is never reported as one");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});

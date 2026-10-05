@@ -3889,3 +3889,80 @@ describe("suggested next prompt: deterministic, from how the task ended", () => 
     assert.equal(suggestionFromEvents([]), null, "nothing finished yet: nothing to suggest");
   });
 });
+
+describe("experimental: project notes injected into a task's first prompt (off by default)", () => {
+  const firstContext = (p, taskId) => readEvents(p, taskId).find((e) => e.type === "model_call").meta.context.parts;
+  const setup = async () => {
+    const { root, p } = tinyRepo();
+    writeFileSync(join(root, "handler.ts"), "export const handler = 1;\n");
+    const { openMemory } = await dist("memory.js");
+    const mem = openMemory(p);
+    mem.add({ type: "failure", text: "handler.ts: do not wrap the handler in a try/catch, the router already does it", files: ["handler.ts"] });
+    mem.add({ type: "fact", text: "unrelated note about billing invoices and currency rounding", files: [] });
+    return { root, p, mem };
+  };
+
+  test("nothing is injected unless the option is set", async () => {
+    const { root, p } = await setup();
+    const fake = fakeClaude([JSON.stringify({ action: "done", summary: "ok" })]);
+    try {
+      const r = await runTask(p, "fix the handler wrapping in handler.ts", { claudeBin: fake.bin, boss: false, maxSteps: 3 });
+      assert.ok(!firstContext(p, r.taskId).some((x) => x.kind === "memory"), "no memory part by default");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("with the option the notes go into the first prompt, and a long list stays small", async () => {
+    const { root, p, mem } = await setup();
+    for (let i = 0; i < 6; i++) mem.add({ type: "fact", text: `handler.ts wrapping note ${i}: ` + "very long detail ".repeat(60), files: [] });
+    const run = async (mode) => {
+      const fake = fakeClaude([JSON.stringify({ action: "done", summary: "ok" })]);
+      try {
+        const r = await runTask(p, "fix the handler wrapping in handler.ts", { claudeBin: fake.bin, boss: false, maxSteps: 3, memoryInject: mode });
+        return firstContext(p, r.taskId).find((x) => x.kind === "memory");
+      } finally { rmSync(fake.dir, { recursive: true, force: true }); }
+    };
+    try {
+      const plain = await run("top");
+      assert.ok(plain, "a memory part is present");
+      assert.ok(plain.tokens <= 420, `capped (${plain.tokens} est. tokens)`);
+      const labelled = await run("top-fresh");
+      assert.ok(labelled.tokens <= 460, `still capped with labels (${labelled.tokens})`);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("through the command line: --memory-inject takes its value (it is not glued onto the task), and the notes reach the first prompt", async () => {
+    const { root, p } = await setup();
+    const fake = fakeClaude([JSON.stringify({ action: "done", summary: "ok" })]);
+    try {
+      nb(root, "index");
+      const run = (...extra) => {
+        const r = spawnSync(process.execPath, [BIN, "agent", "fix the handler wrapping in handler.ts", "--force", "--allow-commands", "--max-steps", "3", "--json", ...extra], { cwd: root, encoding: "utf8", env: { ...process.env, NARROWBIT_CLAUDE: fake.bin } });
+        const res = r.stdout.trim().split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((x) => x && x.type === "result").pop();
+        const ev = readEvents(p, res.taskId);
+        return { goal: ev.find((e) => e.type === "decision")?.meta?.goal, parts: ev.find((e) => e.type === "model_call").meta.context.parts };
+      };
+      const plain = run();
+      assert.ok(!plain.parts.some((x) => x.kind === "memory"), "no flag, no notes");
+      for (const mode of ["top", "top-fresh"]) {
+        const r = run("--memory-inject", mode);
+        assert.equal(r.goal, "fix the handler wrapping in handler.ts", `the value "${mode}" is not appended to the task text`);
+        assert.ok(r.parts.some((x) => x.kind === "memory" && x.tokens > 0), `${mode}: the notes are in the first prompt`);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("'top-fresh' says whether the files a note is about have changed; an unrelated note stays out", async () => {
+    const { root, p } = await setup();
+    try {
+      const { digestForFirstPrompt } = await dist("runtime.js");
+      const task = "fix the handler wrapping in handler.ts";
+      const fresh = digestForFirstPrompt(p, task, "top-fresh");
+      assert.match(fresh, /do not wrap the handler/);
+      assert.match(fresh, /unchanged since it was saved/);
+      assert.doesNotMatch(fresh, /billing invoices/, "an unrelated note stays out");
+      writeFileSync(join(root, "handler.ts"), "export const handler = 2; // changed\n");
+      assert.match(digestForFirstPrompt(p, task, "top-fresh"), /may be out of date/);
+      assert.doesNotMatch(digestForFirstPrompt(p, task, "top"), /unchanged since|out of date/, "plain mode adds no label");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
