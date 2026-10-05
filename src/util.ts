@@ -1,9 +1,9 @@
 export { now, shortId, estimateTokens } from "narrowbit-memory";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export function sha1(data: string | Buffer): string {
   return createHash("sha1").update(data).digest("hex");
@@ -154,4 +154,33 @@ export function launcherPage(url: string): string {
   writeFileSync(file, `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${esc}"><title>Narrowbit</title><a href="${esc}">Open Narrowbit</a>\n`, { mode: 0o600 });
   setTimeout(() => rmSync(dir, { recursive: true, force: true }), 30_000).unref();
   return file;
+}
+
+/**
+ * Why writing `file` could land outside the project, or null. A project folder can come from someone else (a clone, an
+ * unzipped download) with links already in place where Narrowbit keeps its state. Nothing between the project folder and
+ * the file may be a symlink, the file itself may not be one (dangling included: writing would create its target), and
+ * an existing file may not have a second hard link (the other name can be anywhere on the disk).
+ */
+export function unsafeProjectPath(root: string, file: string): string | null {
+  const rel = relative(root, file);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return `${file} is not inside the project folder`;
+  let at = root;
+  const parts = rel.split(sep);
+  for (let i = 0; i < parts.length; i++) {
+    at = join(at, parts[i]);
+    let st;
+    try { st = lstatSync(at); } catch { return null; } // nothing there (yet): no link to follow from here on
+    if (st.isSymbolicLink()) return `${at} is a symlink — refusing to write through it`;
+    if (i === parts.length - 1 && st.isFile() && st.nlink > 1) return `${at} has a second hard link — refusing to write through it`;
+  }
+  return null;
+}
+
+/** Writes one of Narrowbit's own files inside a project, never through a link (see unsafeProjectPath). Throws if unsafe. */
+export function writeProjectFile(root: string, file: string, data: string | Uint8Array, mode = 0o600): void {
+  const why = unsafeProjectPath(root, file);
+  if (why) throw new Error(why);
+  const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, mode);
+  try { writeSync(fd, data as any); } finally { closeSync(fd); }
 }

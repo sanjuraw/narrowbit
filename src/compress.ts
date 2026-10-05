@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import type { Paths } from "./config.js";
 import { redact } from "./redact.js";
-import { estimateTokens, shortId, stripAnsi } from "./util.js";
+import { estimateTokens, shortId, stripAnsi, writeProjectFile } from "./util.js";
 
 export interface Compressed {
   kind: "tsc" | "eslint" | "tests" | "npm" | "generic";
@@ -334,7 +334,7 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
       const logName = `${shortId()}.log`;
       const rawLog = join(p.logs, logName);
       try {
-        writeFileSync(rawLog, `$ ${command}\n# exit ${exit}\n${raw}`, { mode: 0o600 });
+        writeProjectFile(dirname(p.nb), rawLog, `$ ${command}\n# exit ${exit}\n${raw}`);
       } catch {
         // Non-essential: the compressed result below still gets returned to the caller either way. This
         // callback runs from a child process's own 'close' event, outside any promise chain a caller could

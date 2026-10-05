@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { chmodSync, existsSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync } from "node:fs";
 
 export const SCHEMA_VERSION = 3;
 
@@ -94,6 +94,14 @@ export class Store {
   db: DatabaseSync;
 
   constructor(path: string) {
+    // SQLite follows links: a shipped `index.db -> <another database>` would get Narrowbit's tables (or, dangling, be
+    // created) wherever it points. The database and its side files must be plain files with one name.
+    for (const f of [path, `${path}-wal`, `${path}-shm`, `${path}-journal`]) {
+      let st;
+      try { st = lstatSync(f); } catch { continue; }
+      if (st.isSymbolicLink()) throw new Error(`${f} is a symlink — refusing to open the index through it`);
+      if (st.nlink > 1) throw new Error(`${f} has a second hard link — refusing to open the index through it`);
+    }
     const fresh = !existsSync(path);
     this.db = new DatabaseSync(path);
     if (fresh) {

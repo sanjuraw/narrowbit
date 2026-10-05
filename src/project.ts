@@ -1,4 +1,6 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
+import { dirname } from "node:path";
+import { writeProjectFile } from "./util.js";
 import { DEFAULT_IGNORE, detectVerify, ensureDirs, loadConfig, saveConfig, type Paths } from "./config.js";
 import { indexRepo, openStore } from "./indexer.js";
 
@@ -10,7 +12,11 @@ export function initProject(p: Paths, opts: { index?: boolean } = {}): { stats: 
     cfg.verify = detectVerify(p.root);
     saveConfig(p, cfg);
   }
-  if (!existsSync(p.ignore)) writeFileSync(p.ignore, DEFAULT_IGNORE);
+  // lstat, not existsSync: a dangling link named .narrowbitignore "doesn't exist", and writing it would create its target.
+  let hasIgnore = true;
+  try { lstatSync(p.ignore); } catch { hasIgnore = false; }
+  if (!hasIgnore) writeProjectFile(dirname(p.ignore), p.ignore, DEFAULT_IGNORE, 0o644);
+  else if (lstatSync(p.ignore).isSymbolicLink()) throw new Error(`${p.ignore} is a symlink — Narrowbit won't read its ignore rules through a link`);
   if (opts.index === false) return { stats: null };
   const store = openStore(p);
   const stats = indexRepo(p, store);

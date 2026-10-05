@@ -3709,6 +3709,53 @@ describe("third review pass: shipped state can't choose where files are written,
     });
   });
 
+  test("no state file is written through a link: config, index, current task, ignore file, weights, logs", async () => {
+    const { saveConfig, loadConfig: load } = await dist("config.js");
+    const { Store } = await dist("store.js");
+    const { Tasks } = await dist("tasks.js");
+    const { initProject: init } = await dist("project.js");
+    const { writeProjectFile } = await dist("util.js");
+    const { root, p } = tinyRepo();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-out-")));
+    const victim = (name) => { const f = join(outside, name); writeFileSync(f, "PRIVATE\n"); return f; };
+    const relink = (file, target) => { rmSync(file, { force: true }); symlinkSync(target, file); };
+    try {
+      const cfg = load(p);
+      relink(p.config, victim("config-victim"));
+      assert.throws(() => saveConfig(p, cfg), /symlink/);
+      assert.equal(readFileSync(join(outside, "config-victim"), "utf8"), "PRIVATE\n", "config.json's target is untouched");
+
+      for (const ext of ["", "-wal", "-shm"]) rmSync(p.db + ext, { force: true });
+      symlinkSync(join(outside, "created.db"), p.db); // dangling: opening it would create a database outside
+      assert.throws(() => new Store(p.db), /symlink/);
+      assert.ok(!existsSync(join(outside, "created.db")), "no database was created through the link");
+      rmSync(p.db, { force: true });
+
+      relink(join(p.nb, "current-task"), victim("current-victim"));
+      assert.throws(() => new Tasks(p).setCurrent("rt-abc"), /symlink/);
+      assert.equal(readFileSync(join(outside, "current-victim"), "utf8"), "PRIVATE\n");
+      rmSync(join(p.nb, "current-task"), { force: true });
+
+      rmSync(p.config, { force: true });
+      relink(p.ignore, join(outside, "ignore-created")); // dangling
+      assert.throws(() => init(p, { index: false }), /symlink/);
+      assert.ok(!existsSync(join(outside, "ignore-created")), "the ignore file was not created through the link");
+      rmSync(p.ignore, { force: true });
+
+      // The shared rule: a link anywhere between the project folder and the file, or a file with a second hard link.
+      mkdirSync(join(outside, "dir"));
+      symlinkSync(join(outside, "dir"), join(p.logs, "sub"));
+      assert.throws(() => writeProjectFile(root, join(p.logs, "sub", "x.log"), "data"), /symlink/);
+      assert.deepEqual(readdirSync(join(outside, "dir")), []);
+      const hard = victim("hard-victim");
+      execFileSync("ln", [hard, join(p.logs, "hard.log")]);
+      assert.throws(() => writeProjectFile(root, join(p.logs, "hard.log"), "data"), /hard link/);
+      assert.equal(readFileSync(hard, "utf8"), "PRIVATE\n");
+      writeProjectFile(root, join(p.logs, "fine.log"), "ok");
+      assert.equal(readFileSync(join(p.logs, "fine.log"), "utf8"), "ok", "an ordinary file is still written");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
   test("a repository that ships .narrowbit as a symlink is flagged, and set-up never creates state through it", async () => {
     await withTempHome(async () => {
       const { shippedRisks, untrustedReason } = await dist("trust.js");

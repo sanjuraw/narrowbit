@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync, copyFileSync, lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Paths } from "./config.js";
-import { sh } from "./util.js";
+import { sh, writeProjectFile } from "./util.js";
 
 /**
  * Isolated runs: the agent works in a throwaway git worktree instead of the user's folder, so a bad
@@ -114,7 +114,7 @@ export function ensureIsolated(p: Paths, taskId: string): Marker {
   const snapshot = sh("git", ["rev-parse", "HEAD"], dir).stdout.trim();
   const marker: Marker = { dir, snapshot };
   mkdirSync(join(p.runtime, taskId), { recursive: true, mode: 0o700 });
-  writeFileSync(markerFile(p, taskId), JSON.stringify(marker), { mode: 0o600 });
+  writeProjectFile(dirname(p.nb), markerFile(p, taskId), JSON.stringify(marker));
   return marker;
 }
 

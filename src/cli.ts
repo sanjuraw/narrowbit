@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { attachmentKind } from "./attachments.js";
 import { benchmarkReport, benchmarkTemplate, runBenchmark } from "./bench.js";
 import { hookPrompt, installClaude, launchClaude } from "./claude.js";
@@ -30,7 +30,7 @@ import { listConnectorTools } from "./mcpClient.js";
 import { getSkill, listSkills, removeSkill, renameSkill, saveSkill } from "./skills.js";
 import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
-import { fmtNum, launcherPage, now, sh, visible } from "./util.js";
+import { fmtNum, launcherPage, now, sh, visible, writeProjectFile } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
 import { covered, editsSince, type Grant } from "./approvals.js";
 import { trustConfig, trustRepo, untrustedForUnattended, untrustedReason } from "./trust.js";
@@ -276,7 +276,7 @@ export async function main(argv: string[]): Promise<number> {
       tasks.save(b.record);
       tasks.setCurrent(b.record.id);
       const ctxFile = join(p.tasks, `${b.record.id}.context.md`);
-      writeFileSync(ctxFile, b.text, { mode: 0o600 });
+      writeProjectFile(dirname(p.nb), ctxFile, b.text);
       if (args.flags.json) {
         out(JSON.stringify({ ...b.record, contextFile: ctxFile }, null, 2));
         return 0;

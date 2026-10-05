@@ -1,12 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { paths, type Paths } from "./config.js";
 import { CODE_EXT, isTestPath } from "./files.js";
 import { indexRepo } from "./indexer.js";
 import { FEATURES, rank, type Feature, type FeatureVec } from "./ranker.js";
 import { Store } from "./store.js";
 import { parseTask } from "./taskparse.js";
-import { sh } from "./util.js";
+import { sh, writeProjectFile } from "./util.js";
 
 /**
  * Learn per-signal weights from the repository's own history — locally, no model calls.
@@ -169,6 +169,6 @@ export async function train(
     after: metrics(testSet, weights),
     repo: p.root,
   };
-  writeFileSync(join(p.nb, WEIGHTS_FILE), JSON.stringify(t, null, 2) + "\n", { mode: 0o600 });
+  writeProjectFile(dirname(p.nb), join(p.nb, WEIGHTS_FILE), JSON.stringify(t, null, 2) + "\n");
   return t;
 }

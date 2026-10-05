@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { writeProjectFile } from "./util.js";
+import { dirname, join } from "node:path";
 import type { Paths } from "./config.js";
 
 export type Level = "full" | "symbols" | "outline" | "listed";
@@ -84,7 +85,7 @@ export class Tasks {
   save(t: TaskRecord) {
     const f = this.path(t.id);
     if (isLink(this.p.nb) || isLink(this.p.tasks) || isLink(f)) throw new Error("the tasks folder or file is a symlink — refusing to write through it");
-    writeFileSync(f, JSON.stringify(t, null, 2) + "\n", { mode: 0o600 });
+    writeProjectFile(dirname(this.p.nb), f, JSON.stringify(t, null, 2) + "\n");
   }
 
   load(id: string): TaskRecord | null {
@@ -106,7 +107,7 @@ export class Tasks {
 
   setCurrent(id: string | null) {
     if (id !== null && !TASK_ID.test(id)) throw new Error(`invalid task id: ${JSON.stringify(id).slice(0, 60)}`);
-    writeFileSync(join(this.p.nb, "current-task"), id ?? "", { mode: 0o600 });
+    writeProjectFile(dirname(this.p.nb), join(this.p.nb, "current-task"), id ?? "");
   }
 
   list(): TaskRecord[] {

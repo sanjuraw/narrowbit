@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { writeProjectFile } from "./util.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,7 +27,7 @@ export function mcpServerConfig(p: Paths, taskId?: string) {
 
 export function writeMcpConfigFile(p: Paths, taskId: string): string {
   const file = join(p.tasks, `${taskId}.mcp.json`);
-  writeFileSync(file, JSON.stringify({ mcpServers: { narrowbit: mcpServerConfig(p, taskId) } }, null, 2), { mode: 0o600 });
+  writeProjectFile(dirname(p.nb), file, JSON.stringify({ mcpServers: { narrowbit: mcpServerConfig(p, taskId) } }, null, 2));
   return file;
 }
 
@@ -40,7 +41,7 @@ export async function launchClaude(p: Paths, taskText: string, extraArgs: string
   const tasks = new Tasks(p);
   tasks.save(b.record);
   tasks.setCurrent(b.record.id);
-  writeFileSync(join(p.tasks, `${b.record.id}.context.md`), b.text, { mode: 0o600 });
+  writeProjectFile(dirname(p.nb), join(p.tasks, `${b.record.id}.context.md`), b.text);
   const mcpFile = writeMcpConfigFile(p, b.record.id);
   const args = ["--append-system-prompt", b.text, "--mcp-config", mcpFile, ...extraArgs, "--", taskText];
   process.stderr.write(
@@ -82,7 +83,7 @@ export function installClaude(p: Paths, opts: { hook: boolean }): string[] {
   mcp.mcpServers ??= {};
   mcp.mcpServers.narrowbit = mcpServerConfig(p);
   delete mcp.mcpServers.narrowbit.env;
-  writeFileSync(mcpPath, JSON.stringify(mcp, null, 2) + "\n");
+  writeProjectFile(p.root, mcpPath, JSON.stringify(mcp, null, 2) + "\n", 0o644);
   changes.push(`${mcpPath}: mcpServers.narrowbit`);
 
   const settingsPath = join(p.root, ".claude", "settings.local.json");
@@ -100,7 +101,7 @@ export function installClaude(p: Paths, opts: { hook: boolean }): string[] {
     s.hooks.UserPromptSubmit = filtered;
     changes.push(`${settingsPath}: hooks.UserPromptSubmit → narrowbit hook prompt`);
   }
-  writeFileSync(settingsPath, JSON.stringify(s, null, 2) + "\n");
+  writeProjectFile(p.root, settingsPath, JSON.stringify(s, null, 2) + "\n", 0o644);
   changes.push(`${settingsPath}: enabledMcpjsonServers += narrowbit, permissions.allow += mcp__narrowbit`);
   return changes;
 }
@@ -150,7 +151,7 @@ export async function hookPrompt(p: Paths, stdin: string): Promise<string> {
     const t = b.task;
     const codeLike = t.identifiers.length > 0 || t.paths.length > 0 || t.locations.length > 0 || t.mentionsAction;
     if (!codeLike || b.record.confidence === "low" || loaded.length === 0) {
-      writeFileSync(sessFile, JSON.stringify(sess, null, 2), { mode: 0o600 });
+      writeProjectFile(dirname(p.nb), sessFile, JSON.stringify(sess, null, 2));
       return "";
     }
     const tasks = new Tasks(p);
@@ -158,7 +159,7 @@ export async function hookPrompt(p: Paths, stdin: string): Promise<string> {
     tasks.setCurrent(b.record.id);
     sess.tasks.push(b.record.id);
     sess.given.push(...b.record.given);
-    writeFileSync(sessFile, JSON.stringify(sess, null, 2), { mode: 0o600 });
+    writeProjectFile(dirname(p.nb), sessFile, JSON.stringify(sess, null, 2));
     const header = first ? "" : "NARROWBIT: additional context for this prompt (items already provided earlier are omitted)\n\n";
     return JSON.stringify({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: header + b.text } });
   } finally {

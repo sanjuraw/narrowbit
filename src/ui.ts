@@ -42,7 +42,7 @@ import { providerCallFor, runTask } from "./runtime.js";
 import { acknowledgeUpdateNotes, applyUpdate, checkUpdate, pendingUpdateNotes, readVersion } from "./update.js";
 import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
-import { sh, visible } from "./util.js";
+import { sh, visible, writeProjectFile } from "./util.js";
 import { updateCli } from "./providers/models.js";
 import { covered, editsSince, type Grant } from "./approvals.js";
 import { suggestFollowUp, suggestionFromEvents } from "./followup.js";
@@ -881,7 +881,7 @@ export function startUi(opts: UiOptions) {
             rmSync(dir, { recursive: true, force: true });
           } else {
             const title = String(body.title ?? "").trim().slice(0, 200);
-            if (title) writeFileSync(join(dir, "title.txt"), title + "\n", { mode: 0o600 });
+            if (title) writeProjectFile(root, join(dir, "title.txt"), title + "\n");
             else if (existsSync(join(dir, "title.txt"))) unlinkSync(join(dir, "title.txt"));
           }
           return json(res, 200, state());

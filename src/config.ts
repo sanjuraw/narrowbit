@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { isTrusted, repoConfigRisks } from "./trust.js";
-import { sh } from "./util.js";
+import { sh, writeProjectFile } from "./util.js";
 
 export const NB_DIR = ".narrowbit";
 
@@ -197,7 +197,7 @@ export function loadConfig(p: Paths): NarrowbitConfig {
 }
 
 export function saveConfig(p: Paths, c: NarrowbitConfig): void {
-  writeFileSync(p.config, JSON.stringify(c, null, 2) + "\n", { mode: 0o600 });
+  writeProjectFile(dirname(p.nb), p.config, JSON.stringify(c, null, 2) + "\n");
 }
 
 /** Detect verification commands from package.json, or from pyproject.toml/setup.cfg for a Python project. */
