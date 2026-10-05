@@ -1596,6 +1596,24 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { page.close(); }
   });
 
+  test("a pending question doesn't break the 1-4 shortcuts: they still answer the approval next to it", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const page = await openPage(app.url);
+    try {
+      const sent = [];
+      await page.until(() => page.w.__nb && page.w.__nb.view(), "the page's conversation view");
+      page.w.fetch = (url, opts) => { if (String(url).includes("/api/approve")) sent.push(JSON.parse(opts.body)); return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true }), text: async () => "{}" }); };
+      const nb = page.w.__nb;
+      const v = nb.view(); v.taskId = "rt-q"; v.pendingNew = false;
+      nb.stream({ type: "question", id: "q1", task: "rt-q", question: "Which colour?", options: ["red", "blue"] });
+      nb.stream({ type: "approval", id: "a1", task: "rt-q", command: "npm test" });
+      if (page.w.document.activeElement) page.w.document.activeElement.blur(); // focus has left the question's answer field
+      page.w.document.dispatchEvent(new page.w.KeyboardEvent("keydown", { key: "2", bubbles: true }));
+      assert.deepEqual(sent.map((x) => [x.id, x.decision]), [["a1", "task"]], "the shortcut reached the approval, not the question");
+    } finally { page.close(); }
+  });
+
   test("a task that ends without finishing carries a suggested next prompt, on the finished event and when it is reopened", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     execFileSync("git", ["checkout", "--", "."], { cwd: repo });

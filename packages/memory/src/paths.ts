@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { isLink } from "./safefs.js";
 
 /**
  * Where the memory system keeps things for one project. Narrowbit's own `Paths` has all of these fields, so it can be
@@ -24,6 +25,8 @@ export function memoryPaths(root: string): MemoryPaths {
 
 /** Creates the folders and keeps them out of git (a `.gitignore` of `*` inside `.narrowbit/`), like `narrowbit init` does. */
 export function ensureMemoryDirs(p: MemoryPaths): void {
+  // A cloned repository can ship `.narrowbit -> <elsewhere>`: mkdir would follow it, so nothing is created through a link.
+  if ([join(p.root, ".narrowbit"), dirname(p.memory), p.memory, dirname(p.runtime), p.runtime].some(isLink)) return;
   mkdirSync(p.memory, { recursive: true, mode: 0o700 });
   mkdirSync(p.runtime, { recursive: true, mode: 0o700 });
   const gi = join(p.root, ".narrowbit", ".gitignore");

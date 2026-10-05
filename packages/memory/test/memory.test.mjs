@@ -319,3 +319,37 @@ describe("the automatic task note does not imply an edit was checked when it was
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("set-up never writes through a linked .narrowbit/", () => {
+  test("with .narrowbit linked to a folder outside, ensureMemoryDirs creates nothing there", () => {
+    const root = project(), outside = project();
+    try {
+      symlinkSync(outside, join(root, ".narrowbit"));
+      api.ensureMemoryDirs(api.memoryPaths(root));
+      assert.deepEqual(readdirSync(outside), [], "nothing was created in the linked folder");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+});
+
+describe("the saved verification status is the latest result, failures included", () => {
+  test("edit, passing check, then a failing check is not 'verified'", () => {
+    const root = project();
+    try {
+      const p = api.memoryPaths(root);
+      api.ensureMemoryDirs(p);
+      const ev = (type, summary, meta) => api.appendEvent(p, "rt-f", { actor: "system", type, summary, meta });
+      ev("decision", "goal", { goal: "fix it" });
+      ev("edit", "e", { path: "src/a.ts", old: "a", new: "b" });
+      ev("verify", "VERIFICATION PASSED", { ok: true });
+      ev("command", "FAILED", { command: "npm test", exit: 1 });
+      api.appendEvent(p, "rt-f", { actor: "model", type: "decision", summary: "done: changed the thing in a way that matters here" });
+      const t = api.recordTaskNote(p, "rt-f").text;
+      assert.doesNotMatch(t, /Verified after|Passing check/);
+      assert.match(t, /Last check failed after the last edit/);
+      ev("verify", "VERIFICATION FAILED", { ok: false });
+      assert.match(api.recordTaskNote(p, "rt-f").text, /Last check failed/);
+      ev("verify", "VERIFICATION PASSED", { ok: true });
+      assert.match(api.recordTaskNote(p, "rt-f").text, /Verified after the last edit/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});

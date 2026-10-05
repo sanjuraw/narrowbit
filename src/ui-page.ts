@@ -1681,7 +1681,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     // 1 / 2 / 3 / 4 answer a pending approval when you're not typing.
     var typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
     if (!typing && !e.metaKey && !e.ctrlKey && view) {
-      var ids = Object.keys(view.approvals).filter(function (id) { return !view.approvals[id].done; });
+      var ids = Object.keys(view.approvals).filter(function (id) { return !view.approvals[id].done && typeof view.approvals[id].decide === "function"; });
       if (ids.length && (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4")) { e.preventDefault(); view.approvals[ids[0]].decide(e.key === "1" ? "once" : e.key === "2" ? "task" : e.key === "4" ? "always" : "deny"); }
     }
   });

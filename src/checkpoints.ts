@@ -95,9 +95,20 @@ export function listCheckpoints(p: Paths, taskId: string): Checkpoint[] {
  */
 /** Recovery folders are for undoing a mistaken rewind, not an archive: drop ones older than two weeks.
  * Only folders named like the timestamps restoreCheckpoint itself creates are ever removed. */
+/** Why recovery copies can't be kept safely, or null. `.narrowbit/` and its `rewind-trash/` are inside a project a cloned
+ * repository can ship, so a link in either would send copies (and the pruning of old folders) outside the project. */
+export function rewindTrashUnsafe(root: string): string | null {
+  for (const d of [join(root, ".narrowbit"), join(root, ".narrowbit", "rewind-trash")]) {
+    try {
+      if (lstatSync(d).isSymbolicLink()) return `${d} is a symlink — recovery copies would be written outside the project`;
+    } catch { /* doesn't exist yet: fine */ }
+  }
+  return null;
+}
+
 export function pruneRewindTrash(root: string, maxAgeDays = 14, nowMs = Date.now()): string[] {
   const base = join(root, ".narrowbit", "rewind-trash");
-  if (!existsSync(base)) return [];
+  if (rewindTrashUnsafe(root) || !existsSync(base)) return [];
   const removed: string[] = [];
   let names: string[];
   try {
@@ -141,6 +152,8 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
   const before = new Set(nameList(lsBefore.out));
   const after = new Set(nameList(lsAfter.out));
   const staged = new Set(nameList(lsStaged.out));
+  const unsafe = rewindTrashUnsafe(root);
+  if (unsafe) return refuse(unsafe);
   pruneRewindTrash(root);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const trash = join(root, ".narrowbit", "rewind-trash", stamp);
@@ -270,6 +283,8 @@ export function planDiscard(root: string, start: string, end: string, opts: Disc
 
 export function discardTask(root: string, start: string, end: string, opts: DiscardOptions = {}): DiscardPlan & { ok: boolean; message: string; movedTo?: string } {
   const plan = planDiscard(root, start, end, opts);
+  const unsafe = rewindTrashUnsafe(root);
+  if (unsafe && (plan.remove.length || plan.restore.length)) return { ...plan, ok: false, message: `nothing was changed: ${unsafe}` };
   let movedTo: string | undefined;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const trash = join(root, ".narrowbit", "rewind-trash", stamp);

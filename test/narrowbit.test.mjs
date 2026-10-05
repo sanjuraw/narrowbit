@@ -1,7 +1,7 @@
 import { test, describe, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync, lstatSync, statSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync, lstatSync, statSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve, isAbsolute, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -3707,6 +3707,27 @@ describe("third review pass: shipped state can't choose where files are written,
         assert.notEqual(shippedRisks(dir)[0].value, before, "a nested file's content is part of what was accepted");
       } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
     });
+  });
+
+  test("rewind's recovery folder is never a link out of the project: nothing is pruned or written through it", async () => {
+    const { checkpointNow, listCheckpoints, restoreCheckpoint, pruneRewindTrash } = await dist("checkpoints.js");
+    const { root, p } = tinyRepo();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-out-")));
+    try {
+      const old = join(outside, "2020-01-01T00-00-00-000Z");
+      mkdirSync(old);
+      writeFileSync(join(old, "canary.txt"), "keep me");
+      symlinkSync(outside, join(root, ".narrowbit", "rewind-trash"));
+      assert.deepEqual(pruneRewindTrash(root), [], "nothing pruned through the link");
+      assert.ok(existsSync(join(old, "canary.txt")), "the outside folder survived the prune");
+      checkpointNow(p, "rt-link", 1, "before");
+      writeFileSync(join(root, "a.txt"), "changed\n");
+      writeFileSync(join(root, "new.txt"), "created later\n");
+      const r = restoreCheckpoint(root, listCheckpoints(p, "rt-link")[0].commit);
+      assert.equal(r.ok, false, "the rewind refuses");
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "changed\n", "and changed nothing");
+      assert.deepEqual(readdirSync(outside), ["2020-01-01T00-00-00-000Z"], "nothing was written outside");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
   });
 
   test("a large shipped file is fingerprinted by its content, not its size: an equal-size change asks again", async () => {
