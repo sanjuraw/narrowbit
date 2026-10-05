@@ -1058,11 +1058,16 @@ export function startUi(opts: UiOptions) {
           const maxSteps = Math.min(100, Math.max(1, Number(body.maxSteps) || 20));
           // Attachments are named by the id /api/attach returned; anything else is ignored, so a page can't point the agent at other files.
           if (!root) return json(res, 400, { error: "open a repository first" });
-          const attachments = (Array.isArray(body.attachments) ? body.attachments : [])
-            .filter((a: unknown): a is string => typeof a === "string" && /^[0-9a-f]{8}-[\w.\- ]+$/.test(a))
-            .map((a: string) => join(attachmentDir(root!), a))
-            .filter((f: string) => existsSync(f))
-            .slice(0, 6);
+          let attachments: string[];
+          try {
+            attachments = (Array.isArray(body.attachments) ? body.attachments : [])
+              .filter((a: unknown): a is string => typeof a === "string" && /^[0-9a-f]{8}-[\w.\- ]+$/.test(a))
+              .map((a: string) => join(attachmentDir(root!), a))
+              .filter((f: string) => existsSync(f))
+              .slice(0, 6);
+          } catch (e: any) {
+            return json(res, 400, { error: e.message });
+          }
           const r = startRun(task, maxSteps, body.askBeforeCommands !== false, continueTask, body.isolate === true, attachments);
           return json(res, r.status, r.body);
         }

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, statSync, writeSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { redact } from "./redact.js";
@@ -25,6 +25,10 @@ export function imageMime(path: string): string {
 
 export function attachmentDir(root: string): string {
   const d = join(root, ".narrowbit", "attachments");
+  // A cloned repository can ship `.narrowbit/attachments -> <elsewhere>`: uploads must not be written through it.
+  for (const f of [join(root, ".narrowbit"), d]) {
+    try { if (lstatSync(f).isSymbolicLink()) throw new Error(`${f} is a symlink — refusing to store attachments through it`); } catch (e: any) { if (e?.code !== "ENOENT") throw e; }
+  }
   mkdirSync(d, { recursive: true, mode: 0o700 });
   return d;
 }
@@ -35,7 +39,8 @@ export function saveAttachment(root: string, name: string, data: Buffer): string
   if (!attachmentKind(safe)) throw new Error("only images (png, jpg, gif, webp) and PDFs can be attached");
   if (data.length > MAX_ATTACHMENT_BYTES) throw new Error(`that file is ${(data.length / 1048576).toFixed(1)} MB; the limit is ${MAX_ATTACHMENT_BYTES / 1048576} MB`);
   const f = join(attachmentDir(root), `${randomUUID().slice(0, 8)}-${safe}`);
-  writeFileSync(f, data, { mode: 0o600 });
+  const fd = openSync(f, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try { writeSync(fd, data); } finally { closeSync(fd); }
   return f;
 }
 

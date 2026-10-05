@@ -3709,6 +3709,45 @@ describe("third review pass: shipped state can't choose where files are written,
     });
   });
 
+  test("a linked skill file is neither listed nor written through: saving never overwrites a file outside the project", async () => {
+    const { listSkills, saveSkill } = await dist("skills.js");
+    const { root, p } = tinyRepo();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-out-")));
+    try {
+      const target = join(outside, "victim.md");
+      writeFileSync(target, "---\nname: evil\n---\nPRIVATE TEXT\n");
+      symlinkSync(target, join(p.skills, "evil.md"));
+      assert.ok(!listSkills(p).some((s) => s.name === "evil"), "the linked file's contents are not shown as a skill");
+      try { saveSkill(p, "evil", "d", "new body"); } catch { /* refusing is fine */ }
+      assert.match(readFileSync(target, "utf8"), /PRIVATE TEXT/, "the outside file is untouched");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  test("attachments are never stored through a linked .narrowbit/attachments", async () => {
+    const { saveAttachment } = await dist("attachments.js");
+    const { root } = tinyRepo();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-out-")));
+    try {
+      symlinkSync(outside, join(root, ".narrowbit", "attachments"));
+      assert.throws(() => saveAttachment(root, "shot.png", Buffer.from("x")), /link|symlink/i);
+      assert.deepEqual(readdirSync(outside), [], "nothing was written outside the project");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  test("isolation set-up fails loudly, and leaves nothing behind, when the user's uncommitted work can't be carried across", async () => {
+    const { ensureIsolated } = await dist("isolate.js");
+    const { root, p } = tinyRepo();
+    try {
+      writeFileSync(join(root, ".gitattributes"), "*.txt filter=broken\n");
+      execFileSync("git", ["config", "filter.broken.clean", "exit 1"], { cwd: root });
+      execFileSync("git", ["config", "filter.broken.required", "true"], { cwd: root });
+      writeFileSync(join(root, "a.txt"), "my uncommitted edit\n");
+      assert.throws(() => ensureIsolated(p, "rt-iso1"), /uncommitted|carry|copy/i);
+      assert.ok(!existsSync(join(p.nb, "worktrees", "rt-iso1")), "no half-made copy is left");
+      assert.ok(!existsSync(join(p.runtime, "rt-iso1", "isolated.json")), "and no marker claiming it exists");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test("rewind's recovery folder is never a link out of the project: nothing is pruned or written through it", async () => {
     const { checkpointNow, listCheckpoints, restoreCheckpoint, pruneRewindTrash } = await dist("checkpoints.js");
     const { root, p } = tinyRepo();

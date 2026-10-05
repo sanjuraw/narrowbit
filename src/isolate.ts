@@ -51,15 +51,33 @@ export function ensureIsolated(p: Paths, taskId: string): Marker {
   const root = p.root;
   if (sh("git", ["rev-parse", "HEAD"], root).code !== 0) throw new Error("Isolated mode needs a git repository with at least one commit.");
   if (!/^rt-[\w-]+$/.test(taskId)) throw new Error("bad task id");
+  if (lstatSync(p.nb).isSymbolicLink()) throw new Error("Couldn't create the separate copy: .narrowbit is a symlink.");
   const dir = worktreeDir(p, taskId);
   mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
   const add = sh("git", [...NO_HOOKS, "worktree", "add", "--detach", dir, "HEAD"], root);
   if (add.code !== 0) throw new Error(`Couldn't create the separate copy: ${add.stderr.trim().split("\n").pop()}`);
 
+  // Every step below must work, or the agent would start from a folder that silently lacks the user's own edits (and
+  // Apply would later look like it undid them). On any failure the half-made copy is removed and the task doesn't start.
+  const abandon = (why: string): never => {
+    sh("git", ["worktree", "remove", "--force", dir], root);
+    rmSync(dir, { recursive: true, force: true });
+    sh("git", ["worktree", "prune"], root);
+    throw new Error(`Couldn't create the separate copy: ${why}. Your folder is untouched and the task didn't start.`);
+  };
+  const lastLine = (r: { stderr: string }) => r.stderr.trim().split("\n").pop() || "git failed";
+
   // Bring across everything uncommitted so the agent sees the folder as it is right now.
-  const tracked = sh("git", ["diff", "HEAD", "--binary"], root).stdout;
-  if (tracked.trim()) sh("git", ["apply", "--binary", "--whitespace=nowarn"], dir, tracked.endsWith("\n") ? tracked : tracked + "\n");
-  const untracked = sh("git", ["ls-files", "--others", "--exclude-standard", "-z"], root).stdout.split("\0").filter(Boolean);
+  const diff = sh("git", ["diff", "HEAD", "--binary"], root);
+  if (diff.code !== 0) abandon(`couldn't read your uncommitted changes to carry them across (${lastLine(diff)})`);
+  const tracked = diff.stdout;
+  if (tracked.trim()) {
+    const ap = sh("git", ["apply", "--binary", "--whitespace=nowarn"], dir, tracked.endsWith("\n") ? tracked : tracked + "\n");
+    if (ap.code !== 0) abandon(`couldn't carry your uncommitted changes across (${lastLine(ap)})`);
+  }
+  const ls = sh("git", ["ls-files", "--others", "--exclude-standard", "-z"], root);
+  if (ls.code !== 0) abandon(`couldn't list your untracked files (${lastLine(ls)})`);
+  const untracked = ls.stdout.split("\0").filter(Boolean);
   for (const f of untracked) {
     if (f.startsWith(".narrowbit/") || f === ".narrowbitignore") continue;
     try {
@@ -70,8 +88,8 @@ export function ensureIsolated(p: Paths, taskId: string): Marker {
       // ~/.ssh/id_ed25519 into a plain file holding the key, which the agent's symlink guard could no longer see.
       if (st.isSymbolicLink()) symlinkSync(readlinkSync(src), join(dir, f));
       else if (st.isFile()) copyFileSync(src, join(dir, f));
-    } catch {
-      /* unreadable file: skip it */
+    } catch (e: any) {
+      abandon(`couldn't copy your untracked file ${f} (${e?.code ?? e?.message ?? "error"})`);
     }
   }
   // Dependencies are ignored by git, so link them rather than copy: tests and builds still run in the copy.
@@ -83,8 +101,10 @@ export function ensureIsolated(p: Paths, taskId: string): Marker {
       /* not fatal */
     }
   }
-  sh("git", ["add", "-A", "--", ".", ":(exclude)node_modules"], dir);
-  sh("git", [...GIT, ...NO_HOOKS, "commit", "-q", "--allow-empty", "--no-verify", "-m", "narrowbit snapshot"], dir);
+  const stage = sh("git", ["add", "-A", "--", ".", ":(exclude)node_modules"], dir);
+  if (stage.code !== 0) abandon(`couldn't stage the copy (${lastLine(stage)})`);
+  const commit = sh("git", [...GIT, ...NO_HOOKS, "commit", "-q", "--allow-empty", "--no-verify", "-m", "narrowbit snapshot"], dir);
+  if (commit.code !== 0) abandon(`couldn't record the copy's starting point (${lastLine(commit)})`);
   const snapshot = sh("git", ["rev-parse", "HEAD"], dir).stdout.trim();
   const marker: Marker = { dir, snapshot };
   mkdirSync(join(p.runtime, taskId), { recursive: true, mode: 0o700 });

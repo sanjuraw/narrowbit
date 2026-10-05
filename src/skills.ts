@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { Paths } from "./config.js";
 
@@ -83,10 +83,18 @@ export function listSkills(p: Paths): Skill[] {
   return [...BUILTIN_SKILLS.filter((b) => !overridden.has(b.name)), ...mine].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+const isLink = (f: string): boolean => {
+  try { return lstatSync(f).isSymbolicLink(); } catch { return false; }
+};
+
+/** A repository can ship `.narrowbit/skills/x.md -> ~/anything` (or link the folder itself). A skill is only ever a plain
+ * file inside the project's own skills folder: links are neither listed (their target would be shown as a skill) nor written. */
+const skillsFolderLinked = (p: Paths): boolean => isLink(p.nb) || isLink(p.skills);
+
 function listUserSkills(p: Paths): Skill[] {
-  if (!existsSync(p.skills)) return [];
+  if (!existsSync(p.skills) || skillsFolderLinked(p)) return [];
   return readdirSync(p.skills)
-    .filter((f) => f.endsWith(".md"))
+    .filter((f) => f.endsWith(".md") && !isLink(join(p.skills, f)))
     .map((f) => {
       try {
         return parse(readFileSync(join(p.skills, f), "utf8"), f);
@@ -114,7 +122,10 @@ export function saveSkill(p: Paths, name: string, description: string, body: str
   const existing = listUserSkills(p).find((s) => s.name === trimmedName);
   const file = existing?.file ?? `${slugify(trimmedName)}.md`;
   const fm = [`name: ${JSON.stringify(trimmedName)}`, description.trim() ? `description: ${JSON.stringify(description.trim())}` : null].filter(Boolean).join("\n");
-  writeFileSync(join(p.skills, file), `---\n${fm}\n---\n\n${trimmedBody}\n`, "utf8");
+  if (skillsFolderLinked(p)) throw new Error("the skills folder is a symlink — refusing to write through it");
+  if (isLink(join(p.skills, file))) throw new Error(`${file} is a symlink — refusing to overwrite what it points to`);
+  const fd = openSync(join(p.skills, file), constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+  try { writeSync(fd, `---\n${fm}\n---\n\n${trimmedBody}\n`); } finally { closeSync(fd); }
   return { name: trimmedName, description: description.trim(), body: trimmedBody, file };
 }
 
@@ -133,6 +144,7 @@ export function renameSkill(p: Paths, oldName: string, newName: string): Skill {
   const trimmed = newName.trim();
   if (!trimmed) throw new Error("a skill needs a name");
   const newFile = `${slugify(trimmed)}.md`;
+  if (skillsFolderLinked(p)) throw new Error("the skills folder is a symlink — refusing to write through it");
   if (s.file && s.file !== newFile && existsSync(join(p.skills, s.file))) renameSync(join(p.skills, s.file), join(p.skills, newFile));
   return saveSkill(p, trimmed, s.description, s.body);
 }
