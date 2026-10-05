@@ -2,7 +2,7 @@ export { now, shortId, estimateTokens } from "narrowbit-memory";
 import { linkInPath, openPlain, readPlain } from "narrowbit-memory";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdtempSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -193,10 +193,22 @@ export function assertProjectPath(root: string, target: string): void {
  */
 export function writeProjectFile(root: string, file: string, data: string | Uint8Array, mode = 0o600): void {
   assertProjectPath(root, file);
+  let existed = true;
+  try { lstatSync(file); } catch { existed = false; }
   const fd = openPlain(file, constants.O_WRONLY | constants.O_CREAT, mode);
   try {
-    assertProjectPath(root, file);
-    if (fstatSync(fd).ino !== lstatSync(file).ino) throw new Error(`${file} changed while it was being written — nothing was written`);
+    try {
+      assertProjectPath(root, file);
+      if (fstatSync(fd).ino !== lstatSync(file).ino) throw new Error(`${file} changed while it was being written — nothing was written`);
+    } catch (e) {
+      // The open may just have created an empty file somewhere the path now leads (a folder swapped for a link after the
+      // first check). Take it away again, but only if it is provably the one this call made: new, empty, same inode.
+      try {
+        const st = fstatSync(fd);
+        if (!existed && st.size === 0 && lstatSync(file).ino === st.ino) unlinkSync(file);
+      } catch { /* nothing to undo */ }
+      throw e;
+    }
     ftruncateSync(fd, 0);
     writeSync(fd, data as any);
   } finally {
@@ -231,6 +243,23 @@ export function removeProjectPath(root: string, target: string, opts: { recursiv
 export function stateText(root: string, file: string): string | null {
   try {
     return readProjectFile(root, file);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads a file of the project's own source (package.json, pyproject.toml, a tracked file…) as text, or null. Unlike
+ * state files, source files may be hard-linked; what is refused is a symlink anywhere on the way, since following one
+ * reads a file from outside the project (git itself stores such an entry as a link, not as that file's contents).
+ */
+export function sourceText(root: string, file: string, maxBytes = Infinity): string | null {
+  const rel = relative(root, file);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel) || linkInPath(root, file)) return null;
+  try {
+    const st = lstatSync(file);
+    if (!st.isFile() || st.size > maxBytes) return null;
+    return readFileSync(file, "utf8");
   } catch {
     return null;
   }

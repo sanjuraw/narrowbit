@@ -10,7 +10,7 @@ import type { Store } from "./store.js";
 import type { Level, SelectedItem, TaskRecord } from "./tasks.js";
 import { parseTask, type ParsedTask } from "./taskparse.js";
 import { termsOf } from "./terms.js";
-import { estimateTokens, now, shortId, realRel, isGitInternal } from "./util.js";
+import { estimateTokens, now, shortId, realRel, isGitInternal, sourceText } from "./util.js";
 
 const SNIPPET_MAX_LINES = 140;
 
@@ -67,7 +67,9 @@ function localize(store: Store, root: string, f: RankedFile, taskTerms: Set<stri
   if (!taskTerms.size) return [];
   let lines: string[];
   try {
-    lines = readFileSync(join(root, f.path), "utf8").split("\n");
+    const text = sourceText(root, join(root, f.path));
+    if (text === null) return [];
+    lines = text.split("\n");
   } catch {
     return [];
   }

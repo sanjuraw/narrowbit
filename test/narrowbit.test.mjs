@@ -3760,15 +3760,105 @@ describe("third review pass: shipped state can't choose where files are written,
         writeFileSync(join(root, "a.ts"), "export const a = 1;\n"); git("add", "a.ts"); git("commit", "-qm", "add a");
         writeFileSync(join(root, "a.ts"), "export const a = 2;\n"); git("commit", "-qam", "fix the value of a in a.ts");
         const mine = canary(outside, "checkout/untracked-canary.txt");
-        symlinkSync(join(outside, "checkout"), join(p.nb, "eval-worktree"));
+        symlinkSync(join(outside, "checkout"), join(p.nb, "eval-worktrees"));
         await assert.rejects(() => evalHistory(p, { commits: 1, log: () => {} }), /symlink/);
         assert.ok(existsSync(mine), "the linked folder was not cleaned");
-        rmSync(join(p.nb, "eval-worktree"));
+        rmSync(join(p.nb, "eval-worktrees"));
         mkdirSync(join(outside, "evalstate"));
         symlinkSync(join(outside, "evalstate"), join(p.nb, "eval"));
         await assert.rejects(() => evalHistory(p, { commits: 1, log: () => {} }), /symlink/);
         assert.throws(() => new Store(join(p.nb, "eval", "index.db"), root), /symlink/);
         assert.deepEqual(readdirSync(join(outside, "evalstate")), [], "no index was created through the link");
+      } finally { done(root, outside); }
+    });
+
+    test("evaluation and training leave a worktree they did not create alone, even one registered with git at their old fixed name", async () => {
+      const { evalHistory } = await dist("eval.js");
+      const { train } = await dist("train.js");
+      const { root, p } = tinyRepo();
+      const git = (...a) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root });
+      try {
+        writeFileSync(join(root, "a.ts"), "export const a = 0;\n"); git("add", "a.ts"); git("commit", "-qm", "add the a module");
+        for (let i = 1; i <= 12; i++) { writeFileSync(join(root, "a.ts"), `export const a = ${i};\n`); git("commit", "-qam", `change the value of a to ${i} in a.ts`); }
+        for (const name of ["eval-worktree", "train-worktree"]) {
+          git("worktree", "add", "-q", "--detach", join(p.nb, name), "HEAD");
+          writeFileSync(join(p.nb, name, "a.ts"), "MY UNCOMMITTED WORK\n");
+          writeFileSync(join(p.nb, name, "untracked-canary.txt"), "mine\n");
+        }
+        await evalHistory(p, { commits: 1, log: () => {} });
+        try { await train(p, { commits: 12, log: () => {} }); } catch { /* too few usable examples is fine: the folders are what matter */ }
+        for (const name of ["eval-worktree", "train-worktree"]) {
+          assert.equal(readFileSync(join(p.nb, name, "a.ts"), "utf8"), "MY UNCOMMITTED WORK\n", `${name}: uncommitted edit kept`);
+          assert.ok(existsSync(join(p.nb, name, "untracked-canary.txt")), `${name}: untracked file kept`);
+        }
+        assert.deepEqual(readdirSync(join(p.nb, "eval-worktrees")), [], "the run's own copy was removed afterwards");
+      } finally { done(root); }
+    });
+
+    test("a benchmark run folder must be new, so nothing can be waiting in it under a known name", async () => {
+      const { runBenchmark } = await dist("bench.js");
+      const { shortId } = await dist("util.js");
+      const { root, p } = tinyRepo();
+      const realRandom = Math.random;
+      try {
+        Math.random = () => 0.123456789;
+        mkdirSync(join(p.benchmarks, "runs", shortId()), { recursive: true });
+        const spec = join(root, "spec.json");
+        writeFileSync(spec, JSON.stringify({ arms: [{ name: "native" }], tasks: [{ id: "t", prompt: "x", verify: "true" }] }));
+        await assert.rejects(() => runBenchmark(p, spec, { log: () => {} }), /EEXIST/);
+      } finally { Math.random = realRandom; done(root); }
+    });
+
+    test("an ignore file that is there but is a link or a hard link stops indexing instead of counting as no rules", async () => {
+      const { listFiles } = await dist("files.js");
+      const { root, p } = tinyRepo();
+      const outside = outsideDir();
+      try {
+        writeFileSync(join(root, "private-company.ts"), "export const secret = 1;\n");
+        writeFileSync(p.ignore, "private-company.ts\n");
+        assert.ok(!listFiles(p).includes("private-company.ts"), "a plain ignore file keeps it out");
+        execFileSync("ln", [p.ignore, join(outside, "twin")]);
+        assert.throws(() => listFiles(p), /can't be trusted/);
+        rmSync(p.ignore);
+        symlinkSync(join(outside, "twin"), p.ignore);
+        assert.throws(() => listFiles(p), /can't be trusted/);
+        rmSync(p.ignore);
+        assert.ok(listFiles(p).includes("private-company.ts"), "no ignore file at all is still fine");
+      } finally { done(root, outside); }
+    });
+
+    test("saved context, stored attachments and project settings files are not read through a link", async () => {
+      const { readAttachment } = await dist("attachments.js");
+      const { detectVerify: detect } = await dist("config.js");
+      const { installClaude } = await dist("claude.js");
+      const { Tasks } = await dist("tasks.js");
+      const { root, p } = tinyRepo();
+      const outside = outsideDir();
+      try {
+        // narrowbit context <task>
+        new Tasks(p).save({ id: "rt-ctx", task: "x", given: [], selected: [] });
+        symlinkSync(canary(outside, "ctx.md", "OUTSIDE-CONTEXT-TEXT\n"), join(p.tasks, "rt-ctx.context.md"));
+        const r = spawnSync("node", [BIN, "context", "rt-ctx", "--root", root], { cwd: root, encoding: "utf8" });
+        assert.doesNotMatch(r.stdout + r.stderr, /OUTSIDE-CONTEXT-TEXT/);
+
+        // an attachment kept in the project vs. one the user points at themselves
+        const png = canary(outside, "real.png", "PNGBYTES");
+        mkdirSync(join(p.nb, "attachments"), { recursive: true });
+        symlinkSync(png, join(p.nb, "attachments", "abcd1234-shot.png"));
+        assert.equal(readAttachment(join(p.nb, "attachments", "abcd1234-shot.png")), null, "a stored attachment that is a link is not read");
+        symlinkSync(png, join(outside, "alias.png"));
+        assert.ok(readAttachment(join(outside, "alias.png")), "a file the user attaches by its own path is still read");
+
+        // package.json decides which commands verify runs
+        symlinkSync(canary(outside, "package.json", JSON.stringify({ scripts: { test: "echo FROM-OUTSIDE" } })), join(root, "package.json"));
+        assert.deepEqual(detect(root), {}, "a linked package.json configures nothing");
+        rmSync(join(root, "package.json"));
+
+        // install claude: refuses before reading, creating or writing anything
+        symlinkSync(canary(outside, "mcp.json", "{}"), join(root, ".mcp.json"));
+        assert.throws(() => installClaude(p, { hook: true }), /symlink/);
+        assert.ok(!existsSync(join(root, ".claude")), "nothing was created before the refusal");
+        assert.equal(readFileSync(join(outside, "mcp.json"), "utf8"), "{}");
       } finally { done(root, outside); }
     });
 
@@ -3853,7 +3943,7 @@ describe("third review pass: shipped state can't choose where files are written,
 
         rmSync(p.ignore, { force: true });
         symlinkSync(canary(outside, "ignore", "a.txt\n"), p.ignore);
-        assert.equal(loadIgnore(p).ignores("a.txt"), false, "ignore rules are not read through a link");
+        assert.throws(() => loadIgnore(p), /can't be trusted/, "ignore rules are not read through a link, and not silently dropped either");
       } finally { done(root, outside); }
     });
   });

@@ -6,7 +6,7 @@ import { indexRepo } from "./indexer.js";
 import { FEATURES, rank, type Feature, type FeatureVec } from "./ranker.js";
 import { Store } from "./store.js";
 import { parseTask } from "./taskparse.js";
-import { sh, writeProjectFile, assertProjectPath, stateText } from "./util.js";
+import { sh, writeProjectFile, assertProjectPath, stateText, shortId } from "./util.js";
 
 /**
  * Learn per-signal weights from the repository's own history — locally, no model calls.
@@ -126,16 +126,20 @@ export async function train(
   }
   if (cands.length < 10) throw new Error(`need at least 10 usable commits, found ${cands.length}`);
 
-  const wt = join(p.nb, "train-worktree");
-  const trainNb = join(p.nb, "train");
-  // Same rule as eval: the folder is force-checked-out and cleaned below, so it must be this run's own copy inside
-  // .narrowbit, never a link and never something left there by someone else.
+  // The loop below force-checks-out and cleans this folder, so it must be one this run created, really inside
+  // .narrowbit: a new name every run, created exclusively. Nothing already there is ever reused, cleaned or removed —
+  // not a link, not a plain folder, and not a worktree someone registered at a fixed name (being a git worktree doesn't
+  // make it Narrowbit's).
   const state = dirname(p.nb);
-  assertProjectPath(state, wt);
+  const trainNb = join(p.nb, "train");
+  const wtBase = join(p.nb, "train-worktrees");
   assertProjectPath(state, trainNb);
+  assertProjectPath(state, wtBase);
   mkdirSync(trainNb, { recursive: true });
-  if (existsSync(wt)) sh("git", ["worktree", "remove", "--force", wt], p.root);
-  if (existsSync(wt)) throw new Error(`${wt} exists and is not a worktree Narrowbit made — remove it and run again`);
+  mkdirSync(wtBase, { recursive: true, mode: 0o700 });
+  const wt = join(wtBase, `run-${shortId()}`);
+  assertProjectPath(state, wt);
+  if (existsSync(wt)) throw new Error(`${wt} already exists — run again`);
   const add = sh("git", ["worktree", "add", "--detach", wt, cands[0].parent], p.root);
   if (add.code !== 0) throw new Error(`git worktree add failed: ${add.stderr}`);
   assertProjectPath(state, wt);

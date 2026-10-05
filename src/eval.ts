@@ -62,16 +62,20 @@ export async function evalHistory(p: Paths, opts: { commits?: number; budget?: n
   }
   if (!cands.length) throw new Error("no suitable commits found (need non-merge commits modifying TS/JS source files)");
 
-  const wt = join(p.nb, "eval-worktree");
-  const evalNb = join(p.nb, "eval");
-  // The loop below force-checks-out and cleans this folder, so it must be a copy this run made itself, really inside
-  // .narrowbit: never a link (a shipped `eval-worktree -> <your other checkout>` would be wiped), never a leftover.
+  // The loop below force-checks-out and cleans this folder, so it must be one this run created, really inside
+  // .narrowbit: a new name every run, created exclusively. Nothing already there is ever reused, cleaned or removed —
+  // not a link, not a plain folder, and not a worktree someone registered at a fixed name (being a git worktree doesn't
+  // make it Narrowbit's).
   const state = dirname(p.nb);
-  assertProjectPath(state, wt);
+  const evalNb = join(p.nb, "eval");
+  const wtBase = join(p.nb, "eval-worktrees");
   assertProjectPath(state, evalNb);
+  assertProjectPath(state, wtBase);
   mkdirSync(evalNb, { recursive: true });
-  if (existsSync(wt)) sh("git", ["worktree", "remove", "--force", wt], p.root);
-  if (existsSync(wt)) throw new Error(`${wt} exists and is not a worktree Narrowbit made — remove it and run again`);
+  mkdirSync(wtBase, { recursive: true, mode: 0o700 });
+  const wt = join(wtBase, `run-${shortId()}`);
+  assertProjectPath(state, wt);
+  if (existsSync(wt)) throw new Error(`${wt} already exists — run again`);
   const r = sh("git", ["worktree", "add", "--detach", wt, cands[0].parent], p.root);
   if (r.code !== 0) throw new Error(`git worktree add failed: ${r.stderr}`);
   assertProjectPath(state, wt);

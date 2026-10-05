@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { isTrusted, repoConfigRisks } from "./trust.js";
-import { sh, writeProjectFile, stateText } from "./util.js";
+import { sh, writeProjectFile, stateText, sourceText } from "./util.js";
 
 export const NB_DIR = ".narrowbit";
 
@@ -205,10 +205,13 @@ export function saveConfig(p: Paths, c: NarrowbitConfig): void {
 /** Detect verification commands from package.json, or from pyproject.toml/setup.cfg for a Python project. */
 export function detectVerify(root: string): VerifyConfig {
   const pkgPath = join(root, "package.json");
-  if (!existsSync(pkgPath)) return detectVerifyPython(root);
+  let present = true;
+  try { lstatSync(pkgPath); } catch { present = false; }
+  if (!present) return detectVerifyPython(root);
   let pkg: any;
   try {
-    pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    // Not through a link: what package.json says decides which commands verify runs.
+    pkg = JSON.parse(sourceText(root, pkgPath) ?? "not readable");
   } catch {
     return {};
   }
@@ -230,7 +233,7 @@ export function detectVerify(root: string): VerifyConfig {
 }
 
 function tryRead(path: string): string {
-  return existsSync(path) ? readFileSync(path, "utf8") : "";
+  return sourceText(dirname(path), path) ?? "";
 }
 
 /** Same detection, for a Python project: only what the repo's own config files declare, nothing guessed. */

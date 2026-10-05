@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, statSync, writeSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { redact } from "./redact.js";
 
@@ -44,14 +44,28 @@ export function saveAttachment(root: string, name: string, data: Buffer): string
   return f;
 }
 
+/** A file under a project's `.narrowbit/attachments` is Narrowbit's own copy, so it must be a plain file: a link or a
+ * hard link there (a cloned repository can ship one) would send some other file's bytes to the model. A file the user
+ * attached by its own path from anywhere else is theirs to choose and is read as it is. */
+function storedButNotPlain(path: string): boolean {
+  if (basename(dirname(path)) !== "attachments" || basename(dirname(dirname(path))).toLowerCase() !== ".narrowbit") return false;
+  try {
+    const st = lstatSync(path);
+    return st.isSymbolicLink() || !st.isFile() || st.nlink > 1 || lstatSync(dirname(path)).isSymbolicLink() || lstatSync(dirname(dirname(path))).isSymbolicLink();
+  } catch {
+    return true;
+  }
+}
+
 export function readAttachment(path: string): { name: string; kind: "image" | "pdf"; mime: string; base64: string } | null {
   const kind = attachmentKind(path);
-  if (!kind || !existsSync(path) || statSync(path).size > MAX_ATTACHMENT_BYTES) return null;
+  if (!kind || storedButNotPlain(path) || !existsSync(path) || statSync(path).size > MAX_ATTACHMENT_BYTES) return null;
   return { name: basename(path).replace(/^[0-9a-f]{8}-/, ""), kind, mime: kind === "pdf" ? "application/pdf" : imageMime(path), base64: readFileSync(path).toString("base64") };
 }
 
 /** Text of a PDF for providers that can't take one natively (pdftotext, if installed). Redacted like all emitted text. */
 export function pdfText(path: string, maxChars = 24_000): string {
+  if (storedButNotPlain(path)) return "";
   try {
     const t = execFileSync("pdftotext", ["-layout", path, "-"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 30_000 });
     return redact(t.length > maxChars ? `${t.slice(0, maxChars)}\n[…PDF text cut at ${maxChars} characters]` : t);

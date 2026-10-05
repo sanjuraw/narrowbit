@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { writeProjectFile, stateText } from "./util.js";
+import { writeProjectFile, stateText, readProjectFile, assertProjectPath } from "./util.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,10 +61,11 @@ export async function launchClaude(p: Paths, taskText: string, extraArgs: string
   });
 }
 
-function readJson(file: string): any {
-  if (!existsSync(file)) return {};
+function readJson(root: string, file: string): any {
+  const text = readProjectFile(root, file); // throws on a link or a hard link, before anything is read
+  if (text === null) return {};
   try {
-    return JSON.parse(readFileSync(file, "utf8"));
+    return JSON.parse(text);
   } catch {
     throw new Error(`cannot parse ${file}; fix or remove it first`);
   }
@@ -79,16 +80,19 @@ export function installClaude(p: Paths, opts: { hook: boolean }): string[] {
   const changes: string[] = [];
   const self = selfCommand();
   const mcpPath = join(p.root, ".mcp.json");
-  const mcp = readJson(mcpPath);
+  const settingsPath = join(p.root, ".claude", "settings.local.json");
+  // Both files are checked and read before either is written, so a refusal never leaves the install half done.
+  assertProjectPath(p.root, mcpPath);
+  assertProjectPath(p.root, settingsPath);
+  const mcp = readJson(p.root, mcpPath);
+  const s = readJson(p.root, settingsPath);
   mcp.mcpServers ??= {};
   mcp.mcpServers.narrowbit = mcpServerConfig(p);
   delete mcp.mcpServers.narrowbit.env;
   writeProjectFile(p.root, mcpPath, JSON.stringify(mcp, null, 2) + "\n", 0o644);
   changes.push(`${mcpPath}: mcpServers.narrowbit`);
 
-  const settingsPath = join(p.root, ".claude", "settings.local.json");
   mkdirSync(dirname(settingsPath), { recursive: true });
-  const s = readJson(settingsPath);
   s.enabledMcpjsonServers = [...new Set([...(s.enabledMcpjsonServers ?? []), "narrowbit"])];
   s.permissions ??= {};
   s.permissions.allow = [...new Set([...(s.permissions.allow ?? []), "mcp__narrowbit"])];

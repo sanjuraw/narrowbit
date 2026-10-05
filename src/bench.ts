@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { appendNoFollow } from "narrowbit-memory";
-import { assertProjectPath, writeProjectFile } from "./util.js";
+import { assertProjectPath, writeProjectFile, stateText } from "./util.js";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -151,16 +151,16 @@ const DEFAULT_ARMS: BenchArm[] = [{ name: "native" }, { name: "narrowbit", narro
 export { parseStream } from "./streamjson.js";
 import { parseStream } from "./streamjson.js";
 
-function runClaude(bin: string, cwd: string, args: string[], outFile: string, env: Record<string, string>, timeoutMs: number): Promise<number> {
+function runClaude(bin: string, cwd: string, args: string[], outFile: string, env: Record<string, string>, timeoutMs: number, state: string): Promise<number> {
   return new Promise((res) => {
     const child = spawn(bin, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
     const chunks: Buffer[] = [];
     child.stdout.on("data", (d) => chunks.push(d));
-    child.stderr.on("data", (d) => appendFileSync(outFile + ".stderr", d));
+    child.stderr.on("data", (d) => { try { assertProjectPath(state, outFile + ".stderr"); appendNoFollow(outFile + ".stderr", String(d)); } catch { /* not through a link */ } });
     const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
     child.on("close", (code) => {
       clearTimeout(timer);
-      writeFileSync(outFile, Buffer.concat(chunks));
+      try { writeProjectFile(state, outFile, Buffer.concat(chunks)); } catch { return res(1); }
       res(code ?? 1);
     });
     child.on("error", () => res(127));
@@ -181,7 +181,8 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
   const runDir = join(p.benchmarks, "runs", runId);
   const state = dirname(p.nb);
   assertProjectPath(state, runDir);
-  mkdirSync(runDir, { recursive: true });
+  mkdirSync(dirname(runDir), { recursive: true });
+  mkdirSync(runDir); // not recursive: the run folder must be new, so nothing can be waiting inside it under a known name
   assertProjectPath(state, runDir);
   const resultsFile = join(p.benchmarks, "results.jsonl");
   assertProjectPath(state, resultsFile);
@@ -240,7 +241,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             packageTokens = b.record.packageTokens;
             selectedPaths = b.record.selected.filter((s) => s.level !== "listed").map((s) => s.path);
             const mcpFile = join(runDir, `${t.id}-${arm.name}-${r}.mcp.json`);
-            writeFileSync(mcpFile, JSON.stringify({ mcpServers: { narrowbit: mcpServerConfig(wp, b.record.id) } }));
+            writeProjectFile(state, mcpFile, JSON.stringify({ mcpServers: { narrowbit: mcpServerConfig(wp, b.record.id) } }));
             args.push("--append-system-prompt", (arm.appendSystemPrompt ? arm.appendSystemPrompt + "\n\n" : "") + b.text, "--mcp-config", mcpFile, "--strict-mcp-config");
             if (!baseArgs.includes("--allowedTools") && !baseArgs.includes("--allowed-tools")) args.push("--allowedTools", "mcp__narrowbit");
             env.NARROWBIT_TASK = b.record.id;
@@ -257,7 +258,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             indexRepo(wp, store);
             store.close();
             const mcpFile = join(runDir, `${t.id}-${arm.name}-${r}.mcp.json`);
-            writeFileSync(mcpFile, JSON.stringify({ mcpServers: { narrowbit: mcpServerConfig(wp) } }));
+            writeProjectFile(state, mcpFile, JSON.stringify({ mcpServers: { narrowbit: mcpServerConfig(wp) } }));
             args.push("--mcp-config", mcpFile, "--strict-mcp-config");
             if (!baseArgs.includes("--allowedTools") && !baseArgs.includes("--allowed-tools")) args.push("--allowedTools", "mcp__narrowbit");
             if (arm.appendSystemPrompt) args.push("--append-system-prompt", arm.appendSystemPrompt);
@@ -300,7 +301,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
               child.on("close", (c) => { clearTimeout(timer); if (c) log(`${tag}: external agent exited ${c}: ${errText.trim().split("\n").pop()?.slice(0, 200)}`); resolve(c ?? 1); });
             });
             let u = { input: 0, cacheRead: 0, output: 0, turns: 0, tools: 0 };
-            try { u = { ...u, ...JSON.parse(readFileSync(usageFile, "utf8")) }; } catch { /* the agent crashed before reporting */ }
+            try { u = { ...u, ...JSON.parse(stateText(state, usageFile) ?? "{}") }; } catch { /* the agent crashed before reporting */ }
             rmSync(home, { recursive: true, force: true });
             s = {
               toolCalls: { ext_tools: u.tools },
@@ -347,10 +348,10 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
           } else {
             const outFile = join(runDir, `${t.id}-${arm.name}-${r}.jsonl`);
             log(`${tag}: running claude…`);
-            agentExit = await runClaude(claudeBin, wt, [...args, "--", t.prompt], outFile, env, (spec.timeoutMinutes ?? 30) * 60_000);
-            const rawStream = readFileSync(outFile, "utf8");
+            agentExit = await runClaude(claudeBin, wt, [...args, "--", t.prompt], outFile, env, (spec.timeoutMinutes ?? 30) * 60_000, state);
+            const rawStream = stateText(state, outFile) ?? "";
             s = parseStream(rawStream);
-            const stderr = existsSync(outFile + ".stderr") ? readFileSync(outFile + ".stderr", "utf8") : "";
+            const stderr = stateText(state, outFile + ".stderr") ?? "";
             // Harness/environment failures are not task failures: stop instead of recording a bogus result.
             const fatal =
               /"error":"authentication_failed"|Not logged in|Invalid API key/.test(rawStream + stderr) ? "claude CLI is not logged in (run `claude` then /login, or set ANTHROPIC_API_KEY)"

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { findSecrets } from "./redact.js";
-import { sh } from "./util.js";
+import { sh, sourceText } from "./util.js";
 import { INSTRUCTION_FILES, scanText } from "./guard.js";
 
 /**
@@ -24,10 +24,9 @@ const MAX_BYTES = 1_000_000;
 
 function textOf(root: string, file: string): string | null {
   try {
-    const abs = join(root, file);
-    if (statSync(abs).size > MAX_BYTES) return null;
-    const buf = readFileSync(abs);
-    return buf.includes(0) ? null : buf.toString("utf8");
+    // Not through a link: git stores a link as a link, so what it points at is not part of this repository.
+    const text = sourceText(root, join(root, file), MAX_BYTES);
+    return text === null || text.includes("\0") ? null : text;
   } catch {
     return null;
   }

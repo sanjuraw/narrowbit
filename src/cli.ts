@@ -30,7 +30,7 @@ import { listConnectorTools } from "./mcpClient.js";
 import { getSkill, listSkills, removeSkill, renameSkill, saveSkill } from "./skills.js";
 import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
-import { fmtNum, launcherPage, now, sh, visible, writeProjectFile } from "./util.js";
+import { fmtNum, launcherPage, now, sh, visible, writeProjectFile, stateText } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
 import { covered, editsSince, type Grant } from "./approvals.js";
 import { trustConfig, trustRepo, untrustedForUnattended, untrustedReason } from "./trust.js";
@@ -337,7 +337,7 @@ export async function main(argv: string[]): Promise<number> {
     case "context": {
       const t = loadTask(new Tasks(p), pos[0]);
       const f = join(p.tasks, `${t.id}.context.md`);
-      out(existsSync(f) ? readFileSync(f, "utf8") : "(no saved package for this task)");
+      out(stateText(dirname(p.nb), f) ?? "(no saved package for this task)");
       return 0;
     }
     case "expand": {

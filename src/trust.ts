@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { linkInPath } from "narrowbit-memory";
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -141,7 +142,9 @@ function contentId(root: string, files: string[]): string {
     try {
       const abs = join(root, f);
       const st = lstatSync(abs);
-      if (st.isSymbolicLink()) h.update("link:" + readlinkSync(abs));
+      const via = linkInPath(root, dirname(abs));
+      if (via) h.update("under-link:" + readlinkSync(via));
+      else if (st.isSymbolicLink()) h.update("link:" + readlinkSync(abs));
       else hashFile(h, abs);
     } catch {
       h.update("missing");

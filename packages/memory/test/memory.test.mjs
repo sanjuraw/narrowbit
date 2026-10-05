@@ -407,3 +407,20 @@ describe("hard links, a notes folder replaced later, and migration backups", () 
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("a note's file fingerprints are never taken through a link", () => {
+  test("a file under a linked folder gets no hash", () => {
+    const root = project(), outside = project();
+    try {
+      const p = api.memoryPaths(root);
+      api.ensureMemoryDirs(p);
+      writeFileSync(join(outside, "a.ts"), "export const outside = 1;\n");
+      writeFileSync(join(root, "real.ts"), "export const real = 1;\n");
+      symlinkSync(outside, join(root, "linked"));
+      const n = api.openMemory(p).add({ type: "fact", text: "about two files", files: ["linked/a.ts", "real.ts"] });
+      const hashed = Object.keys(n.fileHashes ?? {}).length ? Object.keys(n.fileHashes) : (n.fileHashes ?? []).map((h) => h.file ?? h.path ?? h[0]);
+      assert.ok(JSON.stringify(n.fileHashes).includes("real.ts"), "the real file is fingerprinted");
+      assert.ok(!JSON.stringify(n.fileHashes).includes("linked/a.ts"), `the linked one is not (${JSON.stringify(hashed)})`);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+});

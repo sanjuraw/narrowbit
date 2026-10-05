@@ -67,7 +67,15 @@ export class IgnoreMatcher {
 }
 
 export function loadIgnore(p: Paths): IgnoreMatcher {
-  const user = stateText(dirname(p.ignore), p.ignore) ?? "";
+  let user = stateText(dirname(p.ignore), p.ignore);
+  if (user === null) {
+    // Missing is fine (no extra rules). Present but a link, or also another file, is not: reading it as "no rules" would
+    // index — and so offer to a model — exactly the files someone listed to keep out.
+    let present = true;
+    try { lstatSync(p.ignore); } catch { present = false; }
+    if (present) throw new Error(`${p.ignore} is a symlink or has a second hard link, so its rules can't be trusted — replace it with a plain file (its rules keep files out of the index)`);
+    user = "";
+  }
   return new IgnoreMatcher(DEFAULT_IGNORE + "\n.narrowbit/\n.git/\n" + user);
 }
 

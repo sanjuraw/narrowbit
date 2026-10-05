@@ -344,6 +344,7 @@ function fileHash(root: string, rel: string): string | null {
   try {
     const abs = resolve(root, rel);
     if (abs !== root && !abs.startsWith(root + sep)) return null;
+    if (linkInPath(root, abs)) return null; // not through a link: that would be some other file's contents
     if (!lstatSync(abs).isFile()) return null;
     return createHash("sha1").update(readFileSync(abs)).digest("hex").slice(0, 12);
   } catch {

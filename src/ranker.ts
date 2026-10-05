@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { sourceText } from "./util.js";
 import { posix } from "node:path";
 import { isGeneratedPath } from "./files.js";
 import { fileRecency, gitState, recentCommits, type CommitInfo, type GitState } from "./git.js";
@@ -481,7 +482,7 @@ export function detectStack(root: string, store: Store): string[] {
   };
   for (const f of store.all<{ path: string }>("SELECT path FROM files WHERE path LIKE '%package.json' AND path NOT LIKE '%node_modules%' LIMIT 50")) {
     try {
-      const pkg = JSON.parse(readFileSync(posix.join(root, f.path), "utf8"));
+      const pkg = JSON.parse(sourceText(root, posix.join(root, f.path)) ?? "{}");
       for (const dep of Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) })) if (known[dep]) out.add(known[dep]);
     } catch {
       /* ignore */
