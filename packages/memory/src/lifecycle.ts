@@ -22,8 +22,13 @@ export function recordTaskNote(p: MemoryPaths, taskId: string, fallbackGoal = ""
     // What the next task can't cheaply re-derive: the exact change made, and a command that really passed afterwards.
     const clip = (v: unknown, n: number) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, n);
     const edits = evs.filter((e) => e.type === "edit" && typeof e.meta?.path === "string").slice(-3).map((e) => `${e.meta!.path}: \`${clip(e.meta!.old, 70)}\` -> \`${clip(e.meta!.new, 90)}\``);
-    const passed = [...evs].reverse().find((e) => e.type === "command" && e.meta?.exit === 0 && typeof e.meta?.command === "string" && /\b(test|tests|vitest|jest|mocha|pytest|tsc|typecheck|lint|eslint|ruff|mypy|build|check)\b/i.test(e.meta.command));
-    const text = `${goalText.slice(0, 160)} — ${answer.slice(0, 300) || "done"}${changed.length ? ` (changed: ${changed.slice(0, 6).join(", ")})` : ""}${edits.length ? ` Change: ${edits.join("; ")}.` : ""}${passed ? ` Passing check: ${clip(passed.meta!.command, 100)}.` : ""}`;
+    // Only a check that ran after the last edit says anything about the final state; otherwise say it wasn't re-checked.
+    const lastEdit = evs.map((e) => e.type === "edit").lastIndexOf(true);
+    const after = evs.slice(lastEdit + 1);
+    const passed = [...after].reverse().find((e) => e.type === "command" && e.meta?.exit === 0 && typeof e.meta?.command === "string" && /\b(test|tests|vitest|jest|mocha|pytest|tsc|typecheck|lint|eslint|ruff|mypy|build|check)\b/i.test(e.meta.command));
+    const verified = after.some((e) => e.type === "verify" && e.meta?.ok === true);
+    const check = passed ? ` Passing check: ${clip(passed.meta!.command, 100)}.` : verified ? " Verified after the last edit." : changed.length ? " Not verified after the last edit." : "";
+    const text = `${goalText.slice(0, 160)} — ${answer.slice(0, 300) || "done"}${changed.length ? ` (changed: ${changed.slice(0, 6).join(", ")})` : ""}${edits.length ? ` Change: ${edits.join("; ")}.` : ""}${check}`;
     const old = mem.load().filter((e) => !e.external && e.status === "active" && e.source === taskId && (e.tags ?? []).includes("auto-task"));
     const entry = mem.add({ type: "fact", text, reason: "saved automatically when the task finished", files: changed.slice(0, 6), source: taskId, tags: ["auto-task"], confidence: "medium" });
     for (const o of old) mem.setStatus(o.id, "superseded", entry.id);

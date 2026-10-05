@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -27,5 +27,6 @@ export function ensureMemoryDirs(p: MemoryPaths): void {
   mkdirSync(p.memory, { recursive: true, mode: 0o700 });
   mkdirSync(p.runtime, { recursive: true, mode: 0o700 });
   const gi = join(p.root, ".narrowbit", ".gitignore");
-  if (existsSync(join(p.root, ".narrowbit")) && !existsSync(gi)) writeFileSync(gi, "*\n");
+  // "wx" fails on anything already there, a dangling symlink included, so this never creates a file through a link.
+  try { writeFileSync(gi, "*\n", { flag: "wx" }); } catch { /* already present (or not ours to write) */ }
 }

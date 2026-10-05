@@ -269,3 +269,53 @@ describe("the automatic task note carries what is expensive to re-derive", () =>
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("migration and set-up never follow a link out of the project", () => {
+  test("a legacy facts.json that is a symlink to a file outside is not imported", () => {
+    const root = project(), outside = project();
+    try {
+      const p = api.memoryPaths(root);
+      mkdirSync(p.memory, { recursive: true });
+      writeFileSync(join(outside, "private.json"), JSON.stringify([{ id: "x1", type: "fact", text: "PRIVATE-OUTSIDE-NOTE" }]));
+      symlinkSync(join(outside, "private.json"), join(p.memory, "facts.json"));
+      const all = api.openMemory(p).load();
+      assert.ok(!all.some((e) => /PRIVATE-OUTSIDE-NOTE/.test(e.text)), "nothing from the linked file became a note");
+      assert.ok(!existsSync(join(p.memory, "facts.json.migrated")), "and it was not renamed away either");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  test("a dangling .gitignore symlink in .narrowbit/ does not make set-up create a file elsewhere", () => {
+    const root = project(), outside = project();
+    try {
+      const p = api.memoryPaths(root);
+      mkdirSync(join(root, ".narrowbit"), { recursive: true });
+      const target = join(outside, "created-by-init");
+      symlinkSync(target, join(root, ".narrowbit", ".gitignore"));
+      api.ensureMemoryDirs(p);
+      assert.ok(!existsSync(target), "the link's target was not created");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+});
+
+describe("the automatic task note does not imply an edit was checked when it wasn't", () => {
+  test("a check that passed before the last edit is not reported as passing", () => {
+    const root = project();
+    try {
+      const p = api.memoryPaths(root);
+      api.ensureMemoryDirs(p);
+      const ev = (type, summary, meta) => api.appendEvent(p, "rt-u", { actor: "system", type, summary, meta });
+      ev("decision", "goal", { goal: "fix the parser" });
+      ev("edit", "e1", { path: "src/a.ts", old: "a", new: "b" });
+      ev("command", "ok", { command: "npm test", exit: 0 });
+      ev("edit", "e2", { path: "src/a.ts", old: "b", new: "c" });
+      api.appendEvent(p, "rt-u", { actor: "model", type: "decision", summary: "done: changed the parser to handle quoted values properly" });
+      const t = api.recordTaskNote(p, "rt-u").text;
+      assert.doesNotMatch(t, /Passing check/);
+      assert.match(t, /Not verified after the last edit/);
+      ev("command", "ok", { command: "npm test", exit: 0 });
+      const t2 = api.recordTaskNote(p, "rt-u").text;
+      assert.match(t2, /Passing check: npm test\./);
+      assert.doesNotMatch(t2, /Not verified/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});

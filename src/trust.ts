@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { gitArgs, visible } from "./util.js";
@@ -116,7 +116,18 @@ function walkFiles(root: string, rel: string, out: string[] = []): string[] {
   return out;
 }
 
-/** A short digest of the files' names and current contents (a link counts as its target text, a huge file as its size). */
+/** Streams a file through the hash in chunks, so a huge file is still judged by its content (an equal-size change must show). */
+function hashFile(h: ReturnType<typeof createHash>, abs: string): void {
+  const fd = openSync(abs, "r");
+  try {
+    const buf = Buffer.allocUnsafe(1 << 20);
+    for (let n; (n = readSync(fd, buf, 0, buf.length, null)) > 0; ) h.update(buf.subarray(0, n));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** A short digest of the files' names and current contents (a link counts as its target text). */
 function contentId(root: string, files: string[]): string {
   const h = createHash("sha256");
   for (const f of [...files].sort()) {
@@ -125,8 +136,7 @@ function contentId(root: string, files: string[]): string {
       const abs = join(root, f);
       const st = lstatSync(abs);
       if (st.isSymbolicLink()) h.update("link:" + readlinkSync(abs));
-      else if (st.size > 10_000_000) h.update("size:" + st.size);
-      else h.update(readFileSync(abs));
+      else hashFile(h, abs);
     } catch {
       h.update("missing");
     }

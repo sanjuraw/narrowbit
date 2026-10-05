@@ -3709,6 +3709,22 @@ describe("third review pass: shipped state can't choose where files are written,
     });
   });
 
+  test("a large shipped file is fingerprinted by its content, not its size: an equal-size change asks again", async () => {
+    await withTempHome(async () => {
+      const { shippedRisks } = await dist("trust.js");
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), "nb-big-")));
+      try {
+        mkdirSync(join(dir, ".narrowbit"), { recursive: true });
+        const big = Buffer.alloc(10_000_100, 97);
+        writeFileSync(join(dir, ".narrowbit", "big.bin"), big);
+        const before = shippedRisks(dir)[0].value;
+        big[5_000_000] = 98; // same size, one byte different, well past any head/tail sample
+        writeFileSync(join(dir, ".narrowbit", "big.bin"), big);
+        assert.notEqual(shippedRisks(dir)[0].value, before);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+  });
+
   test("the MCP server still starts for a repo whose only issue is a config endpoint: that setting is dropped at load, nobody needs to be asked", async () => {
     await withTempHome(async () => {
       const { root, p } = tinyRepo();

@@ -169,7 +169,8 @@ export class Memory {
     if (!existsSync(this.p.memory)) return;
     for (const t of MEMORY_TYPES) {
       const f = join(this.p.memory, `${t}s.json`);
-      if (!existsSync(f)) continue;
+      // A shipped `facts.json -> ~/private.json` must not be read as notes: only a plain file counts.
+      if (isLink(f) || !existsSync(f)) continue;
       try {
         const list = JSON.parse(readFileSync(f, "utf8")) as MemoryEntry[];
         for (const e of list) {
