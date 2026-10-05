@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import { appendNoFollow } from "narrowbit-memory";
+import { assertProjectPath, writeProjectFile } from "./util.js";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { ensureDirs, loadConfig, paths, saveConfig, detectVerify, type Paths } from "./config.js";
 import { runCommand } from "./compress.js";
@@ -171,10 +173,18 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
   const arms = (spec.arms ?? DEFAULT_ARMS).filter((a) => !opts.arms || opts.arms.includes(a.name));
   const tasks = spec.tasks.filter((t) => !opts.only || opts.only.includes(t.id));
   const repeats = spec.repeats ?? 1;
+  // Task ids and arm names become file names in the run folder: plain names only, so a spec can't write elsewhere.
+  for (const name of [...tasks.map((t) => t.id), ...arms.map((a) => a.name)]) {
+    if (typeof name !== "string" || !/^[\w][\w.-]{0,79}$/.test(name) || name.includes("..")) throw new Error(`benchmark: "${String(name).slice(0, 60)}" can't be used as a task id or arm name (letters, digits, . _ - only)`);
+  }
   const runId = shortId();
   const runDir = join(p.benchmarks, "runs", runId);
+  const state = dirname(p.nb);
+  assertProjectPath(state, runDir);
   mkdirSync(runDir, { recursive: true });
+  assertProjectPath(state, runDir);
   const resultsFile = join(p.benchmarks, "results.jsonl");
+  assertProjectPath(state, resultsFile);
   const head = sh("git", ["rev-parse", "HEAD"], p.root).stdout.trim();
   const out: RunMetrics[] = [];
   const baseArgs = spec.claudeArgs ?? ["--permission-mode", "acceptEdits"];
@@ -350,12 +360,12 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
           }
           const applied = new Set(t.apply?.paths ?? []);
           const filesChanged = changedSince(wt, commit).filter((f) => !f.startsWith(".narrowbit/") && f !== "node_modules" && !applied.has(f));
-          writeFileSync(join(runDir, `${t.id}-${arm.name}-${r}.diff`), sh("git", ["diff", commit], wt).stdout);
+          writeProjectFile(state, join(runDir, `${t.id}-${arm.name}-${r}.diff`), sh("git", ["diff", commit], wt).stdout);
           let verifyExit: number | null = null;
           if (t.verify) {
             const v = await runCommand(p, t.verify, { cwd: wt, timeoutMs: 15 * 60_000 });
             verifyExit = v.exit;
-            writeFileSync(join(runDir, `${t.id}-${arm.name}-${r}.verify.txt`), v.rendered);
+            writeProjectFile(state, join(runDir, `${t.id}-${arm.name}-${r}.verify.txt`), v.rendered);
           }
           const expected = t.expectedFiles ?? [];
           const m: RunMetrics = {
@@ -390,7 +400,8 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             expectedRecall: expected.length ? expected.filter((f) => filesChanged.includes(f)).length / expected.length : null,
             selectionRecall: arm.narrowbit && filesChanged.length ? filesChanged.filter((f) => selectedPaths.includes(f)).length / filesChanged.length : null,
           };
-          appendFileSync(resultsFile, JSON.stringify(m) + "\n");
+          assertProjectPath(state, resultsFile);
+          appendNoFollow(resultsFile, JSON.stringify(m) + "\n");
           out.push(m);
           log(
             `${tag}: ${m.success === null ? "no verify" : m.success ? "SUCCESS" : "FAIL"} — ${m.totalInputTokens.toLocaleString()} input tok (${m.cacheReadTokens.toLocaleString()} cached), ${m.turns} turns, ${m.totalToolCalls} tools, ${m.costUsd !== null ? "$" + m.costUsd.toFixed(3) : ""}`,

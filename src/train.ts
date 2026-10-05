@@ -6,7 +6,7 @@ import { indexRepo } from "./indexer.js";
 import { FEATURES, rank, type Feature, type FeatureVec } from "./ranker.js";
 import { Store } from "./store.js";
 import { parseTask } from "./taskparse.js";
-import { sh, writeProjectFile } from "./util.js";
+import { sh, writeProjectFile, assertProjectPath, stateText } from "./util.js";
 
 /**
  * Learn per-signal weights from the repository's own history — locally, no model calls.
@@ -37,9 +37,10 @@ const WEIGHTS_FILE = "weights.json";
 
 export function loadWeights(p: Paths): FeatureVec | undefined {
   const f = join(p.nb, WEIGHTS_FILE);
-  if (!existsSync(f)) return undefined;
   try {
-    const t: TrainedWeights = JSON.parse(readFileSync(f, "utf8"));
+    const text = stateText(dirname(p.nb), f);
+    if (text === null) return undefined;
+    const t: TrainedWeights = JSON.parse(text);
     // Never apply a fit that made held-out ordering worse.
     return t.after.mrr >= t.before.mrr ? t.weights : undefined;
   } catch {
@@ -127,12 +128,19 @@ export async function train(
 
   const wt = join(p.nb, "train-worktree");
   const trainNb = join(p.nb, "train");
+  // Same rule as eval: the folder is force-checked-out and cleaned below, so it must be this run's own copy inside
+  // .narrowbit, never a link and never something left there by someone else.
+  const state = dirname(p.nb);
+  assertProjectPath(state, wt);
+  assertProjectPath(state, trainNb);
   mkdirSync(trainNb, { recursive: true });
   if (existsSync(wt)) sh("git", ["worktree", "remove", "--force", wt], p.root);
-  const add = sh("git", ["worktree", "add", "--detach", "--force", wt, cands[0].parent], p.root);
+  if (existsSync(wt)) throw new Error(`${wt} exists and is not a worktree Narrowbit made — remove it and run again`);
+  const add = sh("git", ["worktree", "add", "--detach", wt, cands[0].parent], p.root);
   if (add.code !== 0) throw new Error(`git worktree add failed: ${add.stderr}`);
+  assertProjectPath(state, wt);
   const wp: Paths = { ...paths(wt), nb: trainNb, db: join(trainNb, "index.db"), memory: join(trainNb, "memory"), tasks: join(trainNb, "tasks") };
-  const store = new Store(wp.db);
+  const store = new Store(wp.db, state);
   const examples: Example[] = [];
   try {
     for (const c of cands) {

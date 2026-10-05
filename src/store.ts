@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { linkInPath } from "narrowbit-memory";
 import { chmodSync, existsSync, lstatSync } from "node:fs";
 
 export const SCHEMA_VERSION = 3;
@@ -93,7 +94,12 @@ export interface SymbolRow {
 export class Store {
   db: DatabaseSync;
 
-  constructor(path: string) {
+  /** `within`: the folder the database must really be inside — no link anywhere between it and the file. */
+  constructor(path: string, within?: string) {
+    if (within) {
+      const link = linkInPath(within, path);
+      if (link) throw new Error(`${link} is a symlink — refusing to open the index through it`);
+    }
     // SQLite follows links: a shipped `index.db -> <another database>` would get Narrowbit's tables (or, dangling, be
     // created) wherever it points. The database and its side files must be plain files with one name.
     for (const f of [path, `${path}-wal`, `${path}-shm`, `${path}-journal`]) {

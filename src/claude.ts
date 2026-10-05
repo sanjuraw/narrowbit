@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { writeProjectFile } from "./util.js";
+import { writeProjectFile, stateText } from "./util.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -130,8 +130,9 @@ export async function hookPrompt(p: Paths, stdin: string): Promise<string> {
   if (!existsSync(p.db)) return "";
   const cfg = loadConfig(p);
   const sessFile = join(p.sessions, `${String(input.session_id ?? "unknown").replace(/[^\w-]/g, "")}.json`);
-  const sess: SessionState = existsSync(sessFile)
-    ? JSON.parse(readFileSync(sessFile, "utf8"))
+  const sessText = stateText(dirname(p.nb), sessFile);
+  const sess: SessionState = sessText !== null
+    ? JSON.parse(sessText)
     : { sessionId: input.session_id, transcriptPath: input.transcript_path, given: [], tasks: [], prompts: 0 };
   sess.prompts++;
   const first = sess.tasks.length === 0;

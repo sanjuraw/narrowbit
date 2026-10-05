@@ -1,5 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
-import { join, posix } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { loadConfig, type Paths } from "./config.js";
 import { CODE_EXT, fileKind, isProbablyBinary, isTestPath, listFiles } from "./files.js";
 import { parseSource } from "./parser.js";
@@ -21,7 +21,8 @@ export interface IndexStats {
 }
 
 export function openStore(p: Paths): Store {
-  return new Store(p.db);
+  // The folder that holds this project's state folder (not p.root: that is the isolated copy during an isolated run).
+  return new Store(p.db, dirname(dirname(p.db)));
 }
 
 /** Incremental index: only files whose content hash changed are re-parsed. */

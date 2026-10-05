@@ -1197,7 +1197,7 @@ export async function main(argv: string[]): Promise<number> {
           process.stderr.write(`${f} exists\n`);
           return 1;
         }
-        writeFileSync(f, benchmarkTemplate());
+        writeFileSync(f, benchmarkTemplate(), { flag: "wx" }); // "wx": fails on anything already there, a dangling link included
         out(`wrote ${relative(process.cwd(), f)} — add 30–50 real tasks with verify commands, then: narrowbit benchmark run ${relative(process.cwd(), f)}`);
         return 0;
       }

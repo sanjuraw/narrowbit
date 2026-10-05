@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { loadConfig, paths, type Paths } from "./config.js";
 import { CODE_EXT, isTestPath } from "./files.js";
 import { indexRepo } from "./indexer.js";
@@ -7,7 +7,7 @@ import { buildPackage } from "./package.js";
 import { Store } from "./store.js";
 import { loadWeights } from "./train.js";
 import { DEFAULT_RERANK, rerank, type RerankConfig, type RerankStats } from "./rerank.js";
-import { sh, shortId } from "./util.js";
+import { sh, shortId, assertProjectPath, writeProjectFile } from "./util.js";
 
 /**
  * Offline selection benchmark over git history — free (no model calls).
@@ -64,14 +64,20 @@ export async function evalHistory(p: Paths, opts: { commits?: number; budget?: n
 
   const wt = join(p.nb, "eval-worktree");
   const evalNb = join(p.nb, "eval");
+  // The loop below force-checks-out and cleans this folder, so it must be a copy this run made itself, really inside
+  // .narrowbit: never a link (a shipped `eval-worktree -> <your other checkout>` would be wiped), never a leftover.
+  const state = dirname(p.nb);
+  assertProjectPath(state, wt);
+  assertProjectPath(state, evalNb);
   mkdirSync(evalNb, { recursive: true });
-  if (!existsSync(wt)) {
-    const r = sh("git", ["worktree", "add", "--detach", "--force", wt, cands[0].parent], p.root);
-    if (r.code !== 0) throw new Error(`git worktree add failed: ${r.stderr}`);
-  }
+  if (existsSync(wt)) sh("git", ["worktree", "remove", "--force", wt], p.root);
+  if (existsSync(wt)) throw new Error(`${wt} exists and is not a worktree Narrowbit made — remove it and run again`);
+  const r = sh("git", ["worktree", "add", "--detach", wt, cands[0].parent], p.root);
+  if (r.code !== 0) throw new Error(`git worktree add failed: ${r.stderr}`);
+  assertProjectPath(state, wt);
   const wp: Paths = { ...paths(wt), nb: evalNb, db: join(evalNb, "index.db"), memory: join(evalNb, "memory"), tasks: join(evalNb, "tasks") };
   const cfg = loadConfig(p);
-  const store = new Store(wp.db);
+  const store = new Store(wp.db, state);
   // The eval worktree has its own state dir, so learned weights must come from the real repo.
   const weights = opts.noWeights ? undefined : loadWeights(p);
   const cases: EvalCase[] = [];
@@ -160,6 +166,6 @@ export async function evalHistory(p: Paths, opts: { commits?: number; budget?: n
     ),
   };
   const out = join(p.benchmarks, `eval-${shortId()}.json`);
-  writeFileSync(out, JSON.stringify({ summary, cases }, null, 2));
+  writeProjectFile(dirname(p.nb), out, JSON.stringify({ summary, cases }, null, 2));
   return { summary, cases, file: out };
 }

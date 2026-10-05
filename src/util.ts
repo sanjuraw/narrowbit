@@ -1,9 +1,10 @@
 export { now, shortId, estimateTokens } from "narrowbit-memory";
+import { linkInPath, openPlain, readPlain } from "narrowbit-memory";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdtempSync, realpathSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 export function sha1(data: string | Buffer): string {
   return createHash("sha1").update(data).digest("hex");
@@ -157,30 +158,80 @@ export function launcherPage(url: string): string {
 }
 
 /**
- * Why writing `file` could land outside the project, or null. A project folder can come from someone else (a clone, an
- * unzipped download) with links already in place where Narrowbit keeps its state. Nothing between the project folder and
- * the file may be a symlink, the file itself may not be one (dangling included: writing would create its target), and
- * an existing file may not have a second hard link (the other name can be anywhere on the disk).
+ * Why touching `target` could reach outside the project, or null. A project folder can come from someone else (a clone,
+ * an unzipped download) with links already in place where Narrowbit keeps its state. Nothing between the project folder
+ * and the target may be a symlink, the target itself may not be one (dangling included: writing would create what it
+ * points at), and an existing file may not have a second hard link (the other name can be anywhere on the disk).
+ * `root` itself is not judged: the user chose it, and opening a project through an alias of its folder is not an escape.
  */
-export function unsafeProjectPath(root: string, file: string): string | null {
-  const rel = relative(root, file);
-  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return `${file} is not inside the project folder`;
-  let at = root;
-  const parts = rel.split(sep);
-  for (let i = 0; i < parts.length; i++) {
-    at = join(at, parts[i]);
-    let st;
-    try { st = lstatSync(at); } catch { return null; } // nothing there (yet): no link to follow from here on
-    if (st.isSymbolicLink()) return `${at} is a symlink — refusing to write through it`;
-    if (i === parts.length - 1 && st.isFile() && st.nlink > 1) return `${at} has a second hard link — refusing to write through it`;
+export function unsafeProjectPath(root: string, target: string): string | null {
+  const rel = relative(root, target);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return `${target} is not inside the project folder`;
+  const link = linkInPath(root, target);
+  if (link) return `${link} is a symlink — refusing to go through it`;
+  try {
+    const st = lstatSync(target);
+    if (st.isFile() && st.nlink > 1) return `${target} has a second hard link — refusing to read or write through it`;
+  } catch {
+    /* not there yet */
   }
   return null;
 }
 
-/** Writes one of Narrowbit's own files inside a project, never through a link (see unsafeProjectPath). Throws if unsafe. */
-export function writeProjectFile(root: string, file: string, data: string | Uint8Array, mode = 0o600): void {
-  const why = unsafeProjectPath(root, file);
+/** Throws unless `target` is safely inside the project (see unsafeProjectPath). */
+export function assertProjectPath(root: string, target: string): void {
+  const why = unsafeProjectPath(root, target);
   if (why) throw new Error(why);
-  const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, mode);
-  try { writeSync(fd, data as any); } finally { closeSync(fd); }
+}
+
+/**
+ * Writes one of Narrowbit's own files inside a project, never through a link. The path is checked, the file is opened
+ * without following a link and without truncating, its link count is read from the open descriptor, and the path is
+ * checked once more before anything is written — so a link or hard link put in place between the first check and the
+ * open is caught too. What remains (disclosed): a folder swapped for a link in the instant between the second check
+ * and the write; Node has no openat() to close that fully.
+ */
+export function writeProjectFile(root: string, file: string, data: string | Uint8Array, mode = 0o600): void {
+  assertProjectPath(root, file);
+  const fd = openPlain(file, constants.O_WRONLY | constants.O_CREAT, mode);
+  try {
+    assertProjectPath(root, file);
+    if (fstatSync(fd).ino !== lstatSync(file).ino) throw new Error(`${file} changed while it was being written — nothing was written`);
+    ftruncateSync(fd, 0);
+    writeSync(fd, data as any);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Reads one of Narrowbit's own files inside a project, or null when it isn't there. Throws if it is reached through a
+ * link or is also another file (a hard link): its contents would be whatever that other file holds. */
+export function readProjectFile(root: string, file: string): string | null {
+  assertProjectPath(root, file);
+  try {
+    return readPlain(file);
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return null;
+    throw e;
+  }
+}
+
+/** Deletes a file or folder of Narrowbit's own inside a project. `rm` doesn't follow a final link, but it does follow
+ * one in a parent folder, so the whole path is checked first. */
+export function removeProjectPath(root: string, target: string, opts: { recursive?: boolean } = {}): void {
+  const rel = relative(root, target);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error(`${target} is not inside the project folder`);
+  const link = linkInPath(root, dirname(target));
+  if (link) throw new Error(`${link} is a symlink — refusing to delete through it`);
+  rmSync(target, { recursive: !!opts.recursive, force: true });
+}
+
+/** Like readProjectFile, but a file that is missing, linked or hard-linked simply counts as absent (used where a bad
+ * state file should behave like no state file, e.g. settings a cloned repository shipped as a link). */
+export function stateText(root: string, file: string): string | null {
+  try {
+    return readProjectFile(root, file);
+  } catch {
+    return null;
+  }
 }

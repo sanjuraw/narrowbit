@@ -3709,6 +3709,155 @@ describe("third review pass: shipped state can't choose where files are written,
     });
   });
 
+  describe("the full filesystem sweep (seventeenth audit): reads, deletes, hard links and helper worktrees", () => {
+    const outsideDir = () => realpathSync(mkdtempSync(join(tmpdir(), "nb-out-")));
+    const canary = (dir, name, text = "PRIVATE\n") => { const f = join(dir, name); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, text); return f; };
+    const done = (...dirs) => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); };
+
+    test("deleting a chat or an isolated copy never deletes through a linked folder", async () => {
+      const { removeProjectPath } = await dist("util.js");
+      const { discardIsolated, readIsolated } = await dist("isolate.js");
+      const { root, p } = tinyRepo();
+      const outside = outsideDir();
+      try {
+        canary(outside, "rt-one/title.txt");
+        rmSync(p.runtime, { recursive: true, force: true });
+        symlinkSync(outside, p.runtime);
+        assert.throws(() => removeProjectPath(root, join(p.runtime, "rt-one"), { recursive: true }), /symlink/);
+        assert.throws(() => removeProjectPath(root, join(p.runtime, "rt-one", "title.txt")), /symlink/);
+        assert.ok(existsSync(join(outside, "rt-one", "title.txt")), "the outside chat folder is intact");
+        // An isolation marker reached through that link is not believed, so nothing is discarded through it.
+        canary(outside, "rt-iso/isolated.json", JSON.stringify({ dir: join(p.nb, "worktrees", "rt-iso"), snapshot: "a".repeat(40) }));
+        mkdirSync(join(p.nb, "worktrees", "rt-iso"), { recursive: true });
+        assert.equal(readIsolated(p, "rt-iso"), null);
+        discardIsolated(p, "rt-iso");
+        assert.ok(existsSync(join(outside, "rt-iso", "isolated.json")), "the outside marker is intact");
+      } finally { done(root, outside); }
+    });
+
+    test("a skill file that is also another file (a hard link) is neither read as a skill nor overwritten", async () => {
+      const { saveSkill, listSkills } = await dist("skills.js");
+      const { root, p } = tinyRepo();
+      const outside = outsideDir();
+      try {
+        saveSkill(p, "Linked", "", "original body");
+        const file = join(p.skills, "linked.md");
+        const other = join(outside, "other-name.md");
+        execFileSync("ln", [file, other]);
+        assert.ok(!listSkills(p).some((s) => s.name === "Linked"), "not listed");
+        assert.throws(() => saveSkill(p, "Linked", "", "CHANGED BODY"), /hard link/);
+        assert.match(readFileSync(other, "utf8"), /original body/, "the other name's contents are untouched");
+      } finally { done(root, outside); }
+    });
+
+    test("evaluation and training never reuse or clean a folder they did not make, and open no index through a link", async () => {
+      const { evalHistory } = await dist("eval.js");
+      const { Store } = await dist("store.js");
+      const { root, p } = tinyRepo();
+      const outside = outsideDir();
+      const git = (...a) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root });
+      try {
+        writeFileSync(join(root, "a.ts"), "export const a = 1;\n"); git("add", "a.ts"); git("commit", "-qm", "add a");
+        writeFileSync(join(root, "a.ts"), "export const a = 2;\n"); git("commit", "-qam", "fix the value of a in a.ts");
+        const mine = canary(outside, "checkout/untracked-canary.txt");
+        symlinkSync(join(outside, "checkout"), join(p.nb, "eval-worktree"));
+        await assert.rejects(() => evalHistory(p, { commits: 1, log: () => {} }), /symlink/);
+        assert.ok(existsSync(mine), "the linked folder was not cleaned");
+        rmSync(join(p.nb, "eval-worktree"));
+        mkdirSync(join(outside, "evalstate"));
+        symlinkSync(join(outside, "evalstate"), join(p.nb, "eval"));
+        await assert.rejects(() => evalHistory(p, { commits: 1, log: () => {} }), /symlink/);
+        assert.throws(() => new Store(join(p.nb, "eval", "index.db"), root), /symlink/);
+        assert.deepEqual(readdirSync(join(outside, "evalstate")), [], "no index was created through the link");
+      } finally { done(root, outside); }
+    });
+
+    test("isolation refuses when the copy's own folder name is already a link", async () => {
+      const { ensureIsolated } = await dist("isolate.js");
+      const { root, p } = tinyRepo();
+      const outside = outsideDir();
+      try {
+        mkdirSync(join(p.nb, "worktrees"), { recursive: true });
+        symlinkSync(outside, join(p.nb, "worktrees", "rt-leaf"));
+        assert.throws(() => ensureIsolated(p, "rt-leaf"), /symlink/);
+        assert.deepEqual(readdirSync(outside), []);
+      } finally { done(root, outside); }
+    });
+
+    test("a benchmark spec can't name its way out of the output folder", async () => {
+      const { runBenchmark } = await dist("bench.js");
+      const { root, p } = tinyRepo();
+      try {
+        const spec = join(root, "spec.json");
+        writeFileSync(spec, JSON.stringify({ arms: [{ name: "native" }], tasks: [{ id: "../../escaped", prompt: "x", verify: "true" }] }));
+        await assert.rejects(() => runBenchmark(p, spec, { log: () => {} }), /can't be used as a task id/);
+        writeFileSync(spec, JSON.stringify({ arms: [{ name: "a/b" }], tasks: [{ id: "ok", prompt: "x", verify: "true" }] }));
+        await assert.rejects(() => runBenchmark(p, spec, { log: () => {} }), /can't be used as a task id or arm name/);
+      } finally { done(root); }
+    });
+
+    test("Narrowbit's own state never enters the source index, whatever the letter case of its folder name", async () => {
+      const { listFiles } = await dist("files.js");
+      const { root, p } = tinyRepo();
+      try {
+        writeFileSync(join(p.nb, "leak.ts"), "export const secretState = 1;\n");
+        // On a case-insensitive disk this is the same folder under another spelling; elsewhere it is simply refused by git.
+        try { execFileSync("git", ["add", "-f", ".NARROWBIT/leak.ts"], { cwd: root, stdio: "ignore" }); } catch { /* case-sensitive disk */ }
+        try { execFileSync("git", ["add", "-f", ".narrowbit/leak.ts"], { cwd: root, stdio: "ignore" }); } catch { /* ignore */ }
+        assert.deepEqual(listFiles(p).filter((f) => /narrowbit\//i.test(f)), []);
+      } finally { done(root); }
+    });
+
+    test("a rewind's recovery folder must be new: a link waiting on its name stops the rewind with nothing changed", async (t) => {
+      const { checkpointNow, listCheckpoints, restoreCheckpoint } = await dist("checkpoints.js");
+      const { root, p } = tinyRepo();
+      const outside = outsideDir();
+      try {
+        checkpointNow(p, "rt-stamp", 1, "before");
+        const commit = listCheckpoints(p, "rt-stamp")[0].commit;
+        writeFileSync(join(root, "a.txt"), "changed\n");
+        t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2030-01-02T03:04:05.678Z") });
+        mkdirSync(join(p.nb, "rewind-trash"), { recursive: true });
+        symlinkSync(outside, join(p.nb, "rewind-trash", "2030-01-02T03-04-05-678Z"));
+        const r = restoreCheckpoint(root, commit);
+        assert.equal(r.ok, false);
+        assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "changed\n", "nothing was rewound");
+        assert.deepEqual(readdirSync(outside), [], "no backup was written through the link");
+      } finally { t.mock.timers.reset(); done(root, outside); }
+    });
+
+    test("state files reached through a link, or that are also another file, count as absent when read", async () => {
+      const { loadConfig: load } = await dist("config.js");
+      const { Tasks } = await dist("tasks.js");
+      const { loadWeights } = await dist("train.js");
+      const { loadIgnore } = await dist("files.js");
+      const { root, p } = tinyRepo();
+      const outside = outsideDir();
+      try {
+        const evil = canary(outside, "config.json", JSON.stringify({ budget: { max: 123456 }, verify: { test: "echo FROM-OUTSIDE" } }));
+        rmSync(p.config, { force: true });
+        symlinkSync(evil, p.config);
+        assert.notEqual(load(p).budget?.max, 123456, "a linked settings file is not read");
+        rmSync(p.config);
+        execFileSync("ln", [evil, p.config]);
+        assert.notEqual(load(p).verify?.test, "echo FROM-OUTSIDE", "nor one that is a hard link to another file");
+        rmSync(p.config);
+
+        const rec = canary(outside, "rt-x.json", JSON.stringify({ id: "rt-x", task: "FROM OUTSIDE" }));
+        execFileSync("ln", [rec, join(p.tasks, "rt-x.json")]);
+        assert.equal(new Tasks(p).load("rt-x"), null);
+        assert.deepEqual(new Tasks(p).list(), []);
+
+        symlinkSync(canary(outside, "weights.json", "{}"), join(p.nb, "weights.json"));
+        assert.equal(loadWeights(p), undefined);
+
+        rmSync(p.ignore, { force: true });
+        symlinkSync(canary(outside, "ignore", "a.txt\n"), p.ignore);
+        assert.equal(loadIgnore(p).ignores("a.txt"), false, "ignore rules are not read through a link");
+      } finally { done(root, outside); }
+    });
+  });
+
   test("no state file is written through a link: config, index, current task, ignore file, weights, logs", async () => {
     const { saveConfig, loadConfig: load } = await dist("config.js");
     const { Store } = await dist("store.js");

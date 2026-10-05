@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { assertPlain, TASK_ID } from "./safefs.js";
+import { assertPlain, readPlain, TASK_ID } from "./safefs.js";
 import type { MemoryPaths } from "./paths.js";
 import { taskDir } from "./events.js";
 import { redact } from "./redact.js";
@@ -41,6 +41,10 @@ export function readEvidence(p: MemoryPaths, taskId: string, id: string): string
   if (!TASK_ID.test(id)) throw new Error(`invalid evidence id`);
   const f = join(evidenceDir(p, taskId), id);
   assertPlain(dirname(p.runtime), p.runtime, taskDir(p, taskId), evidenceDir(p, taskId), f);
-  if (!existsSync(f)) throw new Error(`no evidence ${id} for task ${taskId}`);
-  return readFileSync(f, "utf8");
+  try {
+    return readPlain(f);
+  } catch (e: any) {
+    if (e?.code === "ENOENT") throw new Error(`no evidence ${id} for task ${taskId}`);
+    throw e;
+  }
 }

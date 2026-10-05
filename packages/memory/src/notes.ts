@@ -3,7 +3,16 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { MemoryPaths } from "./paths.js";
 import { redact } from "./redact.js";
-import { assertPlain, isLink } from "./safefs.js";
+import { assertPlain, isLink, linkInPath, readPlain, writePlain } from "./safefs.js";
+
+const lexists = (f: string): boolean => {
+  try {
+    lstatSync(f);
+    return true;
+  } catch {
+    return false;
+  }
+};
 import { termsOf } from "./terms.js";
 import { now, shortId } from "./util.js";
 
@@ -145,14 +154,15 @@ export class Memory {
    * at a folder of the user's own: reading through it would show the model files the repo was never given, and writing
    * would put notes (or, via an old-format file, anything) there. Such a store is treated as absent and refuses writes.
    */
-  private readonly regular: boolean;
+  /** Decided on every use, not once: a notes folder replaced by a link after this object was made must not be followed. */
+  private get regular(): boolean {
+    return !isLink(this.p.memory) && !isLink(dirname(this.p.memory));
+  }
 
   constructor(
     private p: MemoryPaths,
     private extraDirs: string[] = [],
   ) {
-    const isLink = (f: string) => { try { return lstatSync(f).isSymbolicLink(); } catch { return false; } };
-    this.regular = !isLink(p.memory) && !isLink(dirname(p.memory));
     if (this.regular && existsSync(p.memory)) {
       // Visible structure for humans browsing the vault; hand-written notes get their type from the folder.
       for (const t of MEMORY_TYPES) mkdirSync(this.dir(t), { recursive: true, mode: 0o700 });
@@ -172,7 +182,7 @@ export class Memory {
       // A shipped `facts.json -> ~/private.json` must not be read as notes: only a plain file counts.
       if (isLink(f) || !existsSync(f)) continue;
       try {
-        const list = JSON.parse(readFileSync(f, "utf8")) as MemoryEntry[];
+        const list = JSON.parse(readPlain(f)) as MemoryEntry[];
         for (const e of list) {
           // The file is data from the repository: it decides neither where a note is written (`file`) nor which folder
           // (`type`), only the note's own text. Entries that aren't shaped like notes are skipped.
@@ -180,7 +190,10 @@ export class Memory {
           const { file: _f, external: _x, ...clean } = e;
           this.write({ ...clean, id: /^[\w.-]{1,80}$/.test(clean.id) ? clean.id : `${e.type.slice(0, 3)}-${shortId()}` });
         }
-        renameSync(f, f + ".migrated");
+        // Never onto an earlier backup (rename replaces silently): take the first free name.
+        let done = f + ".migrated";
+        for (let i = 2; lexists(done); i++) done = `${f}.migrated-${i}`;
+        renameSync(f, done);
       } catch {
         /* leave the file for manual inspection */
       }
@@ -196,8 +209,8 @@ export class Memory {
     const { file: _f, external: _x, ...data } = e;
     const md = toMarkdown(data as MemoryEntry);
     // A note is only ever rewritten in place if it is a regular file inside the notes folder.
-    if (e.file && resolve(e.file).startsWith(resolve(this.p.memory) + sep) && !isLink(e.file)) {
-      writeFileSync(e.file, md, { mode: 0o600 });
+    if (e.file && resolve(e.file).startsWith(resolve(this.p.memory) + sep) && !isLink(e.file) && !linkInPath(this.p.memory, e.file)) {
+      writePlain(e.file, md); // refuses a note that is also another file (a hard link): rewriting it would change that file
       return e.file;
     }
     // A new note gets the first free name, created exclusively: a link someone placed on a predictable name makes
@@ -229,7 +242,7 @@ export class Memory {
         this.readDir(abs, t ?? type, external, out, depth + 1);
       } else if (ent.name.endsWith(".md")) {
         try {
-          const e = fromMarkdown(readFileSync(abs, "utf8"), { id: basename(ent.name, ".md"), type });
+          const e = fromMarkdown(external ? readFileSync(abs, "utf8") : readPlain(abs), { id: basename(ent.name, ".md"), type });
           if (e) out.push({ ...e, file: abs, external });
         } catch {
           /* unreadable note: skip */

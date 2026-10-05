@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Paths } from "./config.js";
@@ -106,6 +106,22 @@ export function rewindTrashUnsafe(root: string): string | null {
   return null;
 }
 
+/** Makes the recovery folder for one rewind/discard. It must be new: a folder (or link) already sitting on that name is
+ * refused, since backups written "into" it would go wherever it leads. */
+function makeTrash(root: string, stamp: string): string {
+  const base = join(root, ".narrowbit", "rewind-trash");
+  mkdirSync(base, { recursive: true, mode: 0o700 });
+  const unsafe = rewindTrashUnsafe(root);
+  if (unsafe) throw new Error(unsafe);
+  const trash = join(base, stamp);
+  mkdirSync(trash, { mode: 0o700 }); // not recursive: EEXIST if anything is already there
+  return trash;
+}
+
+const dropIfEmpty = (dir: string): void => {
+  try { rmdirSync(dir); } catch { /* has files, or was never made */ }
+};
+
 export function pruneRewindTrash(root: string, maxAgeDays = 14, nowMs = Date.now()): string[] {
   const base = join(root, ".narrowbit", "rewind-trash");
   if (rewindTrashUnsafe(root) || !existsSync(base)) return [];
@@ -156,7 +172,12 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
   if (unsafe) return refuse(unsafe);
   pruneRewindTrash(root);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const trash = join(root, ".narrowbit", "rewind-trash", stamp);
+  let trash: string;
+  try {
+    trash = makeTrash(root, stamp);
+  } catch (e: any) {
+    return refuse(`couldn't make a fresh recovery folder (${e?.code ?? e?.message ?? "error"}).`);
+  }
   const moved: string[] = [];
   const overwrittenSaved: string[] = [];
   const kept: string[] = [];
@@ -177,6 +198,7 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
     }
   }
   // Nothing is overwritten or moved unless every file about to be replaced has a recovery copy: stop here instead.
+  if (unsaved.length) dropIfEmpty(trash);
   if (unsaved.length) return { ok: false, message: `nothing was changed: couldn't save a recovery copy of ${unsaved.length} file(s) first (${unsaved.slice(0, 5).join(", ")}). Check that .narrowbit/rewind-trash is writable.`, unsaved };
 
   for (const f of after) {
@@ -216,6 +238,7 @@ export function restoreCheckpoint(root: string, commit: string): { ok: boolean; 
   if (moved.length) notes.push(`moved ${moved.length} newer file(s) to ${join(".narrowbit", "rewind-trash", stamp)} instead of deleting them (kept there for 14 days)`);
   if (kept.length) notes.push(`left ${kept.length} newer file(s) in place (staged, or could not be moved): ${kept.slice(0, 5).join(", ")}`);
   if (overwrittenSaved.length) notes.push(`kept a copy of ${overwrittenSaved.length} file(s) it overwrote in ${join(".narrowbit", "rewind-trash", stamp)}`);
+  dropIfEmpty(trash);
   return { ok: true, message: notes.join("; "), movedTo: moved.length || overwrittenSaved.length ? trash : undefined, kept: kept.length ? kept : undefined };
 }
 
@@ -287,8 +310,15 @@ export function discardTask(root: string, start: string, end: string, opts: Disc
   if (unsafe && (plan.remove.length || plan.restore.length)) return { ...plan, ok: false, message: `nothing was changed: ${unsafe}` };
   let movedTo: string | undefined;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const trash = join(root, ".narrowbit", "rewind-trash", stamp);
-  if (plan.remove.length || plan.restore.length) pruneRewindTrash(root);
+  let trash = join(root, ".narrowbit", "rewind-trash", stamp);
+  if (plan.remove.length || plan.restore.length) {
+    pruneRewindTrash(root);
+    try {
+      trash = makeTrash(root, stamp);
+    } catch (e: any) {
+      return { ...plan, ok: false, message: `nothing was changed: couldn't make a fresh recovery folder (${e?.code ?? e?.message ?? "error"}).` };
+    }
+  }
   const keepCopy = (f: string, move: boolean) => {
     // A file that is already gone has nothing to copy (a deleted file being put back); only an existing one needs saving.
     try {
@@ -346,6 +376,7 @@ export function discardTask(root: string, start: string, end: string, opts: Disc
   }
   const parts = [`put back ${plan.restore.length} file(s) the agent edited`];
   if (plan.remove.length) parts.push(`moved ${plan.remove.length} file(s) it created aside`);
+  dropIfEmpty(trash);
   if (movedTo) parts.push(`copies of everything it replaced are in ${join(".narrowbit", "rewind-trash")} (kept there for 14 days)`);
   if (plan.skipped.length) parts.push(`left ${plan.skipped.length} file(s) alone (they changed again after the task, or a copy of them couldn't be saved first)`);
   if (plan.review.length) parts.push(`left ${plan.review.length} file(s) alone that changed during the task but not through the agent's edits`);

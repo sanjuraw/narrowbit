@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, lstatSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { DEFAULT_IGNORE, type Paths } from "./config.js";
-import { realRel, sh } from "./util.js";
+import { realRel, sh, stateText } from "./util.js";
 
 export const CODE_EXT = /\.(?:[cm]?[jt]sx?|d\.ts)$/;
 export const DOC_EXT = /\.(?:md|mdx)$/i;
@@ -67,7 +67,7 @@ export class IgnoreMatcher {
 }
 
 export function loadIgnore(p: Paths): IgnoreMatcher {
-  const user = existsSync(p.ignore) ? readFileSync(p.ignore, "utf8") : "";
+  const user = stateText(dirname(p.ignore), p.ignore) ?? "";
   return new IgnoreMatcher(DEFAULT_IGNORE + "\n.narrowbit/\n.git/\n" + user);
 }
 
@@ -103,8 +103,9 @@ export function listFiles(p: Paths): string[] {
     }
     return ok;
   };
+  const ownState = (f: string) => /^(\.narrowbit|\.git)(\/|$)/i.test(f);
   return [...new Set(files)]
-    .filter((f) => !ig.ignores(f) && existsSync(join(p.root, f)))
+    .filter((f) => !ownState(f) && !ig.ignores(f) && existsSync(join(p.root, f)))
     .filter((f) => {
       try {
         // lstat, not stat: a symlink is never indexed. Following one would let the index (and so symbol lookup and

@@ -1,7 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -350,6 +350,60 @@ describe("the saved verification status is the latest result, failures included"
       assert.match(api.recordTaskNote(p, "rt-f").text, /Last check failed/);
       ev("verify", "VERIFICATION PASSED", { ok: true });
       assert.match(api.recordTaskNote(p, "rt-f").text, /Verified after the last edit/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("hard links, a notes folder replaced later, and migration backups", () => {
+  test("an event log or a note that is also another file is neither appended to, rewritten nor read", () => {
+    const root = project(), outside = project();
+    try {
+      const p = api.memoryPaths(root);
+      api.ensureMemoryDirs(p);
+      api.appendEvent(p, "rt-h", { actor: "user", type: "decision", summary: "first" });
+      const log = join(p.runtime, "rt-h", "events.jsonl");
+      const logTwin = join(outside, "log-twin");
+      linkSync(log, logTwin);
+      const before = readFileSync(logTwin, "utf8");
+      assert.throws(() => api.appendEvent(p, "rt-h", { actor: "user", type: "decision", summary: "second" }), /hard link/);
+      assert.equal(readFileSync(logTwin, "utf8"), before, "the other name was not appended to");
+      assert.deepEqual(api.readEvents(p, "rt-h"), [], "and it is not read as this task's history");
+
+      const mem = api.openMemory(p);
+      const n = mem.add({ type: "fact", text: "the widget uses base 10", files: [] });
+      const noteTwin = join(outside, "note-twin");
+      linkSync(n.file, noteTwin);
+      const noteBefore = readFileSync(noteTwin, "utf8");
+      assert.equal(mem.setStatus(n.id, "resolved"), null, "a note that is also another file is not one of this project's notes");
+      assert.equal(readFileSync(noteTwin, "utf8"), noteBefore, "resolving did not rewrite the other name");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  test("a notes folder swapped for a link after the store was opened is not followed", () => {
+    const root = project(), outside = project();
+    try {
+      const p = api.memoryPaths(root);
+      api.ensureMemoryDirs(p);
+      const mem = api.openMemory(p);
+      mem.add({ type: "fact", text: "made while the folder was real", files: [] });
+      renameSync(p.memory, p.memory + ".real");
+      symlinkSync(outside, p.memory);
+      assert.throws(() => mem.add({ type: "fact", text: "must not land outside", files: [] }), /symlink/);
+      assert.deepEqual(mem.load(), [], "and nothing is read through it");
+      assert.deepEqual(readdirSync(outside), []);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  test("migrating an old notes file never replaces an earlier backup", () => {
+    const root = project();
+    try {
+      const p = api.memoryPaths(root);
+      mkdirSync(p.memory, { recursive: true });
+      writeFileSync(join(p.memory, "facts.json.migrated"), "EARLIER BACKUP");
+      writeFileSync(join(p.memory, "facts.json"), JSON.stringify([{ id: "fac-1", type: "fact", text: "a newer old-format note" }]));
+      api.openMemory(p).load();
+      assert.equal(readFileSync(join(p.memory, "facts.json.migrated"), "utf8"), "EARLIER BACKUP");
+      assert.ok(existsSync(join(p.memory, "facts.json.migrated-2")), "the new backup took the next free name");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

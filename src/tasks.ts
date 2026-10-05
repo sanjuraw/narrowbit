@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { writeProjectFile } from "./util.js";
+import { writeProjectFile, stateText } from "./util.js";
 import { dirname, join } from "node:path";
 import type { Paths } from "./config.js";
 
@@ -91,8 +91,9 @@ export class Tasks {
   load(id: string): TaskRecord | null {
     if (!TASK_ID.test(id)) return null;
     const f = this.path(id);
-    if (isLink(this.p.nb) || isLink(this.p.tasks) || isLink(f) || !existsSync(f)) return null;
-    const rec = JSON.parse(readFileSync(f, "utf8"));
+    const text = stateText(dirname(this.p.nb), f);
+    if (text === null) return null;
+    const rec = JSON.parse(text);
     return rec && rec.id === id ? rec : null;
   }
 
@@ -100,8 +101,7 @@ export class Tasks {
     const env = process.env.NARROWBIT_TASK;
     if (env && this.load(env)) return env;
     const f = join(this.p.nb, "current-task");
-    if (isLink(f) || !existsSync(f)) return null;
-    const id = readFileSync(f, "utf8").trim();
+    const id = (stateText(dirname(this.p.nb), f) ?? "").trim();
     return TASK_ID.test(id) ? id : null;
   }
 
@@ -116,7 +116,7 @@ export class Tasks {
       .filter((f) => f.endsWith(".json") && !isLink(join(this.p.tasks, f)))
       .map((f) => {
         try {
-          const rec = JSON.parse(readFileSync(join(this.p.tasks, f), "utf8")) as TaskRecord;
+          const rec = JSON.parse(stateText(dirname(this.p.nb), join(this.p.tasks, f)) ?? "null") as TaskRecord;
           return rec && `${rec.id}.json` === f ? rec : null;
         } catch {
           return null;

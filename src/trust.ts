@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { gitArgs, visible } from "./util.js";
+import { gitArgs, visible, stateText } from "./util.js";
 
 /**
  * Some git settings in a repository's own config name a program git runs by itself on ordinary commands. Narrowbit
@@ -153,7 +153,7 @@ function contentId(root: string, files: string[]): string {
 
 export function repoConfigRisksAt(root: string): GitRisk[] {
   try {
-    return repoConfigRisks(JSON.parse(readFileSync(join(root, ".narrowbit", "config.json"), "utf8")));
+    return repoConfigRisks(JSON.parse(stateText(root, join(root, ".narrowbit", "config.json")) ?? "null"));
   } catch {
     return [];
   }

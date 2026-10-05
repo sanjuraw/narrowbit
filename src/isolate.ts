@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync, copyFileSync, lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Paths } from "./config.js";
-import { sh, writeProjectFile } from "./util.js";
+import { sh, writeProjectFile, unsafeProjectPath, readProjectFile, removeProjectPath } from "./util.js";
 
 /**
  * Isolated runs: the agent works in a throwaway git worktree instead of the user's folder, so a bad
@@ -27,7 +27,9 @@ const worktreeDir = (p: Paths, taskId: string) => join(p.nb, "worktrees", taskId
 export function readIsolated(p: Paths, taskId: string): Marker | null {
   if (!/^rt-[\w-]+$/.test(taskId)) return null;
   try {
-    const m = JSON.parse(readFileSync(markerFile(p, taskId), "utf8")) as Marker;
+    const state = dirname(p.nb);
+    if (unsafeProjectPath(state, markerFile(p, taskId)) || unsafeProjectPath(state, worktreeDir(p, taskId))) return null; // nothing reached through a link
+    const m = JSON.parse(readProjectFile(state, markerFile(p, taskId)) ?? "null") as Marker;
     if (typeof m?.dir !== "string" || typeof m?.snapshot !== "string" || !/^[0-9a-f]{40}$/.test(m.snapshot)) return null;
     const expected = worktreeDir(p, taskId);
     if (resolve(m.dir) !== resolve(expected) || !existsSync(m.dir)) return null;
@@ -53,7 +55,7 @@ export function ensureIsolated(p: Paths, taskId: string): Marker {
   if (!/^rt-[\w-]+$/.test(taskId)) throw new Error("bad task id");
   // The whole path, before anything is created: a linked `worktrees` would put the copy outside the project, where
   // readIsolated (rightly) refuses to recognise it, so it could be neither applied nor discarded.
-  for (const d of [p.nb, join(p.nb, "worktrees"), join(p.nb, "worktree-index"), p.runtime, join(p.runtime, taskId)]) {
+  for (const d of [p.nb, join(p.nb, "worktrees"), worktreeDir(p, taskId), join(p.nb, "worktree-index"), p.runtime, join(p.runtime, taskId)]) {
     let linked = false;
     try { linked = lstatSync(d).isSymbolicLink(); } catch { /* not there yet */ }
     if (linked) throw new Error(`Couldn't create the separate copy: ${d} is a symlink. Your folder is untouched and the task didn't start.`);
@@ -150,9 +152,12 @@ export function applyIsolated(p: Paths, taskId: string): { ok: boolean; message:
 export function discardIsolated(p: Paths, taskId: string): void {
   const m = readIsolated(p, taskId);
   if (!m) return;
+  const state = dirname(p.nb);
   sh("git", ["worktree", "remove", "--force", m.dir], p.root);
-  if (existsSync(m.dir)) rmSync(m.dir, { recursive: true, force: true });
+  if (existsSync(m.dir)) removeProjectPath(state, m.dir, { recursive: true });
   sh("git", ["worktree", "prune"], p.root);
-  rmSync(markerFile(p, taskId), { force: true });
-  for (const ext of ["", "-wal", "-shm"]) rmSync(join(p.nb, "worktree-index", `${taskId}.db${ext}`), { force: true });
+  // Each of these is deleted only if nothing on the way to it is a link (rm follows a linked parent folder).
+  for (const f of [markerFile(p, taskId), ...["", "-wal", "-shm"].map((ext) => join(p.nb, "worktree-index", `${taskId}.db${ext}`))]) {
+    try { removeProjectPath(state, f); } catch { /* left in place rather than deleted through a link */ }
+  }
 }

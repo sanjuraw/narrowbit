@@ -5,7 +5,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -1594,6 +1594,21 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
       assert.ok(!labels(conn).some((l) => /whole task/.test(l)), "a connector call keeps its single 'this call' choice");
       assert.deepEqual(sent.map((x) => [x.id, x.decision]), [["a1", "task"], ["a2", "always"], ["a3", "always"], ["a4", "task"]]);
     } finally { page.close(); }
+  });
+
+  test("the changes preview shows an untracked symlink as a link, never the contents of what it points to", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const outside = mkdtempSync(join(tmpdir(), "nb-ui-out-"));
+    const link = join(repo, "notes-link.txt");
+    try {
+      writeFileSync(join(outside, "private.txt"), "TOP-SECRET-OUTSIDE-TEXT\n");
+      symlinkSync(join(outside, "private.txt"), link);
+      const d = await (await fetch(`${app.base}/api/diff`, { headers: H })).json();
+      assert.ok(d.files.includes("notes-link.txt"), "the new link is listed as a change");
+      assert.doesNotMatch(d.diff, /TOP-SECRET-OUTSIDE-TEXT/);
+      assert.match(d.diff, /symbolic link to/);
+    } finally { rmSync(link, { force: true }); rmSync(outside, { recursive: true, force: true }); }
   });
 
   test("a pending question doesn't break the 1-4 shortcuts: they still answer the approval next to it", async () => {

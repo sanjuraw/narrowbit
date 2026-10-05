@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { isTrusted, repoConfigRisks } from "./trust.js";
-import { sh, writeProjectFile } from "./util.js";
+import { sh, writeProjectFile, stateText } from "./util.js";
 
 export const NB_DIR = ".narrowbit";
 
@@ -173,8 +173,10 @@ export function ensureDirs(p: Paths): void {
 const warned = new Set<string>();
 
 export function loadConfig(p: Paths): NarrowbitConfig {
-  if (!existsSync(p.config)) return structuredClone(DEFAULT_CONFIG);
-  const raw = JSON.parse(readFileSync(p.config, "utf8"));
+  // A settings file reached through a link, or that is also some other file, counts as no settings file.
+  const text = stateText(dirname(p.nb), p.config);
+  if (text === null) return structuredClone(DEFAULT_CONFIG);
+  const raw = JSON.parse(text);
   const cfg: NarrowbitConfig = {
     ...DEFAULT_CONFIG,
     ...raw,

@@ -6,6 +6,7 @@
  * published and benchmarked on its own.
  */
 export * from "./paths.js";
+export * from "./safefs.js";
 export * from "./util.js";
 export * from "./redact.js";
 export * from "./terms.js";

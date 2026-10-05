@@ -1,5 +1,6 @@
 import { closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import { stateText, writeProjectFile } from "./util.js";
+import { dirname, join } from "node:path";
 import type { Paths } from "./config.js";
 
 /**
@@ -97,7 +98,8 @@ function listUserSkills(p: Paths): Skill[] {
     .filter((f) => f.endsWith(".md") && !isLink(join(p.skills, f)))
     .map((f) => {
       try {
-        return parse(readFileSync(join(p.skills, f), "utf8"), f);
+        const text = stateText(dirname(p.nb), join(p.skills, f)); // not a link, not also some other file
+        return text === null ? null : parse(text, f);
       } catch {
         return null;
       }
@@ -124,8 +126,7 @@ export function saveSkill(p: Paths, name: string, description: string, body: str
   const fm = [`name: ${JSON.stringify(trimmedName)}`, description.trim() ? `description: ${JSON.stringify(description.trim())}` : null].filter(Boolean).join("\n");
   if (skillsFolderLinked(p)) throw new Error("the skills folder is a symlink — refusing to write through it");
   if (isLink(join(p.skills, file))) throw new Error(`${file} is a symlink — refusing to overwrite what it points to`);
-  const fd = openSync(join(p.skills, file), constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
-  try { writeSync(fd, `---\n${fm}\n---\n\n${trimmedBody}\n`); } finally { closeSync(fd); }
+  writeProjectFile(dirname(p.nb), join(p.skills, file), `---\n${fm}\n---\n\n${trimmedBody}\n`);
   return { name: trimmedName, description: description.trim(), body: trimmedBody, file };
 }
 

@@ -1,10 +1,10 @@
 import { redact } from "./redact.js";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { MemoryPaths } from "./paths.js";
 import { now, shortId } from "./util.js";
 import { dirname } from "node:path";
-import { appendNoFollow, assertPlain, isLink, TASK_ID } from "./safefs.js";
+import { appendNoFollow, assertPlain, isLink, readPlain, TASK_ID } from "./safefs.js";
 
 /**
  * Owned-runtime append-only ledger (CLAUDE.md "Handoff"): every model call, tool call, edit,
@@ -91,8 +91,13 @@ export function readEvents(p: MemoryPaths, taskId: string): Event[] {
   const f = eventsFile(p, taskId);
   // A log reached through a link (a shipped one pointing at someone else's file) is not this task's history.
   if (isLink(dirname(p.runtime)) || isLink(p.runtime) || isLink(taskDir(p, taskId)) || isLink(f)) return [];
-  if (!existsSync(f)) return [];
-  return readFileSync(f, "utf8")
+  let text: string;
+  try {
+    text = readPlain(f); // not through a link, and not a file that is also some other file (a hard link)
+  } catch {
+    return [];
+  }
+  return text
     .split("\n")
     .filter(Boolean)
     .map((l) => JSON.parse(l) as Event);

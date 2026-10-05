@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync, lstatSync, readlinkSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+import { dirname, basename, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { attachmentDir, attachmentKind, saveAttachment } from "./attachments.js";
 import { suggestFiles } from "./mentions.js";
@@ -42,7 +42,7 @@ import { providerCallFor, runTask } from "./runtime.js";
 import { acknowledgeUpdateNotes, applyUpdate, checkUpdate, pendingUpdateNotes, readVersion } from "./update.js";
 import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
-import { sh, visible, writeProjectFile } from "./util.js";
+import { sh, visible, writeProjectFile, removeProjectPath, stateText } from "./util.js";
 import { updateCli } from "./providers/models.js";
 import { covered, editsSince, type Grant } from "./approvals.js";
 import { suggestFollowUp, suggestionFromEvents } from "./followup.js";
@@ -157,7 +157,7 @@ function taskHistory(p: Paths, limit = 40, tag?: { project: string; root: string
     const end = [...events].reverse().find((e) => e.type === "decision" && typeof e.meta?.outcome === "string");
     const done = [...events].reverse().find((e) => e.type === "decision" && e.summary.startsWith("done: "));
     let title = "";
-    try { title = readFileSync(join(p.runtime, id, "title.txt"), "utf8").trim(); } catch { /* not renamed */ }
+    title = (stateText(dirname(p.nb), join(p.runtime, id, "title.txt")) ?? "").trim();
     rows.push({
       id,
       goal: title || (state.goal ?? "(no goal recorded)"),
@@ -233,7 +233,7 @@ function diffStats(root: string, files: string[]): Record<string, { added: numbe
   for (const f of files) {
     if (out[f]) continue;
     try {
-      out[f] = { added: readFileSync(join(root, f), "utf8").split("\n").length, removed: 0 };
+      out[f] = { added: lstatSync(join(root, f)).isSymbolicLink() ? 1 : readFileSync(join(root, f), "utf8").split("\n").length, removed: 0 };
     } catch {
       out[f] = { added: 0, removed: 0 };
     }
@@ -253,7 +253,9 @@ function workingDiff(root: string, skipUntracked: Set<string> = new Set()) {
     const abs = join(root, f);
     let body = "";
     try {
-      const buf = readFileSync(abs);
+      // git would add a link as a link: show it as one. Reading through it would put a file from outside the project
+      // (whatever it points at) into the preview.
+      const buf = lstatSync(abs).isSymbolicLink() ? Buffer.from(`(symbolic link to ${readlinkSync(abs)})`) : readFileSync(abs);
       body = buf.includes(0) ? "(binary file)" : buf.toString("utf8").split("\n").slice(0, 400).map((l) => `+${l}`).join("\n");
     } catch {
       continue;
@@ -878,11 +880,11 @@ export function startUi(opts: UiOptions) {
           const dir = join(paths(root).runtime, id);
           if (!existsSync(dir)) return json(res, 404, { error: "no such session" });
           if (route === "POST /api/session/delete") {
-            rmSync(dir, { recursive: true, force: true });
+            removeProjectPath(root, dir, { recursive: true });
           } else {
             const title = String(body.title ?? "").trim().slice(0, 200);
             if (title) writeProjectFile(root, join(dir, "title.txt"), title + "\n");
-            else if (existsSync(join(dir, "title.txt"))) unlinkSync(join(dir, "title.txt"));
+            else removeProjectPath(root, join(dir, "title.txt"));
           }
           return json(res, 200, state());
         }
