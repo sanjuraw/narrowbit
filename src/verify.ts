@@ -41,35 +41,44 @@ export async function verify(
   const changed = changedSince(p.root, base).filter((f) => !f.startsWith(".narrowbit/"));
   const steps: VerifyResult["steps"] = [];
 
-  const step = async (name: string, cmd: string | undefined) => {
-    if (!cmd) return;
-    if (opts.approve && !(await opts.approve(cmd))) {
-      steps.push({ name, ok: false, exit: -1, summary: "declined by user — not run; this check is unconfirmed, not passing" });
-      return;
-    }
-    const run = await runCommand(p, cmd, { signal: opts.signal, onOutput: opts.onOutput ? (t) => opts.onOutput!(cmd, t) : undefined });
-    // Exit 127 is the shell saying the command doesn't exist here (mypy/ruff named in pyproject.toml
-    // but not installed in the active environment, say). That is a missing tool, not failing code:
-    // counting it as a failure made every verify red on tests that passed, and repeated failed
-    // checks feed the runtime's escalation to the most expensive model. Report it as not run.
-    if (run.exit === 127) {
-      const tool = cmd.trim().split(/\s+/)[0];
-      steps.push({ name, ok: true, skipped: true, exit: 127, summary: `skipped — \`${tool}\` isn't installed here, so this check did not run (it did not pass either)`, run });
-      return;
-    }
-    steps.push({ name, ok: run.exit === 0, exit: run.exit, summary: run.compressed.summary, run });
+  // The checks are independent, so they run side by side: one after another, typecheck + lint + tests were 29% of a
+  // task's time on Hono (history entry 58). Approvals are still asked one at a time and in order, before anything runs;
+  // the report keeps the same order.
+  const planned: { name: string; cmd: string }[] = [];
+  const plan = (name: string, cmd: string | undefined) => {
+    if (cmd) planned.push({ name, cmd });
   };
-
-  await step("typecheck", cfg.verify.typecheck);
-  await step("lint", cfg.verify.lint);
+  plan("typecheck", cfg.verify.typecheck);
+  plan("lint", cfg.verify.lint);
 
   const changedTests = changed.filter(isTestPath);
   const ids = changed.map((f) => store.fileByPath(f)?.id).filter((x): x is number => !!x);
   const mapped = relatedTests(store, ids, 12).map((t) => t.path);
   const focused = [...new Set([...changedTests, ...mapped])];
-  if (opts.full || !cfg.verify.testFocused) await step("test", cfg.verify.test);
-  else if (focused.length) await step(`tests (focused: ${focused.length})`, cfg.verify.testFocused.replace("{files}", focused.map(shellQuote).join(" ")));
-  else if (cfg.verify.test) steps.push({ name: "tests", ok: true, skipped: true, exit: 0, summary: "no tests mapped to changed files (run with --full for the whole suite)" });
+  let noTests: VerifyResult["steps"][number] | null = null;
+  if (opts.full || !cfg.verify.testFocused) plan("test", cfg.verify.test);
+  else if (focused.length) plan(`tests (focused: ${focused.length})`, cfg.verify.testFocused.replace("{files}", focused.map(shellQuote).join(" ")));
+  else if (cfg.verify.test) noTests = { name: "tests", ok: true, skipped: true, exit: 0, summary: "no tests mapped to changed files (run with --full for the whole suite)" };
+
+  const approved: boolean[] = [];
+  for (const s of planned) approved.push(!opts.approve || (await opts.approve(s.cmd)));
+  const results = await Promise.all(
+    planned.map(async ({ name, cmd }, i): Promise<VerifyResult["steps"][number]> => {
+      if (!approved[i]) return { name, ok: false, exit: -1, summary: "declined by user — not run; this check is unconfirmed, not passing" };
+      const run = await runCommand(p, cmd, { signal: opts.signal, onOutput: opts.onOutput ? (t) => opts.onOutput!(cmd, t) : undefined });
+      // Exit 127 is the shell saying the command doesn't exist here (mypy/ruff named in pyproject.toml
+      // but not installed in the active environment, say). That is a missing tool, not failing code:
+      // counting it as a failure made every verify red on tests that passed, and repeated failed
+      // checks feed the runtime's escalation to the most expensive model. Report it as not run.
+      if (run.exit === 127) {
+        const tool = cmd.trim().split(/\s+/)[0];
+        return { name, ok: true, skipped: true, exit: 127, summary: `skipped — \`${tool}\` isn't installed here, so this check did not run (it did not pass either)`, run };
+      }
+      return { name, ok: run.exit === 0, exit: run.exit, summary: run.compressed.summary, run };
+    }),
+  );
+  steps.push(...results);
+  if (noTests) steps.push(noTests);
 
   // Unexpected changes: modified files that were neither selected nor mapped tests nor dirty before the task.
   const expected = new Set([...(task?.selected.map((s) => s.path) ?? []), ...(task?.tests ?? []), ...(task?.dirtyAtStart ?? [])]);

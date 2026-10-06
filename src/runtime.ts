@@ -292,6 +292,9 @@ export function parseDecision(text: string): Decision | null {
 }
 
 /** Cap what re-enters context directly; anything longer is still fully available via the evidence handle. */
+/** How much of a file one `read` returns before it is cut off with a "continue with start:N" note. */
+export const READ_CAP_TOKENS = 4000;
+
 export function capSummary(text: string, capTokens = 800): string {
   if (estimateTokens(text) <= capTokens) return text;
   return text.slice(0, Math.floor(capTokens * 3.6)) + "\n… (truncated here; ask again with a narrower range/query if you need more)";
@@ -1326,7 +1329,10 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       // "keep reading further" retry either re-covers ground it already saw or skips ahead blind. Both were
       // observed live: a 293-line file cost 10 read turns, most of them re-reading overlapping tails.
       // Telling it the exact next line lets it resume precisely, in one further read instead of guessing.
-      const capped = capSummary(raw);
+      // 4,000 tokens (~350-400 lines) instead of the 800 every other result gets: at 800 most source files were cut off,
+      // and 20 cut-off reads in 10 Hono tasks cost 14 extra read turns (history entry 58). Claude Code's own Read
+      // returns up to 2,000 lines.
+      const capped = capSummary(raw, READ_CAP_TOKENS);
       const truncated = capped.length < raw.length;
       // -1 rather than the raw segment count: the cut usually falls mid-line, so the last segment shown is
       // only a partial line — resuming there re-shows a short duplicated prefix, which beats silently

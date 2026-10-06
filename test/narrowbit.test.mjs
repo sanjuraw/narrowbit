@@ -4762,3 +4762,47 @@ else go(args[args.length - 1]);
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe("verify runs its checks side by side", () => {
+  test("typecheck, lint and tests run at the same time; approvals are still asked one by one, in order; the report keeps its order", async () => {
+    const { root, p } = tinyRepo();
+    const store = new Store(p.db);
+    try {
+      const cfg = loadConfig(p);
+      cfg.verify = { typecheck: "sleep 1; echo types ok", lint: "sleep 1; echo lint ok", test: "sleep 1; echo tests ok" };
+      const t0 = Date.now();
+      const all = await verify(p, cfg, store, null, { full: true });
+      const ms = Date.now() - t0;
+      assert.ok(ms < 2600, `three 1-second checks took ${ms} ms (one after another would be over 3 s)`);
+      assert.equal(all.ok, true);
+      const asked = [];
+      const v = await verify(p, cfg, store, null, { full: true, approve: async (c) => { asked.push(c); return !c.includes("lint"); } });
+      assert.deepEqual(asked, ["sleep 1; echo types ok", "sleep 1; echo lint ok", "sleep 1; echo tests ok"], "asked in order");
+      assert.deepEqual(v.steps.map((s) => s.name), ["typecheck", "lint", "test"]);
+      assert.match(v.steps[1].summary, /declined by user/);
+      assert.equal(v.steps[0].ok, true);
+      assert.equal(v.ok, false, "a declined check means not verified");
+    } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("reads come back in one piece for ordinary source files", () => {
+  test("a 300-line file is returned whole by one read; a much bigger one still says where to continue", async () => {
+    const { root, p } = tinyRepo();
+    writeFileSync(join(root, "mid.ts"), Array.from({ length: 300 }, (_, i) => `export const value${i} = ${i}; // line ${i + 1}`).join("\n") + "\n");
+    writeFileSync(join(root, "big.ts"), Array.from({ length: 3000 }, (_, i) => `export const value${i} = ${i}; // line ${i + 1}`).join("\n") + "\n");
+    const fake = fakeClaude([
+      JSON.stringify([{ action: "read", path: "mid.ts" }, { action: "read", path: "big.ts" }]),
+      JSON.stringify({ action: "done", summary: "mid.ts defines 300 constants; big.ts 3000" }),
+    ]);
+    try {
+      const r = await runTask(p, "how many constants do mid.ts and big.ts define", { claudeBin: fake.bin, boss: false, maxSteps: 4 });
+      const results = readEvents(p, r.taskId).filter((e) => e.type === "tool_result" && /^read /.test(e.summary));
+      const mid = results.find((e) => e.summary.startsWith("read mid.ts"));
+      assert.match(mid.summary, /line 300\b/, "the last line of a 300-line file is in the first read");
+      assert.doesNotMatch(mid.summary, /truncated here/);
+      const big = results.find((e) => e.summary.startsWith("read big.ts"));
+      assert.match(big.summary, /truncated here — this file has 3001 lines; continue with start:\d+/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
