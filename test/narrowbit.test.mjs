@@ -4406,6 +4406,33 @@ describe("experimental: project notes injected into a task's first prompt (off b
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 
+  test("'path': nothing up front; a note about a file comes with the first read of that file, once, and says when the file changed", async () => {
+    const { root, p } = await setup();
+    writeFileSync(join(root, "other.ts"), "export const other = 1;\n");
+    const fake = fakeClaude([
+      JSON.stringify({ action: "read", path: "other.ts" }),
+      JSON.stringify({ action: "read", path: "handler.ts" }),
+      JSON.stringify({ action: "read", path: "handler.ts" }),
+      JSON.stringify({ action: "done", summary: "the handler is not wrapped twice; nothing to change here" }),
+    ]);
+    try {
+      const r = await runTask(p, "fix the handler wrapping in handler.ts", { claudeBin: fake.bin, boss: false, maxSteps: 6, memoryInject: "path" });
+      const calls = readEvents(p, r.taskId).filter((e) => e.type === "model_call").map((e) => e.meta.context.parts);
+      assert.ok(!calls[0].some((x) => x.kind === "memory"), "nothing in the first prompt");
+      assert.ok(!calls[1].some((x) => x.kind === "memory"), "reading another file shows no note");
+      assert.ok(calls[2].some((x) => x.kind === "memory"), "the first read of handler.ts brings its note");
+      assert.ok(!calls[3].some((x) => x.kind === "memory"), "a second read doesn't repeat it");
+      const shown = readEvents(p, r.taskId).filter((e) => e.meta?.pathNotes);
+      assert.equal(shown.length, 1);
+      assert.equal(shown[0].meta.path, "handler.ts");
+      const { notesForFile } = await dist("runtime.js");
+      assert.match(notesForFile(p, "handler.ts", new Set()).text, /do not wrap the handler/);
+      assert.doesNotMatch(notesForFile(p, "handler.ts", new Set()).text, /billing invoices/, "a note about no file never comes with a read");
+      writeFileSync(join(root, "handler.ts"), "export const handler = 2; // changed\n");
+      assert.match(notesForFile(p, "handler.ts", new Set()).text, /has changed since the note was saved/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
   test("'top-fresh' says whether the files a note is about have changed; an unrelated note stays out", async () => {
     const { root, p } = await setup();
     try {

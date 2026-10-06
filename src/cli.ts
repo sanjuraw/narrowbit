@@ -571,7 +571,7 @@ export async function main(argv: string[]): Promise<number> {
         maxSteps,
         boss: args.flags["boss"] ? true : (cfg.agent?.boss ?? false),
         reviewOnly: !!args.flags["review-only"],
-        memoryInject: args.flags["memory-inject"] === "top" || args.flags["memory-inject"] === "top-fresh" ? (args.flags["memory-inject"] as "top" | "top-fresh") : undefined, // experimental
+        memoryInject: ["top", "top-fresh", "path"].includes(String(args.flags["memory-inject"])) ? (args.flags["memory-inject"] as "top" | "top-fresh" | "path") : undefined, // experimental
         planApproval: !!args.flags["approve-plan"],
         continueTask: strFlag(args, "continue"),
         provider: sel.provider,
