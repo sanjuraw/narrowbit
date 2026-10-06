@@ -308,7 +308,8 @@ export interface RunResult {
   rendered: string;
 }
 
-export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number; cwd?: string; signal?: AbortSignal } = {}): Promise<RunResult> {
+/** `onOutput` receives the command's output as it arrives (stdout and stderr together), for showing it live. */
+export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number; cwd?: string; signal?: AbortSignal; onOutput?: (text: string) => void } = {}): Promise<RunResult> {
   const t0 = Date.now();
   return new Promise((resolveP) => {
     const chunks: Buffer[] = [];
@@ -374,8 +375,14 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
     };
     process.once("exit", killOnExit);
     opts.signal?.addEventListener("abort", stop, { once: true });
-    child.stdout.on("data", (d) => chunks.push(d));
-    child.stderr.on("data", (d) => chunks.push(d));
+    const onData = (d: Buffer) => {
+      chunks.push(d);
+      try {
+        opts.onOutput?.(d.toString("utf8"));
+      } catch {}
+    };
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
     timer = setTimeout(stop, opts.timeoutMs ?? 10 * 60_000);
     child.on("close", (code, signal) => finish(code, signal));
   });

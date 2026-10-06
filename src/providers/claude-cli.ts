@@ -58,6 +58,19 @@ export interface ModelCallOptions {
   resume?: boolean;
   /** Absolute paths of attached images/PDFs, sent with this call only (the runtime passes them on the first call). */
   attachments?: string[];
+  /** The reply as it is being written (Claude: `--include-partial-messages`), for a live display. Other providers ignore it. */
+  onDelta?: (d: { text?: string; thinkingTokens?: number }) => void;
+}
+
+/** The live part of one stream-json line, if any: a piece of reply text, or the running thinking-token estimate. */
+export function deltaOf(line: string): { text?: string; thinkingTokens?: number } | null {
+  if (!line.includes("_delta") && !line.includes("thinking_tokens")) return null;
+  try {
+    const o = JSON.parse(line);
+    if (o.type === "stream_event" && o.event?.type === "content_block_delta" && o.event.delta?.type === "text_delta") return { text: String(o.event.delta.text ?? "") };
+    if (o.type === "system" && o.subtype === "thinking_tokens" && typeof o.estimated_tokens === "number") return { thinkingTokens: o.estimated_tokens };
+  } catch {}
+  return null;
 }
 
 export interface ModelCallResult {
@@ -244,6 +257,13 @@ function runTurn(session: LiveSession, sessionId: string, opts: ModelCallOptions
     };
     const timer = setTimeout(() => finish(true, false), opts.timeoutMs ?? 180_000);
     session.onLine = (line) => {
+      const d = opts.onDelta && deltaOf(line);
+      if (d) {
+        try {
+          opts.onDelta!(d);
+        } catch {}
+        return; // a partial chunk; the full message follows in its own event
+      }
       session.lines.push(line);
       if (line.includes('"type":"result"')) {
         try {
@@ -293,6 +313,8 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
     "--mcp-config",
     JSON.stringify({ mcpServers: {} }),
   );
+  // Partial messages carry the reply as it is written; only asked for when someone is watching.
+  if (opts.onDelta) args.push("--include-partial-messages");
   // Attachments go as content blocks in a stream-json user message on stdin (a plain prompt argument is text only).
   const files = (opts.attachments ?? []).map(readAttachment).filter((f): f is NonNullable<ReturnType<typeof readAttachment>> => !!f);
   if (opts.sessionId && process.env.NARROWBIT_CLAUDE_PERSIST === "1") {
@@ -317,7 +339,21 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
     child.stdin.end(stdinMessage);
     const chunks: Buffer[] = [];
     let stderr = "";
-    child.stdout.on("data", (d) => chunks.push(d));
+    let partial = "";
+    child.stdout.on("data", (d: Buffer) => {
+      chunks.push(d);
+      if (!opts.onDelta) return;
+      const parts = (partial + d.toString("utf8")).split("\n");
+      partial = parts.pop() ?? "";
+      for (const line of parts) {
+        const delta = deltaOf(line);
+        if (delta) {
+          try {
+            opts.onDelta(delta);
+          } catch {}
+        }
+      }
+    });
     child.stderr.on("data", (d) => (stderr += d));
     const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? 180_000);
     child.on("close", () => {

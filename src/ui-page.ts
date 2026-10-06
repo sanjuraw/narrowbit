@@ -281,6 +281,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .working { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; margin: 12px 0; }
 .working .spark { width: 14px; height: 14px; border-radius: 4px; background: var(--accent); animation: spin 1.6s cubic-bezier(.6,0,.4,1) infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.live-line { color: var(--muted); font-size: 12.5px; margin: -8px 0 10px 24px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.live-out { margin: -4px 0 12px 24px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); overflow: hidden; }
+.live-out .cmd { font: 11.5px var(--mono); color: var(--muted); padding: 5px 9px; border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.live-out pre { font: 11.5px/1.45 var(--mono); margin: 0; padding: 6px 9px; max-height: 13em; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
 .working .shimmer { background: linear-gradient(90deg, var(--muted) 30%, var(--text) 50%, var(--muted) 70%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shim 1.8s linear infinite; }
 @keyframes shim { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
@@ -1765,8 +1769,34 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function placeWorking() {
     var old = $("workingRow"); if (old) old.remove();
     if (!view || !view.working || !viewingRun()) return;
-    var row = el("div", { cls: "working", id: "workingRow" }, el("span", { cls: "spark" }), el("span", { cls: "shimmer", text: view.working }), el("span", { cls: "muted", id: "workTimer", text: view.segStart ? dur(Date.now() - view.segStart) : "" }), el("span", { cls: "muted work-sum", text: actionSummary() ? "· " + actionSummary() : "" }));
+    var row = el("div", { id: "workingRow" }, el("div", { cls: "working" }, el("span", { cls: "spark" }), el("span", { cls: "shimmer", text: view.working }), el("span", { cls: "muted", id: "workTimer", text: view.segStart ? dur(Date.now() - view.segStart) : "" }), el("span", { cls: "muted work-sum", text: actionSummary() ? "· " + actionSummary() : "" })));
+    var live = view.live || {};
+    var said = live.model ? liveModelLine(live.model) : "";
+    if (said) row.appendChild(el("div", { cls: "live-line", id: "liveLine", text: said }));
+    if (live.output && live.output.tail) row.appendChild(el("div", { cls: "live-out", id: "liveOut" }, el("div", { cls: "cmd", text: "$ " + live.output.command }), el("pre", { text: live.output.tail })));
     follow(function () { $("items").appendChild(row); });
+  }
+  // The model's reply while it is still being written (Claude): its note to the user if it has started one, else the
+  // actions it has named so far, else how far its thinking has got. The reply itself is JSON, not worth showing raw.
+  function liveModelLine(lm) {
+    var t = lm.text || "";
+    var notes = t.match(/"note"\s*:\s*"((?:[^"\\]|\\.)*)/g);
+    if (notes && notes.length) {
+      var last = notes[notes.length - 1].replace(/^"note"\s*:\s*"/, "");
+      try { last = JSON.parse('"' + last.replace(/\\$/, "") + '"'); } catch (e) { last = last.replace(/\\n/g, " ").replace(/\\"/g, '"'); }
+      if (last.trim()) return last.trim();
+    }
+    var acts = [], re = /"action"\s*:\s*"([a-z_]+)"/g, mm;
+    while ((mm = re.exec(t))) acts.push(VERB[mm[1]] || mm[1]);
+    if (acts.length) return "Next: " + acts.join(", ");
+    if (lm.thinkingTokens) return "Thinking · " + lm.thinkingTokens + " tokens";
+    return "";
+  }
+  function onProgress(ev) {
+    view.live = view.live || {};
+    if (ev.kind === "model") view.live.model = { text: ev.text, thinkingTokens: ev.thinkingTokens };
+    else if (ev.kind === "output") view.live.output = { command: ev.command, tail: ev.tail };
+    placeWorking();
   }
   setInterval(function () {
     var t = $("workTimer");
@@ -1902,6 +1932,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (!view || view.seen[e.id]) return;
     view.seen[e.id] = true;
     var m = e.meta || {};
+    // A finished step replaces its live preview.
+    if (view.live && e.type === "model_call" && view.live.model) { view.live.model = null; placeWorking(); }
+    if (view.live && (e.type === "command" || e.type === "verify" || e.type === "tool_result") && view.live.output) { view.live.output = null; placeWorking(); }
     if (e.type === "model_call" && e.tokens) {
       view.ctx = m.context ? { parts: m.context.parts || [], est: m.context.tokens || 0, tk: e.tokens } : null;
       var t = e.tokens.inputTokens + e.tokens.cacheCreationTokens + e.tokens.cacheReadTokens + e.tokens.outputTokens;
@@ -2137,6 +2170,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       }
       // Everything else says which conversation it belongs to (ev.task); only the one on screen is drawn.
       var mine = !!(view && ev.task && view.taskId === ev.task);
+      if (ev.type === "progress") { if (mine) onProgress(ev); return; }
       if (ev.type === "approval" || ev.type === "question") {
         if (ev.task) { run.waiting[ev.task] = true; renderSessions(); }
         if (!mine && native) native.postMessage({ type: "attention", text: ev.type === "approval" ? ev.command : ev.question });

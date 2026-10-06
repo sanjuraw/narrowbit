@@ -1596,6 +1596,36 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { page.close(); }
   });
 
+  test("live progress: the model's note as it is written, then the running command's latest output, each replaced by the finished step", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const page = await openPage(app.url);
+    try {
+      await page.until(() => page.w.__nb && page.w.__nb.view(), "the page's conversation view");
+      const nb = page.w.__nb, doc = page.w.document;
+      nb.stream({ type: "start", continueTask: "rt-live" });   // marks the conversation as running, no page request
+      const v = nb.view(); v.taskId = "rt-live"; v.pendingNew = false; v.working = "Thinking…";
+      const line = () => doc.getElementById("liveLine")?.textContent ?? null;
+      nb.stream({ type: "progress", task: "rt-live", kind: "model", text: "", thinkingTokens: 120 });
+      assert.equal(line(), "Thinking · 120 tokens");
+      nb.stream({ type: "progress", task: "rt-live", kind: "model", text: '{"action":"read","path":"src/a.ts"', thinkingTokens: 120 });
+      assert.equal(line(), "Next: Read");
+      nb.stream({ type: "progress", task: "rt-live", kind: "model", text: '{"action":"read","path":"src/a.ts","note":"Checking how the \\"tokenizer\\" splits', thinkingTokens: 120 });
+      assert.equal(line(), 'Checking how the "tokenizer" splits', "a half-written note is shown as text, escapes undone");
+      nb.stream({ type: "progress", task: "rt-other", kind: "model", text: '{"note":"someone else"', thinkingTokens: 0 });
+      assert.doesNotMatch(line() ?? "", /someone else/, "another conversation's progress isn't drawn here");
+      nb.stream({ type: "event", run: "r1", event: { id: "e2", taskId: "rt-live", type: "model_call", actor: "model", summary: "step 0", tokens: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, meta: {} } });
+      assert.equal(line(), null, "the finished reply replaces the preview");
+      nb.stream({ type: "progress", task: "rt-live", kind: "output", command: "npm test", tail: "✓ parser (4)\n✗ tokenizer splits quotes" });
+      const box = doc.getElementById("liveOut");
+      assert.ok(box, "the command's output is shown while it runs");
+      assert.match(box.textContent, /\$ npm test/);
+      assert.match(box.textContent, /tokenizer splits quotes/);
+      nb.stream({ type: "event", run: "r1", event: { id: "e3", taskId: "rt-live", type: "command", actor: "system", summary: "$ npm test (exit 1)", meta: { command: "npm test", exit: 1 } } });
+      assert.equal(doc.getElementById("liveOut"), null, "the finished command replaces the live output");
+    } finally { page.close(); }
+  });
+
   test("the changes preview shows an untracked symlink as a link, never the contents of what it points to", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });

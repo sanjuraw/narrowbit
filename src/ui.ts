@@ -38,7 +38,7 @@ import {
   type ProviderName,
   parseScout,
 } from "./providers/models.js";
-import { providerCallFor, runTask } from "./runtime.js";
+import { providerCallFor, runTask, type Progress } from "./runtime.js";
 import { acknowledgeUpdateNotes, applyUpdate, checkUpdate, pendingUpdateNotes, readVersion } from "./update.js";
 import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
@@ -62,6 +62,7 @@ type StreamEvent = (
   | { type: "start"; task: string; continueTask: string | null; selection: string; lead: boolean }
   | { type: "log"; line: string }
   | { type: "event"; event: Event }
+  | ({ type: "progress"; run: string; task: string | null } & Progress)
   | { type: "approval"; id: string; command: string; warning?: string; key?: string; editLen?: number; changes?: string[] }
   | { type: "approval_resolved"; id: string; allowed: boolean }
   | { type: "question"; id: string; question: string; options: string[] }
@@ -530,6 +531,8 @@ export function startUi(opts: UiOptions) {
         thisRun.taskId = event.taskId;
         emit(thisRun, { type: "event", event });
       },
+      // Live progress goes to whoever is watching now and is not kept for replay: it is stale the moment it's shown.
+      onProgress: (progress) => broadcast({ type: "progress", run: thisRun.id, task: thisRun.taskId, ...progress }),
       provider: sel.provider,
       models: sel.tiers,
       effort: sel.effort,

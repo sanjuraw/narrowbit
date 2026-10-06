@@ -4545,3 +4545,43 @@ rl.on("line", (line) => {
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 });
+
+describe("live progress (for the app): the reply as it is written and a command's output as it runs", () => {
+  test("the model's partial text and thinking, then a running command's latest lines, reach onProgress; nothing is logged", async () => {
+    const { root, p } = tinyRepo();
+    const dir = mkdtempSync(join(tmpdir(), "nb-prog-"));
+    const bin = join(dir, "claude");
+    const replies = [JSON.stringify([{ action: "run", command: "printf 'line one\\nline two\\n'; sleep 0.4; printf 'line three\\n'", note: "Running the script to see its output" }]), JSON.stringify({ action: "done", summary: "the script printed three lines" })];
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("fs"); const c = ${JSON.stringify(join(dir, "n"))};
+const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
+fs.appendFileSync(${JSON.stringify(join(dir, "partial.log"))}, String(process.argv.includes("--include-partial-messages")) + "\\n");
+const text = ${JSON.stringify(replies)}[Math.min(n, 1)];
+const out = (o) => console.log(JSON.stringify(o));
+if (process.argv.includes("--include-partial-messages")) {
+  out({ type: "system", subtype: "thinking_tokens", estimated_tokens: 42 });
+  for (let i = 0; i < text.length; i += 12) out({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: text.slice(i, i + 12) } } });
+}
+const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+out({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } });
+out({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" });
+`, { mode: 0o755 });
+    const seen = [];
+    try {
+      const r = await runTask(p, "run the script", { claudeBin: bin, boss: false, maxSteps: 4, approve: async () => true, onProgress: (x) => seen.push(x) });
+      assert.equal(r.outcome, "done");
+      const model = seen.filter((x) => x.kind === "model");
+      assert.ok(model.some((x) => x.thinkingTokens === 42), "thinking progress");
+      assert.ok(model.some((x) => /Running the script to see/.test(x.text)), "the reply's text as it was written");
+      const out = seen.filter((x) => x.kind === "output");
+      assert.ok(out.length >= 1 && out.every((x) => x.command.startsWith("printf")));
+      assert.match(out.at(-1).tail, /line one\nline two\nline three/, "the latest lines of the running command");
+      assert.ok(!readEvents(p, r.taskId).some((e) => e.type === "progress"), "progress is not written to the task log");
+      const flags = readFileSync(join(dir, "partial.log"), "utf8").trim().split("\n");
+      assert.ok(flags.length >= 2 && flags.every((x) => x === "true"), "partial messages asked for on every call while watched");
+      writeFileSync(join(dir, "n"), "0"); rmSync(join(dir, "partial.log"));
+      await runTask(p, "run the script", { claudeBin: bin, boss: false, maxSteps: 4, approve: async () => true });
+      assert.ok(readFileSync(join(dir, "partial.log"), "utf8").trim().split("\n").every((x) => x === "false"), "nobody watching: partial messages aren't requested");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
+  });
+});

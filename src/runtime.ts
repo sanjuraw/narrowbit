@@ -22,7 +22,7 @@ import { redact } from "./redact.js";
 import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
 import { termsOf } from "./terms.js";
-import { estimateTokens, sha1, sh, shortId, isGitInternal, isGitConfigInclude, isNarrowbitOwn, isSecretFile, realRel } from "./util.js";
+import { estimateTokens, sha1, sh, shortId, isGitInternal, isGitConfigInclude, isNarrowbitOwn, isSecretFile, realRel, visible } from "./util.js";
 import { verify } from "./verify.js";
 
 /**
@@ -347,6 +347,59 @@ export function safeAbsPath(p: Paths, path: string): string | null {
   }
 }
 
+/** Live progress for a display (see RuntimeOptions.onProgress). */
+export type Progress = { kind: "model"; text: string; thinkingTokens: number } | { kind: "output"; command: string; tail: string };
+
+/**
+ * Collects live progress for one task and sends it at most every 250 ms per kind (the newest state wins, a trailing
+ * update is never lost). Text is redacted before it leaves, like everything else shown.
+ */
+function progressFeed(send?: (p: Progress) => void) {
+  if (!send) return null;
+  const every = 250;
+  const state = { modelText: "", thinking: 0, outCmd: "", outText: "" };
+  const timers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
+  const last: Record<string, number> = {};
+  const emit = (kind: "model" | "output") => {
+    last[kind] = Date.now();
+    timers[kind] = undefined;
+    try {
+      if (kind === "model") send({ kind, text: redact(state.modelText.slice(-2000)), thinkingTokens: state.thinking });
+      else send({ kind, command: visible(state.outCmd), tail: redact(state.outText.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").split(/\r?\n|\r/).filter((l) => l.trim()).slice(-12).join("\n")) });
+    } catch {}
+  };
+  const schedule = (kind: "model" | "output") => {
+    if (timers[kind]) return;
+    const wait = Math.max(0, (last[kind] ?? 0) + every - Date.now());
+    if (!wait) return emit(kind);
+    timers[kind] = setTimeout(() => emit(kind), wait);
+    timers[kind]!.unref?.();
+  };
+  return {
+    /** A new model call: start its text afresh. */
+    reset() {
+      state.modelText = "";
+      state.thinking = 0;
+    },
+    model(d: { text?: string; thinkingTokens?: number }) {
+      if (d.text) state.modelText += d.text;
+      if (d.thinkingTokens) state.thinking = d.thinkingTokens;
+      schedule("model");
+    },
+    output(command: string, text: string) {
+      if (command !== state.outCmd) {
+        state.outCmd = command;
+        state.outText = "";
+      }
+      state.outText = (state.outText + text).slice(-6000);
+      schedule("output");
+    },
+    stop() {
+      for (const t of Object.values(timers)) if (t) clearTimeout(t);
+    },
+  };
+}
+
 export interface RuntimeOptions {
   maxSteps?: number;
   budget?: number;
@@ -427,6 +480,9 @@ export interface RuntimeOptions {
   isolate?: boolean;
   /** Every event appended for this task, as it happens (the app renders these). */
   onEvent?: (e: Event) => void;
+  /** Live progress for a display, never written to the task log: the model's reply as it is being written (Claude),
+   * and the latest output of a running command. Throttled; each update replaces the previous one. */
+  onProgress?: (p: Progress) => void;
 }
 
 
@@ -605,6 +661,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // the result, not to block it.
   let checkedSinceEdit = false;
   // Repo-relative paths this task has edited, so an approval can say when a command's own definition changed.
+  const progress = progressFeed(opts.onProgress);
   const editedPaths = new Set<string>();
   const notesShown = new Set<string>();
   // Every applied edit, in order (a path can repeat): what an approver needs to tell whether the agent has changed anything
@@ -825,6 +882,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       resume: !freshSessionPending,
       jsonObject: jsonMode,
       attachments: attachmentsPending ? opts.attachments : undefined,
+      onDelta: progress?.model,
     };
     // Tell the model when the budget is nearly gone so it wraps up (a read-only task's answer is its
     // "done" summary) instead of spending the last steps on more probing and ending with nothing.
@@ -837,6 +895,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     }
     const wasFresh = freshSessionPending;
     const sentEstimate = nextParts.reduce((a, x) => a + x.tokens, 0);
+    progress?.reset();
     let res = await call(callOpts);
     // A non-fatal error (timeout, killed process, no result event) is presumed transient, not a
     // real problem with the request — retry the identical call before giving up on the task.
@@ -850,6 +909,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         sessionId = randomUUID();
         callOpts.sessionId = sessionId;
       }
+      progress?.reset();
       res = await call(callOpts);
     }
     if (attachmentsPending && !res.isError) attachmentsPending = false;
@@ -1024,7 +1084,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       });
       let resultText: string;
       try {
-        resultText = await executeAction(p, taskId, decision, approveWithContext, opts.ask, asks, gate, opts.signal);
+        resultText = await executeAction(p, taskId, decision, approveWithContext, opts.ask, asks, gate, opts.signal, progress?.output);
       } catch (e: any) {
         resultText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
@@ -1186,7 +1246,7 @@ function checkFailedLabel(d: Decision, result: string): string {
 }
 
 /** Executes one action and returns the (capped) result text to feed back as the next turn's prompt. */
-async function executeAction(p: Paths, taskId: string, d: Decision, approve?: RuntimeOptions["approve"], ask?: RuntimeOptions["ask"], asks?: { n: number }, gate?: { testFirst: boolean; sawRed: boolean }, signal?: AbortSignal): Promise<string> {
+async function executeAction(p: Paths, taskId: string, d: Decision, approve?: RuntimeOptions["approve"], ask?: RuntimeOptions["ask"], asks?: { n: number }, gate?: { testFirst: boolean; sawRed: boolean }, signal?: AbortSignal, onOutput?: (command: string, text: string) => void): Promise<string> {
   switch (d.action) {
     case "ask": {
       const question = String(d.question ?? "").trim();
@@ -1359,7 +1419,7 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
         appendEvent(p, taskId, { actor: "user", type: "tool_result", summary: text, meta: { command, declined: true } });
         return text;
       }
-      const r = await runCommand(p, command, { signal });
+      const r = await runCommand(p, command, { signal, onOutput: onOutput ? (t) => onOutput(command, t) : undefined });
       const capped = capOutput(r.rendered);
       const handle = writeEvidence(p, taskId, "command", r.rendered, capped);
       appendEvent(p, taskId, { actor: "system", type: "command", summary: capped, evidenceRef: handle.id, meta: { command: d.command, exit: r.exit } });
@@ -1368,7 +1428,7 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
     case "verify": {
       const cfg = loadConfig(p);
       const store = openStore(p);
-      const v = await verify(p, cfg, store, null, { approve, signal });
+      const v = await verify(p, cfg, store, null, { approve, signal, onOutput });
       store.close();
       const capped = capOutput(v.report);
       const handle = writeEvidence(p, taskId, "command", v.report, capped);
