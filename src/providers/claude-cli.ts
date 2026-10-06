@@ -132,11 +132,12 @@ export interface ModelCallResult {
  * resumes the session, which is what every turn did before. Turn usage is reported per turn and the cost as a
  * running total for the session, as with separate processes.
  *
- * Off by default, on with `NARROWBIT_CLAUDE_PERSIST=1`. In real agent runs on Hono (2026-10-06, history entry 50) about
- * one turn in twelve stalled: the process acknowledged the message (`system/init`) and then sent nothing until the
- * 180 s timeout, while a fresh process answered the same message in seconds. Replaying the captured messages outside
- * the agent never stalled. Until the cause is found the stalls cost more than the ~1-1.5 s per turn this saves.
- * `NARROWBIT_CLAUDE_TRACE=<file>` records every message and line to help find it.
+ * On by default (`NARROWBIT_CLAUDE_PERSIST=0` turns it off). Besides the start-up time it fixes prompt caching: a new
+ * process that resumes the session reads only the system prompt from cache and writes the whole conversation again on
+ * every turn, while one process reads its growing conversation from cache like Claude Code itself. Measured on 6 Hono
+ * tasks (history entry 57): uncached tokens per call 2,293 → 919, cost for the six $0.907 → $0.357, task time 58 → 47 s,
+ * 6/6 both. The "stalls" first blamed on this mode (entry 50) were runaway replies, now cut off (entry 55).
+ * `NARROWBIT_CLAUDE_TRACE=<file>` records every message and line sent to and received from the process.
  */
 interface LiveSession {
   child: ReturnType<typeof spawn>;
@@ -379,7 +380,7 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
   args.push("--include-partial-messages");
   // Attachments go as content blocks in a stream-json user message on stdin (a plain prompt argument is text only).
   const files = (opts.attachments ?? []).map(readAttachment).filter((f): f is NonNullable<ReturnType<typeof readAttachment>> => !!f);
-  if (opts.sessionId && process.env.NARROWBIT_CLAUDE_PERSIST === "1") {
+  if (opts.sessionId && process.env.NARROWBIT_CLAUDE_PERSIST !== "0") {
     args.push("--input-format", "stream-json");
     const content = files.length
       ? [...files.map((f) => ({ type: f.kind === "pdf" ? "document" : "image", source: { type: "base64", media_type: f.mime, data: f.base64 } })), { type: "text", text: opts.prompt }]

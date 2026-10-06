@@ -4449,9 +4449,7 @@ describe("experimental: project notes injected into a task's first prompt (off b
   });
 });
 
-describe("Claude: one long-lived process per session instead of one per turn (opt-in: NARROWBIT_CLAUDE_PERSIST=1)", () => {
-  before(() => { process.env.NARROWBIT_CLAUDE_PERSIST = "1"; });
-  after(() => { delete process.env.NARROWBIT_CLAUDE_PERSIST; });
+describe("Claude: one long-lived process per session instead of one per turn (the default; NARROWBIT_CLAUDE_PERSIST=0 turns it off)", () => {
   // Like the real CLI with --input-format stream-json: stays open and answers each stdin line with one turn.
   function liveClaude(replies, { quitAfter = Infinity } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "nb-live-"));
@@ -4510,7 +4508,7 @@ rl.on("line", (line) => {
     } finally { await endClaudeSession(sid); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 
-  test("attachments go as content blocks on the same stdin; without the switch it is a process per turn, as before", async () => {
+  test("attachments go as content blocks on the same stdin; NARROWBIT_CLAUDE_PERSIST=0 brings back a process per turn", async () => {
     const { callModel, endClaudeSession } = await dist("providers/claude-cli.js");
     const { saveAttachment } = await dist("attachments.js");
     const fake = liveClaude(["seen"]);
@@ -4523,13 +4521,13 @@ rl.on("line", (line) => {
       assert.equal(content[1].text, "what is this?");
     } finally { await endClaudeSession(sid); }
     const plain = fakeClaude(["a", "b"]);
-    delete process.env.NARROWBIT_CLAUDE_PERSIST;
+    process.env.NARROWBIT_CLAUDE_PERSIST = "0";
     try {
       const sid2 = "31111111-2222-3333-4444-555555555555";
       await callModel({ cwd: plain.dir, prompt: "x", model: "sonnet", role: "t", claudeBin: plain.bin, sessionId: sid2 });
       await callModel({ cwd: plain.dir, prompt: "y", model: "sonnet", role: "t", claudeBin: plain.bin, sessionId: sid2, resume: true });
-      assert.equal(plain.calls(), 2, "one process per call when not switched on");
-    } finally { process.env.NARROWBIT_CLAUDE_PERSIST = "1"; rmSync(plain.dir, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+      assert.equal(plain.calls(), 2, "one process per call when turned off");
+    } finally { delete process.env.NARROWBIT_CLAUDE_PERSIST; rmSync(plain.dir, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 
   test("a finished `narrowbit agent` still exits while the process idles", async () => {
@@ -4737,14 +4735,19 @@ describe("a reply stuck in a loop is cut off and retried in a fresh session", ()
 const fs = require("fs"); const c = ${JSON.stringify(join(dir, "n"))};
 const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
 const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(join(dir, "calls.log"))}, JSON.stringify({ resume: args.includes("--resume"), prompt: args[args.length - 1].slice(0, 200) }) + "\\n");
 const out = (o) => console.log(JSON.stringify(o));
 const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
-const answer = (text) => { out({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }); out({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }); };
-out({ type: "system", subtype: "init" });
-if (n === 0) answer(${JSON.stringify(JSON.stringify({ action: "read", path: "a.txt" }))});
-else if (n === 1) { let i = 0; const t = setInterval(() => out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: '<invoke name="grep">\\n</invoke>\\n\\n\\n' } } }), 5); }
-else answer(${JSON.stringify(JSON.stringify({ action: "done", summary: "a.txt says hello; nothing to change" }))});
+const answer = (text) => { out({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }); out({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }); process.exit(0); };
+// One turn per process, the prompt either after "--" or (long-lived mode) as the first stream-json message on stdin.
+const go = (prompt) => {
+  fs.appendFileSync(${JSON.stringify(join(dir, "calls.log"))}, JSON.stringify({ resume: args.includes("--resume"), prompt: String(prompt).slice(0, 200) }) + "\\n");
+  out({ type: "system", subtype: "init" });
+  if (n === 0) answer(${JSON.stringify(JSON.stringify({ action: "read", path: "a.txt" }))});
+  else if (n === 1) setInterval(() => out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: '<invoke name="grep">\\n</invoke>\\n\\n\\n' } } }), 5);
+  else answer(${JSON.stringify(JSON.stringify({ action: "done", summary: "a.txt says hello; nothing to change" }))});
+};
+if (args.includes("--input-format")) require("readline").createInterface({ input: process.stdin }).once("line", (l) => go(JSON.parse(l).message.content));
+else go(args[args.length - 1]);
 `, { mode: 0o755 });
     try {
       const t0 = Date.now();
