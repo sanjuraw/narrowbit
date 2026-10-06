@@ -52,12 +52,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     private func startServer() {
         let p = Process()
-        // A login shell, so the app sees the same PATH (node, narrowbit, claude) as Terminal does.
-        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         let bin = ProcessInfo.processInfo.environment["NARROWBIT_BIN"] ?? "narrowbit"
-        p.arguments = ["-lc", "exec \(bin) ui --app"]
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        if let shellEnv = ShellEnv.resolve() {
+            // The same environment Terminal has (including ~/.zshrc), so the agent's commands find the same tools.
+            // Started directly: another login shell would let /etc/zprofile's path_helper reorder that PATH.
+            env.merge(shellEnv) { _, fromShell in fromShell }
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            p.arguments = [bin, "ui", "--app"]
+        } else {
+            // The shell couldn't be read in time: a login shell still gets ~/.zprofile's PATH.
+            p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            p.arguments = ["-lc", "exec \(bin) ui --app"]
+            env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        }
         // Tells the server this window relaunches it on exit code 75, so a self-update can restart it.
         // Older windows lack this, and the server then asks the user to reopen the app instead.
         env["NARROWBIT_SHELL_RESTART"] = "1"
