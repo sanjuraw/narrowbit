@@ -62,6 +62,22 @@ export interface ModelCallOptions {
   onDelta?: (d: { text?: string; thinkingTokens?: number }) => void;
 }
 
+/**
+ * Stall watchdog. About 1 Claude call in 37 (16 of 587 on 2026-10-06, history entry 53) produced no response at all and
+ * sat until the 180 s timeout before the retry answered in seconds: on average that cost ~5 s per call, more than any
+ * other per-turn delay. With partial messages on, a live call shows progress within seconds (the stream starts, thinking
+ * is counted, text arrives), so silence for this long means a stuck call: it is ended and the runtime's retry asks again.
+ * Start-up lines (system init, status, rate limits) don't count as progress.
+ */
+export function stallMs(): number {
+  const v = Number(process.env.NARROWBIT_CLAUDE_STALL_MS);
+  return Number.isFinite(v) && v > 0 ? v : 45_000;
+}
+export function isProgress(line: string): boolean {
+  if (line.includes('"type":"stream_event"') || line.includes('"type":"assistant"') || line.includes('"type":"result"')) return true;
+  return line.includes('"subtype":"thinking_tokens"');
+}
+
 /** The live part of one stream-json line, if any: a piece of reply text, or the running thinking-token estimate. */
 export function deltaOf(line: string): { text?: string; thinkingTokens?: number } | null {
   if (!line.includes("_delta") && !line.includes("thinking_tokens")) return null;
@@ -237,15 +253,18 @@ function runTurn(session: LiveSession, sessionId: string, opts: ModelCallOptions
   session.stderr = "";
   return new Promise((resolve) => {
     let settled = false;
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let stalled = "";
     const finish = (timedOut: boolean, closed: boolean) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(watchdog);
       session.onLine = undefined;
       session.onClose = undefined;
       session.busy = false;
       const raw = session.lines.join("\n");
-      const r = toResult(raw, session.stderr, timedOut && !raw.includes('"type":"result"') ? "the model call timed out" : "");
+      const r = toResult(raw, session.stderr, stalled || (timedOut && !raw.includes('"type":"result"') ? "the model call timed out" : ""));
       // Anything but a clean turn: start over next time, resuming the session from disk.
       if (r.isError || session.dead) void endSession(sessionId);
       else {
@@ -256,7 +275,17 @@ function runTurn(session: LiveSession, sessionId: string, opts: ModelCallOptions
       resolve({ result: r, endedSilently: closed && !raw.trim() });
     };
     const timer = setTimeout(() => finish(true, false), opts.timeoutMs ?? 180_000);
+    const quiet = stallMs();
+    const arm = () => {
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        stalled = `the model call stalled: no response for ${Math.round(quiet / 1000)} s`;
+        finish(true, false);
+      }, quiet);
+    };
+    arm();
     session.onLine = (line) => {
+      if (isProgress(line)) arm();
       const d = opts.onDelta && deltaOf(line);
       if (d) {
         try {
@@ -327,7 +356,8 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
     JSON.stringify({ mcpServers: {} }),
   );
   // Partial messages carry the reply as it is written; only asked for when someone is watching.
-  if (opts.onDelta) args.push("--include-partial-messages");
+  // Always streamed: the pieces show progress, which the stall watchdog needs even when nobody is watching the text.
+  args.push("--include-partial-messages");
   // Attachments go as content blocks in a stream-json user message on stdin (a plain prompt argument is text only).
   const files = (opts.attachments ?? []).map(readAttachment).filter((f): f is NonNullable<ReturnType<typeof readAttachment>> => !!f);
   if (opts.sessionId && process.env.NARROWBIT_CLAUDE_PERSIST === "1") {
@@ -358,10 +388,21 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(watchdog);
       resolve(r);
+    };
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const quiet = stallMs();
+    const arm = () => {
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        settle(toResult(lines.join("\n"), stderr, `the model call stalled: no response for ${Math.round(quiet / 1000)} s`));
+        child.kill("SIGTERM");
+      }, quiet);
     };
     const take = (line: string) => {
       if (!line.trim()) return;
+      if (isProgress(line)) arm();
       const delta = opts.onDelta && deltaOf(line);
       if (delta) {
         try {
@@ -385,6 +426,7 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
     });
     child.stderr.on("data", (d) => (stderr += d));
     const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? 180_000);
+    arm();
     child.on("close", () => {
       take(partial);
       partial = "";

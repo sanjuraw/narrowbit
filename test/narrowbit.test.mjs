@@ -4581,7 +4581,8 @@ out({ type: "result", subtype: "success", is_error: false, result: text, usage, 
       assert.ok(flags.length >= 2 && flags.every((x) => x === "true"), "partial messages asked for on every call while watched");
       writeFileSync(join(dir, "n"), "0"); rmSync(join(dir, "partial.log"));
       await runTask(p, "run the script", { claudeBin: bin, boss: false, maxSteps: 4, approve: async () => true });
-      assert.ok(readFileSync(join(dir, "partial.log"), "utf8").trim().split("\n").every((x) => x === "false"), "nobody watching: partial messages aren't requested");
+      // Requested even with nobody watching: the stall watchdog reads the pieces as signs of progress (history entry 53).
+      assert.ok(readFileSync(join(dir, "partial.log"), "utf8").trim().split("\n").every((x) => x === "true"), "partial messages are always streamed");
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -4627,5 +4628,51 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
       for (const [k, v] of [["CLAUDE_CODE_ENTRYPOINT", saved.e], ["CLAUDE_CODE_OAUTH_TOKEN", saved.t]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("a stuck Claude call is noticed in seconds, not after the full timeout", () => {
+  const fakeWith = (body) => {
+    const dir = mkdtempSync(join(tmpdir(), "nb-stall-"));
+    const bin = join(dir, "claude");
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("fs"); const c = ${JSON.stringify(join(dir, "n"))};
+const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
+const out = (o) => console.log(JSON.stringify(o));
+const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+const answer = (text) => { out({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }); out({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }); };
+out({ type: "system", subtype: "init" });
+${body}
+`, { mode: 0o755 });
+    return { bin, dir, calls: () => Number(readFileSync(join(dir, "n"), "utf8")) };
+  };
+  const withStall = async (ms, fn) => {
+    const old = process.env.NARROWBIT_CLAUDE_STALL_MS;
+    process.env.NARROWBIT_CLAUDE_STALL_MS = String(ms);
+    try { return await fn(); } finally { if (old === undefined) delete process.env.NARROWBIT_CLAUDE_STALL_MS; else process.env.NARROWBIT_CLAUDE_STALL_MS = old; }
+  };
+
+  test("a call that says nothing after starting is ended, and the retry gets the answer", async () => {
+    const { root, p } = tinyRepo();
+    // First call: starts, then silence (like the stalls seen live). Later calls answer.
+    const f = fakeWith(`if (n === 0) setTimeout(() => {}, 600000); else answer(${JSON.stringify(JSON.stringify({ action: "done", summary: "a.txt says hello, nothing to change" }))});`);
+    try {
+      const t0 = Date.now();
+      const r = await withStall(800, () => runTask(p, "what does a.txt say", { claudeBin: f.bin, boss: false, maxSteps: 4 }));
+      assert.equal(r.outcome, "done");
+      assert.ok(Date.now() - t0 < 15000, `took ${Date.now() - t0} ms`);
+      assert.ok(readEvents(p, r.taskId).some((e) => /stalled: no response/.test(e.summary)), "the stall is named in the log");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
+  test("a slow answer that keeps streaming is not cut off", async () => {
+    const { callModel } = await dist("providers/claude-cli.js");
+    const f = fakeWith(`let i = 0; const t = setInterval(() => { out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "." } } }); if (++i === 8) { clearInterval(t); answer("finally"); } }, 300);`);
+    try {
+      const r = await withStall(1500, () => callModel({ cwd: f.dir, prompt: "q", model: "sonnet", role: "t", claudeBin: f.bin }));
+      assert.equal(r.isError, false);
+      assert.equal(r.text, "finally", "2.4 s of steady progress (a piece every 0.3 s) outlasts a 1.5 s quiet window");
+      assert.equal(f.calls(), 1);
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
   });
 });
