@@ -167,7 +167,7 @@ export function endClaudeSession(sessionId: string): Promise<void> {
 }
 
 function startLive(bin: string, args: string[], cwd: string, key: string, sessionId: string): LiveSession {
-  const child = spawn(bin, args, { cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(bin, args, { cwd, env: claudeEnv(), stdio: ["pipe", "pipe", "pipe"] });
   const s: LiveSession = { child, key, lines: [], partial: "", stderr: "", busy: false, dead: false };
   child.stdin!.on("error", () => {});
   child.stdout!.on("data", (d: Buffer) => {
@@ -296,6 +296,19 @@ function toResult(raw: string, stderr: string, note: string): ModelCallResult {
   };
 }
 
+/**
+ * The environment for the `claude` processes Narrowbit starts: the user's own, minus the markers Claude Code sets for
+ * the sessions it hosts. Run from inside Claude Code (its desktop app or terminal), `CLAUDE_CODE_ENTRYPOINT=claude-desktop`
+ * and friends were inherited, and every call then also wrote a background turn summary for the desktop app before
+ * its result: +1.1-1.2 s per turn (measured 2026-10-06, history entry 52). Sign-in variables are left alone.
+ */
+const HOST_MARKERS = ["CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_HOST_SESSION_ID", "CLAUDE_CODE_DESKTOP_APP_VERSION", "CLAUDECODE", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_EAGER_FLUSH", "CLAUDE_CODE_TERMINAL_MCP_TOOLS", "CLAUDE_CODE_REPORT_FINDINGS", "CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES", "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "CLAUDE_CODE_SSE_PORT"];
+export function claudeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...base };
+  for (const k of HOST_MARKERS) delete env[k];
+  return env;
+}
+
 export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
   const bin = opts.claudeBin ?? process.env.NARROWBIT_CLAUDE ?? "claude";
   const args = ["-p", "--output-format", "stream-json", "--verbose", "--safe-mode"];
@@ -334,31 +347,48 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
     stdinMessage = JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n";
   } else args.push("--", opts.prompt);
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { cwd: opts.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(bin, args, { cwd: opts.cwd, env: claudeEnv(), stdio: ["pipe", "pipe", "pipe"] });
     child.stdin.on("error", () => {});
     child.stdin.end(stdinMessage);
-    const chunks: Buffer[] = [];
+    const lines: string[] = [];
     let stderr = "";
     let partial = "";
+    let settled = false;
+    const settle = (r: ModelCallResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(r);
+    };
+    const take = (line: string) => {
+      if (!line.trim()) return;
+      const delta = opts.onDelta && deltaOf(line);
+      if (delta) {
+        try {
+          opts.onDelta!(delta);
+        } catch {}
+        return;
+      }
+      lines.push(line);
+      // The answer is complete at the result line; the process takes about another second to exit, and nothing
+      // after the result changes the answer, so don't wait for it (measured 0.8-1.0 s per turn, history entry 52).
+      if (line.includes('"type":"result"')) {
+        try {
+          if (JSON.parse(line).type === "result") settle(toResult(lines.join("\n"), stderr, ""));
+        } catch {}
+      }
+    };
     child.stdout.on("data", (d: Buffer) => {
-      chunks.push(d);
-      if (!opts.onDelta) return;
       const parts = (partial + d.toString("utf8")).split("\n");
       partial = parts.pop() ?? "";
-      for (const line of parts) {
-        const delta = deltaOf(line);
-        if (delta) {
-          try {
-            opts.onDelta(delta);
-          } catch {}
-        }
-      }
+      for (const line of parts) take(line);
     });
     child.stderr.on("data", (d) => (stderr += d));
     const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? 180_000);
     child.on("close", () => {
-      clearTimeout(timer);
-      resolve(toResult(Buffer.concat(chunks).toString("utf8"), stderr, ""));
+      take(partial);
+      partial = "";
+      settle(toResult(lines.join("\n"), stderr, ""));
     });
     child.on("error", (e) => resolve({ text: "", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: null, turns: 0, isError: true, errorMessage: String((e as Error).message ?? e), fatal: false }));
   });

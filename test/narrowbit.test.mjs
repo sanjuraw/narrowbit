@@ -4585,3 +4585,47 @@ out({ type: "result", subtype: "success", is_error: false, result: text, usage, 
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe("Claude calls don't wait for things that don't change the answer", () => {
+  test("the answer is taken at the result line, not when the process finally exits", async () => {
+    const { callModel } = await dist("providers/claude-cli.js");
+    const dir = mkdtempSync(join(tmpdir(), "nb-slowexit-"));
+    const bin = join(dir, "claude");
+    writeFileSync(bin, `#!/usr/bin/env node
+const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+console.log(JSON.stringify({ type: "assistant", message: { id: "m", content: [{ type: "text", text: "the answer" }], usage } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "the answer", usage, total_cost_usd: 0.01, num_turns: 1, session_id: "s" }));
+setTimeout(() => {}, 3000);   // like claude, which takes a while to exit after its result
+`, { mode: 0o755 });
+    try {
+      const t0 = Date.now();
+      const r = await callModel({ cwd: dir, prompt: "q", model: "sonnet", role: "t", claudeBin: bin, sessionId: "41111111-2222-3333-4444-555555555555" });
+      assert.equal(r.text, "the answer");
+      assert.equal(r.costUsd, 0.01);
+      assert.ok(Date.now() - t0 < 2000, `returned after ${Date.now() - t0} ms, not after the process's exit`);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("claude is started without the markers of the Claude Code session around Narrowbit; sign-in settings stay", async () => {
+    const { claudeEnv } = await dist("providers/claude-cli.js");
+    const env = claudeEnv({ PATH: "/bin", CLAUDE_CODE_ENTRYPOINT: "claude-desktop", CLAUDE_CODE_HOST_SESSION_ID: "x", CLAUDECODE: "1", CLAUDE_CODE_OAUTH_TOKEN: "keep", ANTHROPIC_API_KEY: "keep", ANTHROPIC_BASE_URL: "keep" });
+    assert.deepEqual(env, { PATH: "/bin", CLAUDE_CODE_OAUTH_TOKEN: "keep", ANTHROPIC_API_KEY: "keep", ANTHROPIC_BASE_URL: "keep" });
+    const dir = mkdtempSync(join(tmpdir(), "nb-env-"));
+    const bin = join(dir, "claude");
+    writeFileSync(bin, `#!/usr/bin/env node
+require("fs").writeFileSync(${JSON.stringify(join(dir, "env.json"))}, JSON.stringify({ entry: process.env.CLAUDE_CODE_ENTRYPOINT ?? null, token: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok", usage: {}, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
+`, { mode: 0o755 });
+    const saved = { e: process.env.CLAUDE_CODE_ENTRYPOINT, t: process.env.CLAUDE_CODE_OAUTH_TOKEN };
+    process.env.CLAUDE_CODE_ENTRYPOINT = "claude-desktop"; process.env.CLAUDE_CODE_OAUTH_TOKEN = "tok";
+    try {
+      const { callModel } = await dist("providers/claude-cli.js");
+      await callModel({ cwd: dir, prompt: "q", model: "sonnet", role: "t", claudeBin: bin });
+      await new Promise((r) => setTimeout(r, 200));
+      assert.deepEqual(JSON.parse(readFileSync(join(dir, "env.json"), "utf8")), { entry: null, token: "tok" });
+    } finally {
+      for (const [k, v] of [["CLAUDE_CODE_ENTRYPOINT", saved.e], ["CLAUDE_CODE_OAUTH_TOKEN", saved.t]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
