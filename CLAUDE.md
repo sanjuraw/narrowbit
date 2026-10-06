@@ -13,7 +13,7 @@ Local, provider-independent coding-agent runtime (CLI `narrowbit`, native Mac ap
 
 ## Evidence (never claim more)
 
-Hono, 40 real bug-fix tasks, n=1 per task, public code: Claude via the runtime ~90% fewer tokens than the `mcpOnly` baseline at ~equal success (39-40/40); Codex 40/40; DeepSeek V4.1 Flash 39/40 at ~$0.22 for all 40. Python/click: 6/8, ~3.3× the tokens. Memory: no proven token saving (entries 28, 29, 36: a mild ~10-15% direction on related follow-ups, inside the noise). Scout (Codex sol scouting Claude) cut Claude's cost 57% on 10 tasks, unconfirmed at scale. Details and caveats: `docs/history.md`.
+Hono, 40 real bug-fix tasks, n=1 per task, public code: Claude via the runtime ~90% fewer tokens than the `mcpOnly` baseline at ~equal success (39-40/40); Codex 40/40; DeepSeek V4.1 Flash 39/40 at ~$0.22 for all 40. Python/click: 6/8, ~3.3× the tokens. Memory: no proven token saving (entries 28, 29, 36, 46: notes, including exact-pointer notes, cut fresh tokens and cost on average but per-task results go both ways, inside the noise; single-file fixes are the wrong place for memory to pay). Scout (Codex sol scouting Claude) cut Claude's cost 57% on 10 tasks, unconfirmed at scale. Details and caveats: `docs/history.md`.
 
 ## Decisions (don't reopen without a reason)
 
@@ -32,7 +32,7 @@ Hono, 40 real bug-fix tasks, n=1 per task, public code: Claude via the runtime ~
 
 ## Next steps
 
-1. Memory that saves tokens: notes as exact pointers (file:line, check command, failed approaches) and a test on tasks where re-deriving is expensive (multi-file, known dead ends).
+1. Memory that saves tokens (entry 46: pointer notes didn't, on single-file fixes): try path-triggered notes (shown when the agent first reads a file a note is about) and architecture/convention notes, measured on multi-file tasks with more repeats.
 2. Older open items: scout at scale, parallel independent subtasks, Python task mining in `build-tasks.mjs`, per-provider usage-limit burn rate, DeepSeek as fallback.
 
 ## Working rules
