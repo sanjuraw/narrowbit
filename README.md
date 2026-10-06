@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/logo.svg" width="120" alt="Narrowbit logo"></p>
+
 # Narrowbit
 
 A local, context-managed **coding agent** for your Mac. It plans, reads, edits, runs commands and verifies, keeping a durable local log of everything it does, so a model only ever sees the small slice of context it needs for the next step.

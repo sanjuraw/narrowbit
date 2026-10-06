@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.svg" width="96" alt="Narrowbit logo"></p>
+
 # narrowbit-memory
 
 Project memory for coding agents. It remembers the things that aren't in the code — a decision and its reason, a constraint, a convention, an approach that already failed — as plain Markdown notes in the project, and gives them back when an agent asks.
