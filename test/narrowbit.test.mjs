@@ -4728,6 +4728,8 @@ describe("a reply stuck in a loop is cut off and retried in a fresh session", ()
     assert.equal(isRunaway('<invoke name="grep">\n</invoke>\n\n\n'.repeat(200)), true);
     assert.equal(isRunaway(JSON.stringify({ action: "edit", path: "a.ts", old: "x", new: "line\n".repeat(3000) })), false, "one long JSON line is not a loop");
     assert.equal(isRunaway("a\nb\n".repeat(10)), false, "short replies are never judged");
+    assert.equal(isRunaway('<invoke name="recall">\n</invoke>\n<invoke name="grep">\n</invoke>\n\n<invoke name="recall">\n</invoke>'), true, "three empty tool-call tags end it at once, however short");
+    assert.equal(isRunaway('<invoke name="read"><parameter name="path">a.ts</parameter></invoke>'.repeat(3)), false, "tool markup with parameters is something parseDecisions can read, not a loop");
     const { root, p } = tinyRepo();
     const dir = mkdtempSync(join(tmpdir(), "nb-runaway-"));
     const bin = join(dir, "claude");

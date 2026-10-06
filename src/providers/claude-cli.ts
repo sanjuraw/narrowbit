@@ -85,6 +85,10 @@ export function isProgress(line: string): boolean {
  * whose last 40 lines hold at most three different lines is a loop: the call is ended and the runtime retries it.
  */
 export function isRunaway(text: string): boolean {
+  // The loops seen so far start with empty tool-call tags (`<invoke name="recall">\n</invoke>`), which no valid reply
+  // contains (even well-formed native tool markup carries parameters): three of them end the call at once, ~1-2 s in
+  // instead of after 3,000 characters (~12 s). History entry 59.
+  if ((text.match(/<invoke name="[^"]*">\s*<\/invoke>/g) ?? []).length >= 3) return true;
   if (text.length < 3000) return false;
   const lines = text.slice(-6000).split("\n").map((l) => l.trim()).filter(Boolean);
   if (lines.length < 40) return false;
