@@ -2477,7 +2477,7 @@ describe("guard: text that gives the agent orders", () => {
     const g = await dist("guard.js");
     const { BUILTIN_SKILLS } = await dist("skills.js");
     for (const sk of BUILTIN_SKILLS) assert.deepEqual(g.scanText(`${sk.description}\n${sk.body}`).filter((f) => f.severity === "high"), [], `built-in skill "${sk.name}"`);
-    for (const f of ["CLAUDE.md", "README.md", "SECURITY.md", "CONTRIBUTING.md"]) assert.deepEqual(g.scanText(readFileSync(join(here, "..", f), "utf8")).filter((x) => x.severity === "high"), [], f);
+    for (const f of ["CLAUDE.md", "docs/history.md", "README.md", "SECURITY.md", "CONTRIBUTING.md"]) assert.deepEqual(g.scanText(readFileSync(join(here, "..", f), "utf8")).filter((x) => x.severity === "high"), [], f);
   });
 
   test("the audit flags an instruction file with injected orders, and the agent's file reads carry a warning", async () => {

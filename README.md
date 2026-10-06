@@ -46,7 +46,7 @@ narrowbit limits                       # Claude / Codex 5-hour and weekly usage
 
 ## What is and isn't proven
 
-Measured on `honojs/hono`: 40 tasks mined from real commits (start at the parent commit with the fix's tests applied; success = those tests pass). Every number below is n=1 per task, on one repo, one language — read it as directional, not a guarantee, and see `CLAUDE.md` for every caveat and every approach that *didn't* work.
+Measured on `honojs/hono`: 40 tasks mined from real commits (start at the parent commit with the fix's tests applied; success = those tests pass). Every number below is n=1 per task, on one repo, one language — read it as directional, not a guarantee, and see `docs/history.md` for every caveat and every approach that *didn't* work.
 
 - **Vs. Claude Code + Narrowbit's own MCP tools** (n=40, Claude): 39/40 (baseline 40/40), ~90% fewer input tokens, ~56% lower notional cost.
 - **Vs. plain native Claude Code** (n=15 subset, earlier loop version): 15/15 both, ~75% fewer tokens, about half the cost.
@@ -55,10 +55,10 @@ Measured on `honojs/hono`: 40 tasks mined from real commits (start at the parent
 - **DeepSeek V4.1 Flash, direct:** 39/40, ~87k mean input, est. $0.22 for all 40 at list prices.
 - **Mixing models mostly didn't pay off.** Routing cheap-explore → expensive-execute (Claude Haiku→Sonnet→Opus, or Codex Luna→Sol) lost to one good model doing the whole task, both times measured — switching models mid-conversation rewrites the prompt cache, and a weaker explorer needs more turns than a stronger model needs for everything. A cheap model researching in its *own* separate conversation and handing the worker a short report (the `scout` option) did help once, on 10 tasks: Codex Sol scouting, Claude Sonnet working, cut Claude's own cost per task by ~57% at equal-or-better success — at the price of spending a second plan's quota.
 - **Antigravity, free/cheap API models:** usable but token-hungry (Antigravity ~2-3x Claude/Codex's tokens per task even with its lean custom agent); free API models capped around 6-7/10 tasks.
-- **A second language, first data point:** 8 hand-picked bug-fix tasks on `pallets/click` (Python), same method, Claude: 6/8 success, ~3.3x the tokens and ~2.2x the cost per task versus Hono. Worse than Hono, but not broken — both failures were partial fixes that ran out of step budget, not wrong-direction edits. n=8, one repo — a first signal, not a second validated benchmark; see `CLAUDE.md` for the full breakdown and methodology notes.
+- **A second language, first data point:** 8 hand-picked bug-fix tasks on `pallets/click` (Python), same method, Claude: 6/8 success, ~3.3x the tokens and ~2.2x the cost per task versus Hono. Worse than Hono, but not broken — both failures were partial fixes that ran out of step budget, not wrong-direction edits. n=8, one repo — a first signal, not a second validated benchmark; see `docs/history.md` for the full breakdown and methodology notes.
 - **Not proven:** other repos or languages beyond that one Python data point, the API-provider adapters beyond DeepSeek (verified live) and a mock server otherwise, genuinely parallel multi-agent work (untried). "Cost" for subscriptions is notional (nothing is billed per token).
 
-Run the numbers yourself: see "Benchmarking" below. Full history, including the approaches that did *not* work, is in `CLAUDE.md`.
+Run the numbers yourself: see "Benchmarking" below. Full history, including the approaches that did *not* work, is in `docs/history.md`.
 
 ## Security
 
@@ -71,7 +71,7 @@ Run the numbers yourself: see "Benchmarking" below. Full history, including the 
 
 ## Contributing
 
-Issues and PRs welcome. `npm test` (114 tests) and `npm run test:ui` (49 tests) must pass; none call a model. Read `CLAUDE.md` first: it documents the architecture and, more importantly, what was tried and failed, so you don't repeat it. A working rule of this project: every automatic feature needs a measured reason to exist.
+Issues and PRs welcome. `npm test` and `npm run test:ui` must pass; none call a model. Read `CLAUDE.md` first (architecture, rules, current state), and `docs/history.md` for what was tried and failed, so you don't repeat it. A working rule of this project: every automatic feature needs a measured reason to exist.
 
 ## Command reference (context tools, also usable standalone)
 
@@ -90,7 +90,7 @@ Issues and PRs welcome. `npm test` (114 tests) and `npm run test:ui` (49 tests) 
 
 ## Context selection (`src/ranker.ts`, `src/package.ts`)
 
-Used by `narrowbit task`/`claude` and by the agent's `search`; the agent runtime itself does not inject a predicted package (see the history in `CLAUDE.md` for why).
+Used by `narrowbit task`/`claude` and by the agent's `search`; the agent runtime itself does not inject a predicted package (see `docs/history.md` for why).
 
 The ranker scores files with rule-based signals. The weights are in `WEIGHTS` and meant to be tuned with `eval` and `benchmark`:
 - BM25 over identifier sub-words, comments and path segments, with morphological expansion (verification↔verify)
