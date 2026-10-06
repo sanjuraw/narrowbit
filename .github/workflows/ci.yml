@@ -1,11 +1,29 @@
 name: CI
+# Private repo: Actions minutes are limited (2,000 a month) and macOS minutes count 10x, so the tests run on
+# Linux, a newer push cancels a run still in progress, and docs-only changes don't run anything.
+# The macOS run stays available by hand (Actions tab → CI → Run workflow → macos: true).
 on:
   push:
     branches: [main]
+    paths-ignore: ["**/*.md", "docs/**"]
   pull_request:
+    paths-ignore: ["**/*.md", "docs/**"]
+  workflow_dispatch:
+    inputs:
+      macos:
+        description: "Run the tests on macOS too (10x the minutes)"
+        type: boolean
+        default: false
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        os: ${{ (github.event_name == 'workflow_dispatch' && inputs.macos) && fromJSON('["ubuntu-latest","macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,6 +36,7 @@ jobs:
       - run: npm run test:ui
   secrets:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
