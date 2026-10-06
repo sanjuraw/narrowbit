@@ -332,6 +332,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .tog { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); padding: 3px 6px; border-radius: 8px; cursor: pointer; user-select: none; }
 .tog:hover { background: var(--panel-2); }
 .tog input { accent-color: var(--accent); margin: 0; }
+.tog-sel { width: auto; font-size: 12px; color: var(--muted); background: transparent; border: none; padding: 0 2px; cursor: pointer; }
+.auto-ok { color: var(--muted); font-size: 12px; margin: 2px 0 6px 24px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .usage { font-size: 11.5px; color: var(--faint); white-space: nowrap; display: inline-flex; align-items: baseline; gap: 5px; }
 .usage-cost { font-size: 12.5px; color: var(--muted); font-weight: 600; }
 .usage-tok { color: var(--faint); }
@@ -528,7 +530,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
             <button class="mchip" id="modelChip" title="Models &amp; settings"><span id="modelChipText"></span>▾</button>
             <label class="tog" title="Model 3 plans the task first and reviews the diff before it's done"><input type="checkbox" id="leadTog"> Lead</label>
             <label class="tog" title="Work in a separate copy of the folder; nothing changes your files until you press Apply"><input type="checkbox" id="isoTog"> Isolate</label>
-            <label class="tog" title="Shell commands wait for your approval"><input type="checkbox" id="askTog"> Ask before commands</label>
+            <label class="tog" title="Which shell commands wait for your approval"><select id="cmdSel" class="tog-sel" aria-label="Commands"><option value="ask">Ask before commands</option><option value="checks">Ask, except checks</option><option value="all">Don't ask</option></select></label>
           </div>
         </div>
       </div>
@@ -560,7 +562,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     </div>
     <div class="sgroup">
       <div class="frow"><label for="fallbackSel">Backup<span class="impact neutral">no change</span><small>If this provider hits a limit or fails, continue on</small></label><select id="fallbackSel"></select></div>
-      <label class="trow"><span class="tt">Ask before running commands<span class="impact neutral">no change</span><small>Reads, edits and verify run freely; shell commands wait for you.</small></span><span class="switch"><input type="checkbox" id="askChk"><i></i></span></label>
+      <div class="frow"><label for="cmdSetSel">Commands<span class="impact neutral">no change</span><small>Reads and edits never ask. "Ask, except checks" runs the project's own tests, type checks and lint, and read-only commands like git status, without asking; anything else, and any command after the agent changed a file such as package.json, still asks. Connector calls always ask unless you choose "Don't ask".</small></label><select id="cmdSetSel"><option value="ask">Ask before every command</option><option value="checks">Ask, except checks</option><option value="all">Don't ask</option></select></div>
     </div>
     <div class="sgroup">
       <label class="trow"><span class="tt"><strong>Lead mode</strong><span class="impact cost">costs 25-57% more</span><small>Model 3 writes a plan before work starts and reviews the diff before it's reported done. Two extra calls to your strongest model per task.</small></span><span class="switch"><input type="checkbox" id="leadChk"><i></i></span></label>
@@ -1414,11 +1416,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   $("leadTog").onchange = function () { setLead($("leadTog").checked); };
   $("maxSteps").value = store("maxSteps") || "20";
   $("maxSteps").onchange = function () { store("maxSteps", $("maxSteps").value); };
-  function askOn() { return store("askCmd") !== "0"; }
-  function setAsk(on) { store("askCmd", on ? "1" : "0"); $("askChk").checked = on; $("askTog").checked = on; }
-  setAsk(askOn());
-  $("askChk").onchange = function () { setAsk($("askChk").checked); };
-  $("askTog").onchange = function () { setAsk($("askTog").checked); };
+  // Which commands ask first: "ask" (all), "checks" (not the project's checks or read-only commands), "all" (none).
+  // Carries over the older on/off setting ("askCmd" 0 meant don't ask).
+  function cmdMode() { var m = store("cmdMode"); if (m === "ask" || m === "checks" || m === "all") return m; return store("askCmd") === "0" ? "all" : "ask"; }
+  function setCmdMode(m) { store("cmdMode", m); $("cmdSel").value = m; $("cmdSetSel").value = m; }
+  setCmdMode(cmdMode());
+  $("cmdSel").onchange = function () { setCmdMode($("cmdSel").value); };
+  $("cmdSetSel").onchange = function () { setCmdMode($("cmdSetSel").value); };
   $("isoTog").checked = store("isolate") === "1";
   $("isoTog").onchange = function () { store("isolate", $("isoTog").checked ? "1" : "0"); };
 
@@ -1597,7 +1601,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     // The server logs the task's first event before this request returns, so the view must already
     // be waiting for it.
     if (!cont) { resetView(null); view.pendingNew = true; show($("welcome"), false); }
-    api("/api/run", { task: text, force: !!force, continueTask: cont, maxSteps: Number($("maxSteps").value) || 20, askBeforeCommands: askOn(), isolate: $("isoTog").checked, attachments: attached.map(function (a) { return a.id; }) })
+    api("/api/run", { task: text, force: !!force, continueTask: cont, maxSteps: Number($("maxSteps").value) || 20, commands: cmdMode(), askBeforeCommands: cmdMode() !== "all", isolate: $("isoTog").checked, attachments: attached.map(function (a) { return a.id; }) })
       .then(function (r) {
         if (r && r.queued) { input.value = ""; autosize(); renderComposer(); return; }
         // Tell the view which run is its own, then replay what arrived while we didn't know.
@@ -1960,6 +1964,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (!replay) setWorking(S && S.lead && m.goal ? "Lead is planning…" : "Thinking…");
       return;
     }
+    if (e.type === "decision" && m.autoAllowed) { add(el("div", { cls: "auto-ok", title: "Ran without asking: your Commands setting allows the project's checks and read-only commands", text: "✓ Ran without asking: " + (m.command || "") })); return; }
     if (e.type === "decision" && m.forkOf) { add(el("div", { cls: "divider", text: "branched from an earlier conversation" })); return; }
     if (e.type === "plan") { renderPlan(m); if (!replay) setWorking("Working…"); return; }
     if (e.type === "tool_call") {

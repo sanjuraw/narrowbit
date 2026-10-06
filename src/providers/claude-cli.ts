@@ -78,6 +78,20 @@ export function isProgress(line: string): boolean {
   return line.includes('"subtype":"thinking_tokens"');
 }
 
+/**
+ * A reply stuck in a loop. Live traces (2026-10-06, history entry 55) showed what the earlier "stalls" were: the model
+ * writing `<invoke name="grep">\n</invoke>` over and over (55,212 characters in 3 minutes) until the call timed out.
+ * Before partial messages were streamed this looked like silence. A real reply here is one JSON object, so a long reply
+ * whose last 40 lines hold at most three different lines is a loop: the call is ended and the runtime retries it.
+ */
+export function isRunaway(text: string): boolean {
+  if (text.length < 3000) return false;
+  const lines = text.slice(-6000).split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length < 40) return false;
+  return new Set(lines.slice(-40)).size <= 3;
+}
+const RUNAWAY = "the model's reply ran away (the same lines repeated over and over)";
+
 /** The live part of one stream-json line, if any: a piece of reply text, or the running thinking-token estimate. */
 export function deltaOf(line: string): { text?: string; thinkingTokens?: number } | null {
   if (!line.includes("_delta") && !line.includes("thinking_tokens")) return null;
@@ -284,13 +298,18 @@ function runTurn(session: LiveSession, sessionId: string, opts: ModelCallOptions
       }, quiet);
     };
     arm();
+    let reply = "";
     session.onLine = (line) => {
       if (isProgress(line)) arm();
-      const d = opts.onDelta && deltaOf(line);
+      const d = deltaOf(line);
       if (d) {
         try {
-          opts.onDelta!(d);
+          opts.onDelta?.(d);
         } catch {}
+        if (d.text && (reply += d.text) && isRunaway(reply)) {
+          stalled = RUNAWAY;
+          finish(true, false);
+        }
         return; // a partial chunk; the full message follows in its own event
       }
       session.lines.push(line);
@@ -400,14 +419,19 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
         child.kill("SIGTERM");
       }, quiet);
     };
+    let reply = "";
     const take = (line: string) => {
       if (!line.trim()) return;
       if (isProgress(line)) arm();
-      const delta = opts.onDelta && deltaOf(line);
+      const delta = deltaOf(line);
       if (delta) {
         try {
-          opts.onDelta!(delta);
+          opts.onDelta?.(delta);
         } catch {}
+        if (delta.text && (reply += delta.text) && isRunaway(reply)) {
+          settle(toResult(lines.join("\n"), stderr, RUNAWAY));
+          child.kill("SIGTERM");
+        }
         return;
       }
       lines.push(line);

@@ -14,6 +14,7 @@ import { guardNote } from "./guard.js";
 import { callConnectorTool, listConnectorTools } from "./mcpClient.js";
 import { classifyModelError, isPermanentModelError } from "./errors.js";
 import { callModel, type ModelCallOptions, type ModelCallResult } from "./providers/claude-cli.js";
+import { allowedAsCheck } from "./approvals.js";
 import { callCodex } from "./providers/codex-cli.js";
 import { callAntigravity } from "./providers/antigravity-cli.js";
 import { COMPACT_AT, contextWindowFor, DEFAULT_TIERS, resolveEndpoint, resolveSelection, unavailableReason, type ModelTiers, type ProviderName } from "./providers/models.js";
@@ -436,6 +437,9 @@ export interface RuntimeOptions {
    * that decides what this command does (see scriptWarning) — the approver should then ask again even if the
    * user earlier allowed the same command text for the whole task. */
   approve?: (command: string, warning?: string, key?: string, edits?: readonly string[]) => Promise<boolean>;
+  /** "checks": the project's own checks and read-only commands run without `approve` (approvals.ts allowedAsCheck);
+   * everything else, and connector calls, still go to `approve`. Default "ask": everything goes to `approve`. */
+  permissionMode?: "ask" | "checks";
   /** Puts the model's question to the user and resolves with their answer (null = nobody can answer).
    * Unset in benchmarks and non-interactive runs: the model is told to make its best assumption instead. */
   ask?: (question: string, options: string[]) => Promise<string | null>;
@@ -667,7 +671,17 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // Every applied edit, in order (a path can repeat): what an approver needs to tell whether the agent has changed anything
   // since a remembered "allow" was given.
   const editLog: string[] = [];
-  const approveWithContext: RuntimeOptions["approve"] = opts.approve ? (command, _warning, key) => opts.approve!(command, scriptWarning(command, editedPaths), key, editLog) : undefined;
+  const checkCommands = Object.values(cfg.verify).filter((c): c is string => typeof c === "string" && !!c);
+  const approveWithContext: RuntimeOptions["approve"] = opts.approve
+    ? async (command, _warning, key) => {
+        const warning = scriptWarning(command, editedPaths);
+        if (!key && opts.permissionMode === "checks" && allowedAsCheck(command, checkCommands, warning)) {
+          appendEvent(p, taskId, { actor: "system", type: "decision", summary: `ran without asking (a check or read-only command): ${redact(command).slice(0, 300)}`, meta: { autoAllowed: "checks", command: redact(command) } });
+          return true;
+        }
+        return opts.approve!(command, warning, key, editLog);
+      }
+    : undefined;
   let lastVerifyHead = "";
   const doneChallenges = new Set<string>();
 
@@ -905,7 +919,19 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     // gets a new random id before the retry instead of repeating the same doomed call.
     for (let transientRetries = 0; res.isError && !res.fatal && !isPermanentModelError(res.errorMessage) && transientRetries < MAX_TRANSIENT_RETRIES; transientRetries++) {
       appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `step ${steps}: model call failed (${res.errorMessage ?? "no result"}), retrying (${transientRetries + 1}/${MAX_TRANSIENT_RETRIES})` });
-      if (freshSessionPending && /session id .* already in use/i.test(res.errorMessage ?? "")) {
+      // A reply that ran away (the same lines over and over, history entry 55) may have been saved into the session, and
+      // resuming it would resend the junk every turn: continue in a new session seeded with the progress so far.
+      const ranAway = /ran away/.test(res.errorMessage ?? "");
+      if (ranAway && !freshSessionPending) {
+        const digest = digestWithMemory(p, taskId, cfg.budget.initial);
+        callOpts.prompt = `Your previous reply got stuck repeating the same lines and was cut off, so this continues in a new conversation. Reply with JSON actions only, never tool-call markup such as <invoke>. Don't re-explore: rely on the progress below.\n\n${digest}\n\nThe input for the step that was in progress:\n${callOpts.prompt}`;
+        callOpts.systemPrompt = systemPrompt;
+        callOpts.resume = false;
+        freshSessionPending = true;
+        cumulativeCost = 0;
+      } else if (ranAway) callOpts.prompt += "\n\n(Reply with JSON actions only, never tool-call markup such as <invoke>.)";
+      // A first call that failed left nothing worth resuming; a new id also avoids "session id already in use".
+      if (freshSessionPending) {
         sessionId = randomUUID();
         callOpts.sessionId = sessionId;
       }

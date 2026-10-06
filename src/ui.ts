@@ -477,7 +477,9 @@ export function startUi(opts: UiOptions) {
     };
   };
 
-  const startRun = (task: string, maxSteps: number, askBeforeCommands: boolean, continueTask: string | null, isolate = false, attachments: string[] = []): { status: number; body: unknown } => {
+  // commands: "ask" every time (default), "checks" (the project's checks and read-only commands run unasked), "all" (nothing asks).
+  const startRun = (task: string, maxSteps: number, commands: "ask" | "checks" | "all", continueTask: string | null, isolate = false, attachments: string[] = []): { status: number; body: unknown } => {
+    const askBeforeCommands = commands !== "all";
     if (!root) return { status: 400, body: { error: "open a repository first" } };
     if (continueTask && runOfTask(continueTask)) return { status: 409, body: { error: "this conversation is already working — wait for it, or stop it" } };
     if (runningRuns().length >= MAX_RUNS) return { status: 409, body: { error: `${MAX_RUNS} tasks are already running — wait for one to finish or stop one` } };
@@ -550,6 +552,7 @@ export function startUi(opts: UiOptions) {
         emit(thisRun, { type: "question", id, question, options });
         return new Promise<string | null>((res) => thisRun.questions.set(id, res));
       },
+      permissionMode: commands === "checks" ? "checks" : "ask",
       approve: askBeforeCommands
         ? (command, warning, key, edits = []) => {
             // After Stop nothing more is approved, however it was allowed before.
@@ -1081,7 +1084,9 @@ export function startUi(opts: UiOptions) {
           } catch (e: any) {
             return json(res, 400, { error: e.message });
           }
-          const r = startRun(task, maxSteps, body.askBeforeCommands !== false, continueTask, body.isolate === true, attachments);
+          // Older pages send only askBeforeCommands (false meant "don't ask").
+          const commands = body.commands === "checks" || body.commands === "all" || body.commands === "ask" ? body.commands : body.askBeforeCommands === false ? "all" : "ask";
+          const r = startRun(task, maxSteps, commands, continueTask, body.isolate === true, attachments);
           return json(res, r.status, r.body);
         }
         case "/api/attach": {

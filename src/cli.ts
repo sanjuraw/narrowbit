@@ -88,6 +88,8 @@ const HELP = `narrowbit — a local, context-managed coding agent
       [--provider <name>] [--model X | --explore X --execute X --escalate X]
       [--effort low|medium|high|xhigh|max] [--max-steps N] [--force] [--dry-run]
       [--allow-commands]   run shell commands without asking (default: ask before each one)
+      [--allow-checks]     run the project's own checks (tests, type check, lint) and read-only commands without asking;
+                           anything else still asks (useful unattended: the checks run, other commands don't)
       [--trust]            open a repo whose own git config runs filter programs (asked once per repo)
       [--scout provider:model|none] research first on this model (default: the saved setting)
       [--review-only]         skip the plan call, still review the diff before "done" (cheaper than full lead mode)
@@ -565,6 +567,7 @@ export async function main(argv: string[]): Promise<number> {
         scout: parseScout(scoutSpec) ?? undefined,
         attachments,
         approve,
+        permissionMode: args.flags["allow-checks"] ? "checks" : "ask",
         ask,
         isolate: !!args.flags.isolate,
         testFirst: !!args.flags["test-first"],

@@ -1626,6 +1626,36 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { page.close(); }
   });
 
+  test("commands setting: three choices in the composer and settings, sent with a task; a check run unasked shows as one line", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const page = await openPage(app.url);
+    try {
+      await page.until(() => page.w.__nb && page.w.__nb.view(), "the page's conversation view");
+      const doc = page.w.document;
+      const sel = doc.getElementById("cmdSel"), set = doc.getElementById("cmdSetSel");
+      assert.deepEqual([...sel.options].map((o) => o.value), ["ask", "checks", "all"]);
+      assert.deepEqual([...set.options].map((o) => o.value), ["ask", "checks", "all"]);
+      sel.value = "checks"; sel.dispatchEvent(new page.w.Event("change"));
+      assert.equal(set.value, "checks", "the two controls stay in step");
+      const sent = [];
+      page.w.fetch = (url, opts) => { if (String(url).includes("/api/run")) sent.push(JSON.parse(opts.body)); return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, run: "r9" }), text: async () => "{}" }); };
+      const input = doc.getElementById("input");
+      input.value = "run the tests"; input.dispatchEvent(new page.w.Event("input"));
+      doc.getElementById("sendBtn").click();
+      await page.until(() => sent.length, "the task to be sent");
+      assert.equal(sent[0].commands, "checks");
+      assert.equal(sent[0].askBeforeCommands, true);
+      const nb = page.w.__nb; const v = nb.view(); v.taskId = "rt-auto"; v.pendingNew = false; v.seen = {};
+      nb.stream({ type: "start", continueTask: "rt-auto" });
+      nb.stream({ type: "event", run: "r9", event: { id: "x1", taskId: "rt-auto", type: "decision", actor: "system", summary: "ran without asking", meta: { autoAllowed: "checks", command: "npx vitest run 2>&1 | tail -15" } } });
+      const line = [...doc.querySelectorAll(".auto-ok")].pop();
+      assert.ok(line, "a line says the check ran without asking");
+      assert.match(line.textContent, /Ran without asking: npx vitest run/);
+      await new Promise((r) => setTimeout(r, 500));   // let the page finish reacting to the send before it is closed
+    } finally { page.close(); }
+  });
+
   test("the changes preview shows an untracked symlink as a link, never the contents of what it points to", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
