@@ -33,7 +33,7 @@ Hono, 40 real bug-fix tasks, n=1 per task, public code: Claude via the runtime ~
 ## Next steps
 
 1. Memory that saves tokens: pointer notes (entry 46) and path-triggered notes (entry 47, `--memory-inject path`) showed no clear win on single-file fixes. Remaining idea: architecture/convention notes measured on multi-file tasks with more repeats.
-2. Coding experience (entry 49): Narrowbit tasks take ~83 s vs ~63 s in native Claude Code; 2.6-3.8 s of every turn is starting a new `claude` process. Next: one long-lived process per task, then live streaming, then permission modes.
+2. Coding experience (entry 49): Narrowbit tasks take ~83 s vs ~63 s in native Claude Code; 2.6-3.8 s of every turn is starting a new `claude` process. A long-lived process per task is built but opt-in (`NARROWBIT_CLAUDE_PERSIST=1`): in real runs ~1 turn in 12 stalls until the timeout, cause not found (entry 50). Next: find the stall (trace real runs, try `--include-partial-messages`), live streaming, permission modes.
 3. Older open items: scout at scale, parallel independent subtasks, Python task mining in `build-tasks.mjs`, per-provider usage-limit burn rate, DeepSeek as fallback.
 
 ## Working rules

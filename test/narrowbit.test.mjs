@@ -4448,3 +4448,100 @@ describe("experimental: project notes injected into a task's first prompt (off b
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("Claude: one long-lived process per session instead of one per turn (opt-in: NARROWBIT_CLAUDE_PERSIST=1)", () => {
+  before(() => { process.env.NARROWBIT_CLAUDE_PERSIST = "1"; });
+  after(() => { delete process.env.NARROWBIT_CLAUDE_PERSIST; });
+  // Like the real CLI with --input-format stream-json: stays open and answers each stdin line with one turn.
+  function liveClaude(replies, { quitAfter = Infinity } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), "nb-live-"));
+    writeFileSync(join(dir, "replies.json"), JSON.stringify(replies));
+    const bin = join(dir, "claude");
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("fs"); const rl = require("readline").createInterface({ input: process.stdin });
+const d = ${JSON.stringify(dir)}; const args = process.argv.slice(2);
+fs.appendFileSync(d + "/spawns.log", JSON.stringify({ resume: args.includes("--resume"), model: args[args.indexOf("--model") + 1], stdinMode: args.includes("--input-format") }) + "\\n");
+let mine = 0; let cost = Number(fs.existsSync(d + "/cost") ? fs.readFileSync(d + "/cost", "utf8") : 0);
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  const n = fs.existsSync(d + "/turns") ? Number(fs.readFileSync(d + "/turns", "utf8")) : 0; fs.writeFileSync(d + "/turns", String(n + 1));
+  fs.appendFileSync(d + "/messages.log", JSON.stringify(msg.message.content) + "\\n");
+  const r = JSON.parse(fs.readFileSync(d + "/replies.json", "utf8")); const text = r[Math.min(n, r.length - 1)];
+  cost += 0.01; fs.writeFileSync(d + "/cost", String(cost));
+  const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 100 };
+  console.log(JSON.stringify({ type: "system", subtype: "init" }));
+  console.log(JSON.stringify({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }));
+  console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: cost, num_turns: 1, session_id: "s" }));
+  if (++mine >= ${quitAfter}) process.exit(0);
+});
+`, { mode: 0o755 });
+    const lines = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+    return { bin, dir, spawns: () => lines("spawns.log"), messages: () => lines("messages.log") };
+  }
+  const reply = (o) => JSON.stringify(o);
+
+  test("a task's turns share one process; per-turn usage and cost come out the same as before", async () => {
+    const { root, p } = tinyRepo();
+    const fake = liveClaude([reply({ action: "read", path: "a.txt" }), reply({ action: "read", path: "a.txt" }), reply({ action: "done", summary: "it says hello" })]);
+    try {
+      const r = await runTask(p, "what does a.txt say", { claudeBin: fake.bin, boss: false, maxSteps: 6, models: { explore: "sonnet", execute: "sonnet", escalate: "sonnet" } });
+      assert.equal(r.outcome, "done");
+      assert.equal(fake.spawns().length, 1, "one process for every turn");
+      const calls = readEvents(p, r.taskId).filter((e) => e.type === "model_call");
+      assert.equal(fake.messages().length, calls.length, "every model call was a turn on that process");
+      assert.ok(calls.length >= 3);
+      assert.ok(calls.every((c) => Math.round(c.tokens.costUsd * 100) === 1), "the running session cost becomes each turn's own share");
+      assert.ok(calls.every((c) => c.tokens.cacheReadTokens === 100 && c.tokens.inputTokens === 10), "usage is per turn");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("a model switch starts a new process that resumes the session; a process that quits is replaced the same way", async () => {
+    const { callModel, endClaudeSession } = await dist("providers/claude-cli.js");
+    const fake = liveClaude(["one", "two", "three", "four"], { quitAfter: 2 });
+    const sid = "11111111-2222-3333-4444-555555555555";
+    const call = (model, resume) => callModel({ cwd: fake.dir, prompt: "hi", model, role: "t", claudeBin: fake.bin, sessionId: sid, resume });
+    try {
+      assert.equal((await call("sonnet", false)).text, "one");
+      assert.equal((await call("opus", true)).text, "two", "switching model");
+      assert.equal((await call("opus", true)).text, "three");
+      assert.equal((await call("opus", true)).text, "four", "the process quit after two turns: the turn still gets an answer");
+      assert.deepEqual(fake.spawns().map((s) => [s.resume, s.model]), [[false, "sonnet"], [true, "opus"], [true, "opus"]]);
+      assert.ok(fake.spawns().every((s) => s.stdinMode));
+    } finally { await endClaudeSession(sid); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("attachments go as content blocks on the same stdin; without the switch it is a process per turn, as before", async () => {
+    const { callModel, endClaudeSession } = await dist("providers/claude-cli.js");
+    const { saveAttachment } = await dist("attachments.js");
+    const fake = liveClaude(["seen"]);
+    const img = saveAttachment(fake.dir, "shot.png", Buffer.from("PNGDATA"));
+    const sid = "21111111-2222-3333-4444-555555555555";
+    try {
+      await callModel({ cwd: fake.dir, prompt: "what is this?", model: "sonnet", role: "t", claudeBin: fake.bin, sessionId: sid, attachments: [img] });
+      const content = fake.messages()[0];
+      assert.equal(content[0].type, "image");
+      assert.equal(content[1].text, "what is this?");
+    } finally { await endClaudeSession(sid); }
+    const plain = fakeClaude(["a", "b"]);
+    delete process.env.NARROWBIT_CLAUDE_PERSIST;
+    try {
+      const sid2 = "31111111-2222-3333-4444-555555555555";
+      await callModel({ cwd: plain.dir, prompt: "x", model: "sonnet", role: "t", claudeBin: plain.bin, sessionId: sid2 });
+      await callModel({ cwd: plain.dir, prompt: "y", model: "sonnet", role: "t", claudeBin: plain.bin, sessionId: sid2, resume: true });
+      assert.equal(plain.calls(), 2, "one process per call when not switched on");
+    } finally { process.env.NARROWBIT_CLAUDE_PERSIST = "1"; rmSync(plain.dir, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("a finished `narrowbit agent` still exits while the process idles", async () => {
+    const { root } = tinyRepo();
+    const fake = liveClaude([reply({ action: "done", summary: "nothing to do here, a.txt just says hello" })]);
+    try {
+      nb(root, "index");
+      const t0 = Date.now();
+      const r = spawnSync(process.execPath, [BIN, "agent", "what does a.txt say", "--force", "--allow-commands", "--no-boss", "--max-steps", "3"], { cwd: root, encoding: "utf8", timeout: 60_000, env: { ...process.env, NARROWBIT_CLAUDE: fake.bin } });
+      assert.equal(r.error, undefined, "did not hang");
+      assert.ok(Date.now() - t0 < 30_000);
+      assert.equal(fake.spawns().length, 1, r.stdout + r.stderr);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
