@@ -13,4 +13,7 @@ regexes = [
   '''ghp_a{36}''',
   '''NB-DIR-SECRET-5521''',
   '''canary-SECRET-123''',
+  '''hunter2hunter2''',
+  '''7f3a9c1e5b8d2f4a''',
+  '''MIIEowIBAAKCAQEAu1SU1LfVLPHCozMx''',
 ]
