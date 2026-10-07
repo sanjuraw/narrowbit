@@ -1,0 +1,11 @@
+# Deliberately fake credentials used by the redaction tests (test/memory.test.mjs).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "fake fixtures in the redaction tests"
+regexes = [
+  '''hunter2hunter2''',
+  '''7f3a9c1e5b8d2f4a''',
+  '''MIIEowIBAAKCAQEAu1SU1LfVLPHCozMx''',
+]
