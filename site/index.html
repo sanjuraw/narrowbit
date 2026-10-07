@@ -140,7 +140,7 @@ footer a { color: var(--muted); }
         <ul class="plain">
           <li>Codex (gpt-6-sol), same 40 tasks: 40/40.</li>
           <li>DeepSeek V4.1 Flash, direct API: 39/40, about $0.22 for all 40 at list prices.</li>
-          <li>Python (click), 8 hand-picked tasks: 6/8, with about 3× the tokens per task of Hono. A larger Python run is in progress.</li>
+          <li>Python (click), 43 tasks against native Claude Code: 43/43 both, 39% lower cost, but slower (median 36 s vs 25 s).</li>
         </ul>
       </div>
       <div>
@@ -148,7 +148,7 @@ footer a { color: var(--muted); }
         <ul class="plain">
           <li>Mixing a cheap model for reading with an expensive one for editing lost to one good model doing the whole task, both times measured.</li>
           <li>Project memory notes showed no reliable token saving on single-file fixes.</li>
-          <li>Narrowbit is not faster than native Claude Code: it matches it at best.</li>
+          <li>Narrowbit is not faster than native Claude Code: it matches it at best, and on Python it is about 1.4× slower.</li>
         </ul>
       </div>
     </div>
@@ -160,7 +160,7 @@ footer a { color: var(--muted); }
     <div class="two">
       <ul class="plain">
         <li>macOS only for the app; the CLI needs Node 22.13 or newer.</li>
-        <li>Proven on one TypeScript repository; other languages and project sizes are not yet shown.</li>
+        <li>Measured on two repositories (TypeScript and Python), one try per task; other languages and project sizes are not yet shown.</li>
         <li>The agent edits real files and runs your project's own commands. Review the diff before you commit.</li>
       </ul>
       <ul class="plain">

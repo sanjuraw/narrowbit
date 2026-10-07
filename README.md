@@ -63,7 +63,17 @@ Every result below names its baseline and how much it rests on. Tasks are real f
 
 Limits: one repository · one try per task · one model · native measured once on the same day, not repeated · public code the model may have seen · subscription cost is notional (nothing is billed per token).
 
-**Python:** a 43-task run on `pallets/click` is in progress; an earlier 8-task hand-picked set gave 6/8 at about 3× the tokens per task of Hono.
+**click (Python), all 43 tasks, against native Claude Code, both on Claude Sonnet** (history entries 67-68):
+
+| | Native Claude Code | Narrowbit |
+|---|---|---|
+| Tasks solved | 43 / 43 | 43 / 43 |
+| Cost for all 43 | $5.05 | $3.07 (−39%) |
+| Uncached input per task (median) | — | −51% |
+| Turns per task | 9.3 | 8.0 |
+| Task time, median | 25 s | 36 s (slower) |
+
+Limits: as above, plus Narrowbit's run happened about four hours after native's. Before Claude's replies went through structured output, Narrowbit solved 39 of 42 here; two of its three failures were replies stuck in a loop.
 
 **Other providers, same 40 Hono tasks:** Codex (`gpt-6-sol`) 40/40; DeepSeek V4.1 Flash through its API 39/40, about $0.22 for all 40 at list prices. Antigravity and free API models worked but used 2-3× the tokens, and free models solved about 6-7 of 10.
 

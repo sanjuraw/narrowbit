@@ -18,7 +18,7 @@ Local, provider-independent coding-agent runtime (CLI `narrowbit`, native Mac ap
 All n=1 per task, public code, Claude Sonnet 5.5 on both sides unless noted; full caveats in `docs/history.md`.
 
 - **Hono (TypeScript), 40 tasks vs same-day native Claude Code** (entries 61-64): 40/40 vs 40/40; cost $1.43 vs $3.48 (-59%); median uncached input -61%; turns 5.2 vs 7.1; time median 19 vs 16 s (slower), p90 28 vs 28 s. With structured output (entry 64, A/B in one run): 40/40 vs 39/40 without it, no looping replies, fewer turns, same speed, +8% cost.
-- **click (Python), 43 tasks vs native** (entry 67, before structured output was on): native 42/42 vs Narrowbit **39/42**, -47% cost, slower (median 30 vs 25 s). Two of the three failures were looping replies. Re-run with structured output pending. **Don't claim equal quality on Python.**
+- **click (Python), 43 tasks vs native** (entries 67-68, structured output on): 43/43 vs 43/43; cost $3.07 vs $5.05 (-39%); median uncached input -51%; turns 8.0 vs 9.3; **slower: median 36 vs 25 s** (Narrowbit's arm ran ~4 h after native's). Before structured output: 39/42 (two looping replies).
 - Codex 40/40 and DeepSeek V4.1 Flash 39/40 (~$0.22 for 40) on Hono. Memory: no proven token saving (entries 28, 29, 36, 46, 47). Scout cut Claude's cost 57% on 10 tasks, unconfirmed at scale. Narrowbit is not faster than native Claude Code.
 - An invalid run is on file (entry 66): native's test commands were blocked, so check a native arm's blocked tool calls before trusting any comparison.
 
@@ -40,8 +40,8 @@ All n=1 per task, public code, Claude Sonnet 5.5 on both sides unless noted; ful
 
 ## Next steps
 
-1. **Python re-run** (in progress): Narrowbit's arm on all 43 click tasks with structured output on, plus native's usage-limit task 27b3ee26. Then put the Python numbers in the README results section, the site (`site/index.html`) and a history entry, whichever way they go. If still below native, look at the failures before launch.
-2. **Go-public checklist:** (a) Codex audit Part 3 and fixes; (b) Python result in README and site; (c) run `~/.narrowbit-launch/clean-history.sh`, rename the old repo, publish the cleaned history as a new repo (and `narrowbit-memory`); (d) Pages output dir `soon` → `site`, reconnect Pages to the new repo; (e) the user's explicit yes.
+1. **Speed on Python:** Narrowbit is ~1.4× slower than native on click (entry 68); break the time down as in entry 62 (model, verify, loops, commands) and fix the largest part.
+2. **Go-public checklist:** (a) Codex audit Part 3 and fixes; (b) done: Python result in README and site; (c) run `~/.narrowbit-launch/clean-history.sh`, rename the old repo, publish the cleaned history as a new repo (and `narrowbit-memory`); (d) Pages output dir `soon` → `site`, reconnect Pages to the new repo; (e) the user's explicit yes.
 3. Open speed work: Narrowbit is ~1.2-1.5× slower than native at the median; per-call model time is already on par, the rest is turns and checks.
 4. Older open items: memory that saves tokens (multi-file tasks, more repeats), scout at scale, parallel independent subtasks, per-provider usage-limit burn rate, DeepSeek as fallback.
 
