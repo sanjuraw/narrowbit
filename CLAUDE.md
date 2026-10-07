@@ -41,7 +41,7 @@ All n=1 per task, public code, Claude Sonnet 5.5 on both sides unless noted; ful
 ## Next steps
 
 1. **Python re-run** (in progress): Narrowbit's arm on all 43 click tasks with structured output on, plus native's usage-limit task 27b3ee26. Then put the Python numbers in the README results section, the site (`site/index.html`) and a history entry, whichever way they go. If still below native, look at the failures before launch.
-2. **Go-public checklist:** (a) Codex audit Part 3 and fixes; (b) Python result in README and site; (c) run `~/.narrowbit-launch/clean-history.sh`, rename the old repo, publish the cleaned history as a new repo (and `narrowbit-memory`); (d) Pages output dir `soon` → `site`, reconnect Pages to the new repo; (f) the user's explicit yes.
+2. **Go-public checklist:** (a) Codex audit Part 3 and fixes; (b) Python result in README and site; (c) run `~/.narrowbit-launch/clean-history.sh`, rename the old repo, publish the cleaned history as a new repo (and `narrowbit-memory`); (d) Pages output dir `soon` → `site`, reconnect Pages to the new repo; (e) the user's explicit yes.
 3. Open speed work: Narrowbit is ~1.2-1.5× slower than native at the median; per-call model time is already on par, the rest is turns and checks.
 4. Older open items: memory that saves tokens (multi-file tasks, more repeats), scout at scale, parallel independent subtasks, per-provider usage-limit burn rate, DeepSeek as fallback.
 
