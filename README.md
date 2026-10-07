@@ -61,7 +61,7 @@ Every result below names its baseline and how much it rests on. Tasks are real f
 | Task time, median | 16 s | 19 s (slower) |
 | Task time, slowest 10% | 28 s | 28 s |
 
-Limits: one repository · one try per task · one model · native measured once on the same day, not repeated · public code the model may have seen · subscription cost is notional (nothing is billed per token).
+Limits: one repository · one try per task · one model · native measured once on the same day, not repeated · public code the model may have seen · subscription cost is notional (nothing is billed per token) · measured before Claude's structured output became the default, which in a same-run A/B solved 40/40 instead of 39/40 for about 8% more cost.
 
 **click (Python), all 43 tasks, against native Claude Code, both on Claude Sonnet** (history entries 67-68):
 
