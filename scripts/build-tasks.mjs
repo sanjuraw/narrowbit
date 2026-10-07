@@ -180,7 +180,7 @@ const spec = {
   timeoutMinutes: 30,
   maxBudgetUsd: Number(flag("max-budget-usd", 3)),
   ...(setup ? { setup: String(setup) } : {}),
-  claudeArgs: ["--permission-mode", "acceptEdits", "--allowedTools", "Bash(npx vitest:*) Bash(npx jest:*) Bash(npm test:*) Bash(npx tsc:*) Bash(.venv/bin/python -m pytest:*) Bash(python3 -m pytest:*) Bash(pytest:*) mcp__narrowbit"],
+  claudeArgs: ["--permission-mode", "acceptEdits", "--allowedTools", "Bash(npx vitest:*) Bash(npx jest:*) Bash(npm test:*) Bash(npx tsc:*) Bash(python -m pytest:*) Bash(python3 -m pytest:*) Bash(pytest:*) Bash(.venv/bin/pytest:*) Bash(.venv/bin/python -m pytest:*) mcp__narrowbit"],
   arms: [{ name: "native" }, { name: "narrowbit", narrowbit: true }],
   tasks,
 };
