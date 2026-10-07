@@ -43,7 +43,8 @@ All n=1 per task, public code, Claude Sonnet 5.5 on both sides unless noted; ful
 1. **Speed on Python:** Narrowbit is ~1.4× slower than native on click (entry 68); break the time down as in entry 62 (model, verify, loops, commands) and fix the largest part.
 2. **Go-public checklist:** (a) Codex audit Part 3 and fixes; (b) done: Python result in README and site; (c) run `~/.narrowbit-launch/clean-history.sh`, rename the old repo, publish the cleaned history as a new repo (and `narrowbit-memory`); (d) Pages output dir `soon` → `site`, reconnect Pages to the new repo; (e) the user's explicit yes.
 3. Open speed work: Narrowbit is ~1.2-1.5× slower than native at the median; per-call model time is already on par, the rest is turns and checks.
-4. Older open items: memory that saves tokens (multi-file tasks, more repeats), scout at scale, parallel independent subtasks, per-provider usage-limit burn rate, DeepSeek as fallback.
+4. **Memory on multi-file tasks** (entry 69, running): 15 pairs, 3 repeats, decision rule fixed in advance; report the result either way, update the site's memory label only if it wins.
+5. Older open items: scout at scale, parallel independent subtasks, per-provider usage-limit burn rate, DeepSeek as fallback.
 
 ## Working rules
 

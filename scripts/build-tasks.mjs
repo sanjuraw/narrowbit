@@ -30,6 +30,8 @@ const out = resolve(String(flag("out", "benchmark.json")));
 const scan = Number(flag("commits", 400));
 const max = Number(flag("max", 40));
 const maxFiles = Number(flag("max-files", 5));
+// Multi-file tasks (memory experiments, history entry 69): only commits whose fix touched at least this many source files.
+const minSource = Number(flag("min-source", 1));
 const verifyEach = has("verify-each");
 const model = String(flag("model", "sonnet"));
 const keep = has("keep-worktree");
@@ -104,7 +106,7 @@ for (const block of raw.split("\x1e")) {
     else if (isSource(path)) source.push(path);
     else other++; // docs/config alongside the change: fine, but not part of the task
   }
-  if (!source.length || !tests.length || source.length + tests.length > maxFiles || other > 2) continue;
+  if (source.length < minSource || !tests.length || source.length + tests.length > maxFiles || other > 2) continue;
   candidates.push({ hash, parent, subject, body: body.join("\n").trim(), source, tests });
 }
 console.error(`${candidates.length} candidate commit(s) changed source + tests`);
