@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Narrowbit</title>
+<meta name="description" content="A local coding agent for your Mac that sends the model only the context it needs. Bring your own model: Claude, Codex, DeepSeek and more.">
+<meta property="og:title" content="Narrowbit">
+<meta property="og:description" content="A local coding agent that sends the model only the context it needs.">
+<meta property="og:image" content="https://narrowbit.dev/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<style>
+:root {
+  --bg: #faf9f5; --surface: #ffffff; --ink: #1f1e1d; --muted: #5e5d59; --line: #e6e3da;
+  --accent: #c96442; --accent-ink: #ffffff; --code-bg: #f0eee6; --good: #2f7d4f; --warn: #a15c07;
+  --radius: 10px; --max: 920px;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1c1b19; --surface: #252420; --ink: #ecebe6; --muted: #a8a69e; --line: #3a3833;
+    --accent: #d97757; --code-bg: #2d2b27; --good: #6cc08b; --warn: #e3a453;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1c1b19; --surface: #252420; --ink: #ecebe6; --muted: #a8a69e; --line: #3a3833;
+  --accent: #d97757; --code-bg: #2d2b27; --good: #6cc08b; --warn: #e3a453;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); line-height: 1.6; font-size: 17px; }
+a { color: var(--accent); }
+.wrap { max-width: var(--max); margin: 0 auto; padding: 0 16px; }
+header.top { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
+header.top .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--ink); text-decoration: none; }
+header.top nav a { color: var(--muted); text-decoration: none; margin-left: 18px; font-size: 15px; }
+header.top nav a:hover { color: var(--ink); }
+.hero { padding: 56px 0 40px; text-align: center; }
+.hero svg { display: block; margin: 0 auto; }
+.hero h1 { font-size: clamp(34px, 6vw, 52px); line-height: 1.1; margin: 18px 0 12px; letter-spacing: -0.02em; }
+.hero p.lede { font-size: clamp(18px, 2.4vw, 21px); color: var(--muted); max-width: 640px; margin: 0 auto 28px; }
+.install { display: flex; align-items: center; gap: 8px; max-width: 760px; margin: 0 auto; background: var(--code-bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 10px 10px 16px; text-align: left; }
+.install code { flex: 1; overflow-x: auto; white-space: nowrap; font-size: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+button.copy { border: 0; background: var(--accent); color: var(--accent-ink); border-radius: 7px; padding: 8px 12px; font-size: 14px; cursor: pointer; flex: none; }
+.hero .sub { color: var(--muted); font-size: 14px; margin-top: 12px; }
+.badge { display: inline-block; font-size: 13px; color: var(--warn); border: 1px solid currentColor; border-radius: 999px; padding: 2px 10px; margin-bottom: 8px; }
+section { padding: 40px 0; border-top: 1px solid var(--line); }
+section h2 { font-size: 26px; margin: 0 0 8px; letter-spacing: -0.01em; }
+section p.intro { color: var(--muted); margin: 0 0 24px; max-width: 720px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+.card h3 { margin: 0 0 6px; font-size: 17px; }
+.card p { margin: 0; color: var(--muted); font-size: 15px; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 15px; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td.num { font-variant-numeric: tabular-nums; }
+@media (max-width: 560px) { th, td { padding: 8px 10px; font-size: 14px; } }
+.better { color: var(--good); font-weight: 600; }
+.worse { color: var(--warn); font-weight: 600; }
+.labels { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 0; padding: 0; list-style: none; }
+.labels li { font-size: 13px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; background: var(--surface); }
+ul.plain { margin: 0; padding-left: 20px; }
+ul.plain li { margin: 6px 0; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; }
+footer { padding: 32px 0 48px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); }
+footer a { color: var(--muted); }
+@media (max-width: 560px) {
+  header.top nav a:not(.gh) { display: none; }
+  body { font-size: 16px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="#"><svg viewBox="23 28 54 44" width="28" height="23" aria-hidden="true"><g fill="#c96442"><rect x="26.4" y="31.7" width="2.5" height="36.7"/><rect x="26.4" y="31.7" width="8.8" height="2.5"/><rect x="26.4" y="65.9" width="8.8" height="2.5"/><rect x="71.1" y="31.7" width="2.5" height="36.7"/><rect x="64.8" y="31.7" width="8.8" height="2.5"/><rect x="64.8" y="65.9" width="8.8" height="2.5"/><rect x="39.7" y="39.6" width="20.6" height="20.6"/></g></svg>Narrowbit</a>
+    <nav><a href="#how">How it works</a><a href="#results">Results</a><a href="#limits">Limits</a><a class="gh" href="https://github.com/sanjuraw/narrowbit">GitHub</a></nav>
+  </header>
+
+  <div class="hero">
+    <svg viewBox="23 28 54 44" width="96" height="78" role="img" aria-label="Narrowbit logo"><g fill="#c96442"><rect x="26.4" y="31.7" width="2.5" height="36.7"/><rect x="26.4" y="31.7" width="8.8" height="2.5"/><rect x="26.4" y="65.9" width="8.8" height="2.5"/><rect x="71.1" y="31.7" width="2.5" height="36.7"/><rect x="64.8" y="31.7" width="8.8" height="2.5"/><rect x="64.8" y="65.9" width="8.8" height="2.5"/><rect x="39.7" y="39.6" width="20.6" height="20.6"/></g></svg>
+    <h1>A coding agent that sends<br>only what the model needs</h1>
+    <p class="lede">Narrowbit runs on your Mac, works with the model you already pay for, and keeps a local log of everything it does, so each step sees the smallest useful slice of your code.</p>
+    <span class="badge">Early: version 0.1, macOS</span>
+    <div class="install"><code id="cmd">git clone https://github.com/sanjuraw/narrowbit.git ~/Narrowbit &amp;&amp; ~/Narrowbit/scripts/install.sh</code><button class="copy" id="copy" type="button">Copy</button></div>
+    <p class="sub">The installer asks before installing anything. Then: <code>narrowbit ui</code> for the app, or <code>narrowbit agent "fix the failing test"</code>.</p>
+  </div>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <p class="intro">The measure is correct coding work per unit of AI usage, not fewer tokens for their own sake. If quality drops, Narrowbit has failed.</p>
+    <div class="grid">
+      <div class="card"><h3>Bring your own model</h3><p>Claude or Codex through your existing subscription, or any OpenAI-compatible API: DeepSeek, OpenRouter, Gemini, Groq, Ollama, LM Studio and others.</p></div>
+      <div class="card"><h3>Small context, every step</h3><p>A local index and a durable task log let each turn carry only what the next action needs, instead of the whole conversation so far.</p></div>
+      <div class="card"><h3>Checked, not claimed</h3><p>"Done" is tested against your repository's own typecheck, lint and test commands before the agent is allowed to stop.</p></div>
+      <div class="card"><h3>You stay in control</h3><p>Commands ask first (or only the checks run without asking), edits show as diffs, every step can be rewound, and nothing is committed until you say so.</p></div>
+      <div class="card"><h3>Local-first</h3><p>No telemetry and no repository upload. Code goes only to the model provider you choose. Secrets are redacted from what the agent stores.</p></div>
+      <div class="card"><h3>App and terminal</h3><p>A native Mac app with live progress, plus a CLI and an MCP server. Skills for common jobs and connectors for MCP tools such as GitHub.</p></div>
+    </div>
+  </section>
+
+  <section id="results">
+    <h2>Results, with their limits</h2>
+    <p class="intro">Each result names its baseline and how much it rests on. Tasks are real fixes from a project's history: start at the commit before the fix with its tests added, and succeed when those tests pass without touching them.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Hono · 40 tasks · Sonnet</th><th>Native Claude Code</th><th>Narrowbit</th></tr></thead>
+        <tbody>
+          <tr><td>Tasks solved</td><td class="num">40 / 40</td><td class="num">40 / 40</td></tr>
+          <tr><td>Cost for all 40</td><td class="num">$3.48</td><td class="num better">$1.43 (−59%)</td></tr>
+          <tr><td>Uncached input per task (median)</td><td class="num">baseline</td><td class="num better">−61%</td></tr>
+          <tr><td>Turns per task</td><td class="num">7.1</td><td class="num better">5.2</td></tr>
+          <tr><td>Task time (median)</td><td class="num">16 s</td><td class="num worse">19 s (slower)</td></tr>
+          <tr><td>Task time (slowest 10%)</td><td class="num">28 s</td><td class="num">28 s</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul class="labels">
+      <li>one repository (TypeScript)</li><li>one try per task</li><li>one model</li><li>native run on the same day, not repeated</li><li>public code the model may have seen</li><li>subscription cost is notional</li>
+    </ul>
+    <div class="two" style="margin-top:28px">
+      <div>
+        <h3>Also measured</h3>
+        <ul class="plain">
+          <li>Codex (gpt-6-sol), same 40 tasks: 40/40.</li>
+          <li>DeepSeek V4.1 Flash, direct API: 39/40, about $0.22 for all 40 at list prices.</li>
+          <li>Python (click), 8 hand-picked tasks: 6/8, with about 3× the tokens per task of Hono. A larger Python run is in progress.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>What did not work</h3>
+        <ul class="plain">
+          <li>Mixing a cheap model for reading with an expensive one for editing lost to one good model doing the whole task, both times measured.</li>
+          <li>Project memory notes showed no reliable token saving on single-file fixes.</li>
+          <li>Narrowbit is not faster than native Claude Code: it matches it at best.</li>
+        </ul>
+      </div>
+    </div>
+    <p style="margin-top:24px">Every run, including the approaches that failed, is written up in <a href="https://github.com/sanjuraw/narrowbit/blob/main/docs/history.md">the project history</a>. The benchmark kit is in the repository, so you can run it on your own code.</p>
+  </section>
+
+  <section id="limits">
+    <h2>Known limits</h2>
+    <div class="two">
+      <ul class="plain">
+        <li>macOS only for the app; the CLI needs Node 22.13 or newer.</li>
+        <li>Proven on one TypeScript repository; other languages and project sizes are not yet shown.</li>
+        <li>The agent edits real files and runs your project's own commands. Review the diff before you commit.</li>
+      </ul>
+      <ul class="plain">
+        <li>Files the agent reads can contain instructions aimed at it. Don't run it with commands allowed on code you don't trust.</li>
+        <li>An archive unpacked over an existing project can bring Narrowbit state that is used without asking. See <a href="https://github.com/sanjuraw/narrowbit/blob/main/SECURITY.md">SECURITY.md</a>.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    Narrowbit is open source under the MIT license. <a href="https://github.com/sanjuraw/narrowbit">Source</a> · <a href="https://github.com/sanjuraw/narrowbit/blob/main/SECURITY.md">Report a vulnerability</a> · <a href="https://github.com/sanjuraw/narrowbit/issues">Issues</a>
+  </footer>
+</div>
+<script>
+document.getElementById("copy").addEventListener("click", function () {
+  var b = this, text = document.getElementById("cmd").textContent;
+  function done(ok) { b.textContent = ok ? "Copied" : "Select and copy"; setTimeout(function () { b.textContent = "Copy"; }, 1600); }
+  try { navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); }); } catch (e) { done(false); }
+});
+</script>
+</body>
+</html>
