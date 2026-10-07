@@ -7,7 +7,7 @@ Local, provider-independent coding-agent runtime (CLI `narrowbit`, native Mac ap
 ## Current state (2026-10-06)
 
 - **Repos (both PRIVATE, nothing on npm):** `sanjuraw/narrowbit` (runtime + app) and `sanjuraw/narrowbit-memory` (mirror of `packages/memory/`; the source of truth is this repo, refresh with `scripts/sync-memory-repo.sh`).
-- **Folders:** dev checkout `/Users/Shared/Projects/Narrowbit` (owner the main account, group-writable for `staff`, `core.sharedRepository group`; the the second account account needs `safe.directory` for it); deployed clone `/Users/Shared/NarrowbitApp` (at `1abe5d4`); app `/Applications/Narrowbit.app`.
+- **Machine-specific notes** (folders, accounts, keys, benchmark files) are in `CLAUDE.local.md`, which is not committed.
 - **Last code commit `1abe5d4`** (nineteenth audit, Part 3). Tests there: memory 24, unit 244, UI 93, typecheck clean. CI green on `b17b743` (gitleaks allowlist for the fake test secrets). **GitHub Actions is out of minutes until 1 Nov 2026** (2,000/month on a private repo; the test job ran on macOS, which counts 10x): runs are refused ("spending limit"), nothing is billed. Until then run `npm test`, `npm run test:ui`, `npm test -w narrowbit-memory` and gitleaks locally before every push, and push in batches. CI now runs on Linux, skips docs-only pushes and cancels superseded runs; macOS only by hand. The Linux run hasn't been seen yet: check it after 1 Nov.
 - **Security work:** audit rounds 1-19 are fixed (history entries 1-17, 21, 30-44). Still open: archives extracted over an existing project (entry 32 #2). Accepted tradeoffs: `nb_verify`/direct `verify` and benchmark specs run configured commands; config files that execute under an approved test command (`vitest.config.ts`, `jest.config.*`, `.yarnrc.yml`, `noxfile.py`) aren't in the script-warning list.
 
@@ -26,9 +26,7 @@ Hono, 40 real bug-fix tasks, n=1 per task, public code: Claude via the runtime ~
 ## Waiting on the user (don't do unasked)
 
 1. Codex's own audit Part 3 and its re-check of entries 43-44: after its weekly limit resets (10 Oct). Don't run Codex until told.
-2. October Bus connector test (download/run their daemon; state file, source and size first).
-3. Android APK for a separate app of the user's (EAS login or a ~5-6 GB local toolchain).
-4. `claude update` on the shared Mac must be run as the second account (owner of the install).
+2. Personal items: see `CLAUDE.local.md`.
 
 ## Next steps
 
