@@ -48,19 +48,33 @@ narrowbit limits                       # Claude / Codex 5-hour and weekly usage
 
 ## What is and isn't proven
 
-Measured on `honojs/hono`: 40 tasks mined from real commits (start at the parent commit with the fix's tests applied; success = those tests pass). Every number below is n=1 per task, on one repo, one language — read it as directional, not a guarantee, and see `docs/history.md` for every caveat and every approach that *didn't* work.
+Every result below names its baseline and how much it rests on. Tasks are real fixes mined from a project's history: start at the commit before the fix with the fix's own tests added (so they fail), and succeed when those tests pass without the agent touching them. The full log, including what did *not* work, is in [`docs/history.md`](docs/history.md).
 
-- **Vs. Claude Code + Narrowbit's own MCP tools** (n=40, Claude): 39/40 (baseline 40/40), ~90% fewer input tokens, ~56% lower notional cost.
-- **Vs. plain native Claude Code** (n=15 subset, earlier loop version): 15/15 both, ~75% fewer tokens, about half the cost.
-- **Codex, full 40 tasks:** 40/40 with a single model (`gpt-6-sol`) in all three slots, 63k mean input tokens, 5.3 turns.
-- **Vs. raw `codex exec` (n=10, no Narrowbit — its own tools, one turn to completion):** 10/10 both, ~63% fewer tokens through Narrowbit (69k mean vs 186k).
-- **DeepSeek V4.1 Flash, direct:** 39/40, ~87k mean input, est. $0.22 for all 40 at list prices.
-- **Mixing models mostly didn't pay off.** Routing cheap-explore → expensive-execute (Claude Haiku→Sonnet→Opus, or Codex Luna→Sol) lost to one good model doing the whole task, both times measured — switching models mid-conversation rewrites the prompt cache, and a weaker explorer needs more turns than a stronger model needs for everything. A cheap model researching in its *own* separate conversation and handing the worker a short report (the `scout` option) did help once, on 10 tasks: Codex Sol scouting, Claude Sonnet working, cut Claude's own cost per task by ~57% at equal-or-better success — at the price of spending a second plan's quota.
-- **Antigravity, free/cheap API models:** usable but token-hungry (Antigravity ~2-3x Claude/Codex's tokens per task even with its lean custom agent); free API models capped around 6-7/10 tasks.
-- **A second language, first data point:** 8 hand-picked bug-fix tasks on `pallets/click` (Python), same method, Claude: 6/8 success, ~3.3x the tokens and ~2.2x the cost per task versus Hono. Worse than Hono, but not broken — both failures were partial fixes that ran out of step budget, not wrong-direction edits. n=8, one repo — a first signal, not a second validated benchmark; see `docs/history.md` for the full breakdown and methodology notes.
-- **Not proven:** other repos or languages beyond that one Python data point, the API-provider adapters beyond DeepSeek (verified live) and a mock server otherwise, genuinely parallel multi-agent work (untried). "Cost" for subscriptions is notional (nothing is billed per token).
+**Hono (TypeScript), all 40 tasks, against native Claude Code, both on Claude Sonnet** (history entries 61-63):
 
-Run the numbers yourself: see "Benchmarking" below. Full history, including the approaches that did *not* work, is in `docs/history.md`.
+| | Native Claude Code | Narrowbit |
+|---|---|---|
+| Tasks solved | 40 / 40 | 40 / 40 |
+| Cost for all 40 | $3.48 | $1.43 (−59%) |
+| Uncached input per task (median) | — | −61% |
+| Turns per task | 7.1 | 5.2 |
+| Task time, median | 16 s | 19 s (slower) |
+| Task time, slowest 10% | 28 s | 28 s |
+
+Limits: one repository · one try per task · one model · native measured once on the same day, not repeated · public code the model may have seen · subscription cost is notional (nothing is billed per token).
+
+**Python:** a 43-task run on `pallets/click` is in progress; an earlier 8-task hand-picked set gave 6/8 at about 3× the tokens per task of Hono.
+
+**Other providers, same 40 Hono tasks:** Codex (`gpt-6-sol`) 40/40; DeepSeek V4.1 Flash through its API 39/40, about $0.22 for all 40 at list prices. Antigravity and free API models worked but used 2-3× the tokens, and free models solved about 6-7 of 10.
+
+**What did not work:**
+- Narrowbit is not faster than native Claude Code; at best it matches it.
+- Mixing models (a cheap one reading, an expensive one editing) lost to one good model doing the whole task, both times measured. A cheap model scouting in its own conversation helped once (Claude's cost −57% on 10 tasks), unconfirmed at scale.
+- Project memory notes showed no reliable token saving on single-file fixes.
+
+**Not proven:** other languages and project sizes beyond these, the API adapters beyond DeepSeek, and parallel multi-agent work (untried).
+
+Run the numbers yourself: see "Benchmarking" below.
 
 ## Security
 
@@ -124,6 +138,8 @@ Build a task set from a repository's own history (no model calls):
 node scripts/build-tasks.mjs --repo ../hono --out bench-hono.json --max 40 --verify-each --setup "npm ci"
 ```
 
+Python repositories work too (pytest, through the repo's `.venv` when it has one); `--setup` runs in each worktree, for example to create that `.venv`.
+
 Each commit that changed source *and* its tests becomes a task: the agent starts at the parent commit with the commit's **tests already applied** (so they fail) and must make them pass without touching the tests. `--verify-each` proves every task is winnable by checking fail→pass with the real fix. Add `--with-body` to include the commit body in the prompt (usually explains the fix, so off by default).
 
 ```bash
@@ -137,7 +153,7 @@ narrowbit benchmark report
 - **Recorded per run:** success (the verify command's exit code), input, cache-creation, cache-read and output tokens, cost, turns, tool calls, files read and searches.
 - **Report:** the north-star metric (successful tasks per million input tokens) and paired reductions. It gives the brief's GO/NO-GO verdict only once n ≥ 30 tasks.
 
-Add a "context hygiene" baseline arm via `arms[].appendSystemPrompt` to compare against a tuned native setup (brief §38).
+Add a "context hygiene" baseline arm via `arms[].appendSystemPrompt` to compare against a tuned native setup. Check that the native arm can actually run the tests: its commands are limited to `claudeArgs`' allow list, and a test command missing from it quietly turns the run into an unfair comparison.
 
 ## Memory
 
