@@ -24,6 +24,10 @@ how to reproduce it, and the version shown in the app (sidebar footer, or Models
   whose own config defines a custom clean/smudge filter program (git-lfs excepted) is only opened after you
   confirm you trust it; you're asked again if those programs change. Git hooks still run when you commit,
   exactly as they do in a terminal — only commit in repositories you trust.
+- **A `.narrowbit/` folder that came with the code.** Narrowbit keeps its own state (task logs, skills, memory
+  notes, settings) in `.narrowbit/`, which it keeps out of git. If a repository commits one, or a folder that isn't
+  a git repository has one, it came from someone else: it is only used after you confirm, and you're asked again
+  when its contents change.
 - **Web reader.** The optional web connector refuses private and local addresses, including through
   redirects and requests made by the page's own scripts.
 - **Secrets.** API keys are stored in `~/.narrowbit/keys.json` and connector environment variables in
@@ -35,6 +39,21 @@ how to reproduce it, and the version shown in the app (sidebar footer, or Models
   push to that repository controls what runs on every installed copy: keep the repo's owners on
   two-factor authentication.
 - **Connectors** run commands you configure. Only add servers you trust.
+
+## Known limitations
+
+These are known and not yet closed. Each one needs something you would notice doing yourself.
+
+- **An archive unpacked over an existing git project.** Files under `.narrowbit/` that git doesn't track look the
+  same as Narrowbit's own, so a downloaded archive extracted on top of a project you already use can bring task
+  logs, skills or memory notes that are used without asking. Unpack downloads into a new folder, or delete their
+  `.narrowbit/` first.
+- **Checks run the commands your project defines.** `verify` (and `nb_verify` over MCP) runs the typecheck, lint and
+  test commands in the project's settings, and a benchmark spec runs the setup commands written in it. Run them only
+  on code and spec files you trust, as you would `npm test`.
+- **Config files that run code under an approved test command** (`vitest.config.ts`, `jest.config.*`, `.yarnrc.yml`)
+  are not on the changed-scripts list above: an agent edit to one isn't called out when you approve
+  the test command again. Review the diff.
 
 Narrowbit is early software. `narrowbit audit` and the built-in "Security review" skill are aids, not a
 substitute for a human review of anything that handles real money or sensitive data.
