@@ -5,6 +5,7 @@
 Please report security problems privately through GitHub's **Report a vulnerability** button on the
 repository's Security tab (a private security advisory), not in a public issue. Include what you found,
 how to reproduce it, and the version shown in the app (sidebar footer, or Models & settings > About).
+If you can't use GitHub, email hello@narrowbit.dev with "security" in the subject.
 
 ## What Narrowbit does and doesn't protect
 

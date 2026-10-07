@@ -10,7 +10,7 @@ Local, provider-independent coding-agent runtime (CLI `narrowbit`, native Mac ap
 - **Machine-specific notes** (folders, accounts, keys, benchmark files, launch-day history cleaning) are in `CLAUDE.local.md`, which is not committed.
 - **Code:** last code commit `00d507a` (Claude structured output on by default). Tests: memory 24, unit 266, UI 95, typecheck clean, gitleaks clean. **GitHub Actions is out of minutes until 1 Nov 2026** (private repo): run `npm test`, `npm run test:ui`, `npm test -w narrowbit-memory` and gitleaks locally before every push. Going public restores free CI.
 - **Site:** `narrowbit.dev` (Cloudflare registrar, WHOIS redacted) is live on Cloudflare Pages from this repo, serving `soon/` (a coming-soon page with no links into the private repo). The full one-page site is in `site/` (results with their limits, a Narrowbit Memory section); on launch day switch the Pages build output directory from `soon` to `site`. `www.narrowbit.dev` also works. Every other path serves the same page (no source exposed, checked).
-- **Email:** `hello@narrowbit.dev` on Zoho Mail (free plan); MX, SPF and DKIM published and checked. Optional DMARC (`_dmarc` TXT `v=DMARC1; p=none; rua=mailto:hello@narrowbit.dev`) not yet added by the user. Don't enable Cloudflare Email Routing (it would replace Zoho's MX).
+- **Email:** `hello@narrowbit.dev` on Zoho Mail (free plan); MX, SPF and DKIM published and checked; the user confirmed mail arrives (2026-10-08). Listed in `SECURITY.md` and the site footer. Optional DMARC (`_dmarc` TXT `v=DMARC1; p=none; rua=mailto:hello@narrowbit.dev`) not yet added by the user. Don't enable Cloudflare Email Routing (it would replace Zoho's MX).
 - **Security work:** audit rounds 1-19 fixed (history entries 1-17, 21, 30-44). Open gaps are stated in `SECURITY.md` → Known limitations (archives extracted over an existing project; checks run project-defined commands; some config files that run under a test command aren't called out).
 
 ## Evidence (never claim more)
@@ -34,14 +34,14 @@ All n=1 per task, public code, Claude Sonnet 5.5 on both sides unless noted; ful
 ## Waiting on the user (don't do unasked)
 
 1. Codex's own audit Part 3 and its re-check of entries 43-44: after its weekly limit resets (10 Oct). Don't run Codex until told.
-2. DMARC record and a test email to `hello@narrowbit.dev`.
+2. The optional DMARC record (`_dmarc` TXT).
 3. The explicit go-ahead to go public (after the checklist), and whether to create a `narrowbit` GitHub organization for the new repos.
 4. Personal items: see `CLAUDE.local.md`.
 
 ## Next steps
 
 1. **Python re-run** (in progress): Narrowbit's arm on all 43 click tasks with structured output on, plus native's usage-limit task 27b3ee26. Then put the Python numbers in the README results section, the site (`site/index.html`) and a history entry, whichever way they go. If still below native, look at the failures before launch.
-2. **Go-public checklist:** (a) Codex audit Part 3 and fixes; (b) Python result in README and site; (c) run `~/.narrowbit-launch/clean-history.sh`, rename the old repo, publish the cleaned history as a new repo (and `narrowbit-memory`); (d) Pages output dir `soon` → `site`, reconnect Pages to the new repo; (e) put `hello@narrowbit.dev` in `SECURITY.md`; (f) the user's explicit yes.
+2. **Go-public checklist:** (a) Codex audit Part 3 and fixes; (b) Python result in README and site; (c) run `~/.narrowbit-launch/clean-history.sh`, rename the old repo, publish the cleaned history as a new repo (and `narrowbit-memory`); (d) Pages output dir `soon` → `site`, reconnect Pages to the new repo; (f) the user's explicit yes.
 3. Open speed work: Narrowbit is ~1.2-1.5× slower than native at the median; per-call model time is already on par, the rest is turns and checks.
 4. Older open items: memory that saves tokens (multi-file tasks, more repeats), scout at scale, parallel independent subtasks, per-provider usage-limit burn rate, DeepSeek as fallback.
 
