@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { NarrowbitConfig, Paths } from "./config.js";
 import { runCommand, type RunResult } from "./compress.js";
 import { isTestPath } from "./files.js";
@@ -49,7 +51,11 @@ export async function verify(
     if (cmd) planned.push({ name, cmd });
   };
   plan("typecheck", cfg.verify.typecheck);
-  plan("lint", cfg.verify.lint);
+  // Only the changed source files are linted unless a full check is asked for (whole-tree lint was 4 s of a ~5 s verify on Hono).
+  const lintable = changed.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && existsSync(join(p.root, f)));
+  if (!opts.full && cfg.verify.lintFocused && cfg.verify.lint) {
+    if (lintable.length) plan("lint (changed files)", cfg.verify.lintFocused.replace("{files}", lintable.map(shellQuote).join(" ")));
+  } else plan("lint", cfg.verify.lint);
 
   const changedTests = changed.filter(isTestPath);
   const ids = changed.map((f) => store.fileByPath(f)?.id).filter((x): x is number => !!x);

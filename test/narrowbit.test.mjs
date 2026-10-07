@@ -3296,6 +3296,29 @@ describe("eleventh audit: a repo's own config can't redirect keys or read outsid
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  test("verify lints only the changed source files; a full check lints everything", async () => {
+    const { root } = tinyRepo();
+    try {
+      writeFileSync(join(root, "x.ts"), "export const x = 1;\n");
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], { cwd: root });
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "ts"], { cwd: root });
+      nb(root, "index");
+      const cfgPath = join(root, ".narrowbit", "config.json");
+      const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+      cfg.verify = { lint: "echo FULL >> lint.txt", lintFocused: "printf '[%s]' {files} >> lint.txt" };
+      writeFileSync(cfgPath, JSON.stringify(cfg));
+      writeFileSync(join(root, "x.ts"), "export const x = 2;\n");
+      writeFileSync(join(root, "notes.md"), "changed\n");
+      try { nb(root, "verify"); } catch { /* only what ran matters */ }
+      const seen = readFileSync(join(root, "lint.txt"), "utf8");
+      assert.ok(seen.includes("[\'x.ts\']") || seen.includes("[x.ts]"), "the changed source file was linted by name");
+      assert.ok(!seen.includes("FULL") && !seen.includes("notes.md"), "no whole-tree lint, and a markdown file is not linted");
+      rmSync(join(root, "lint.txt"));
+      try { nb(root, "verify", "--full"); } catch { /* ditto */ }
+      assert.ok(readFileSync(join(root, "lint.txt"), "utf8").includes("FULL"), "--full still lints the whole tree");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test("a repo-supplied config's endpoint, key variable and memory folders are ignored until the repo is trusted", async () => {
     await withHome(async () => {
       const { loadConfig } = await dist("config.js");
@@ -4729,6 +4752,8 @@ describe("a reply stuck in a loop is cut off and retried in a fresh session", ()
     assert.equal(isRunaway(JSON.stringify({ action: "edit", path: "a.ts", old: "x", new: "line\n".repeat(3000) })), false, "one long JSON line is not a loop");
     assert.equal(isRunaway("a\nb\n".repeat(10)), false, "short replies are never judged");
     assert.equal(isRunaway('<invoke name="recall">\n</invoke>\n<invoke name="grep">\n</invoke>\n\n<invoke name="recall">\n</invoke>'), true, "three empty tool-call tags end it at once, however short");
+    assert.equal(isRunaway('<invoke>\n</invoke>\n\n'.repeat(6)), true, "six nameless empty tags are a loop, ended at once (13 s in the 40-task run)");
+    assert.equal(isRunaway('<invoke>\n</invoke>\n\n'.repeat(5) + '{"action":"read","path":"a.ts"}'), false, "five nameless tags before a real action recovered by themselves");
     assert.equal(isRunaway('<invoke name="read"><parameter name="path">a.ts</parameter></invoke>'.repeat(3)), false, "tool markup with parameters is something parseDecisions can read, not a loop");
     const { root, p } = tinyRepo();
     const dir = mkdtempSync(join(tmpdir(), "nb-runaway-"));

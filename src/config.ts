@@ -12,6 +12,8 @@ export interface VerifyConfig {
   test?: string;
   /** Command template for focused tests; `{files}` is replaced with space-separated test paths. */
   testFocused?: string;
+  /** Command template for linting only the changed files; `{files}` is replaced with their paths. Used instead of `lint` unless a full check is asked for. */
+  lintFocused?: string;
   build?: string;
 }
 
@@ -224,6 +226,8 @@ export function detectVerify(root: string): VerifyConfig {
   if (tc) v.typecheck = run(tc);
   else if (deps.typescript && existsSync(join(root, "tsconfig.json"))) v.typecheck = "npx tsc --noEmit -p .";
   if (scripts.lint) v.lint = run("lint");
+  // ESLint over the whole tree was the slowest check on Hono (4 s of a ~5 s verify, history entry 62); the changed files alone take ~1 s.
+  if (scripts.lint && /\beslint\b/.test(scripts.lint) && deps.eslint) v.lintFocused = "npx eslint {files}";
   if (scripts.test && !/no test specified/.test(scripts.test)) v.test = pm === "npm" ? "npm test --silent" : `${pm} test`;
   if (scripts.build) v.build = run("build");
   if (deps.vitest) v.testFocused = "npx vitest run {files}";

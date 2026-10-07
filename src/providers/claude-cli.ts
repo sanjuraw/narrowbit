@@ -88,7 +88,9 @@ export function isRunaway(text: string): boolean {
   // The loops seen so far start with empty tool-call tags (`<invoke name="recall">\n</invoke>`), which no valid reply
   // contains (even well-formed native tool markup carries parameters): three of them end the call at once, ~1-2 s in
   // instead of after 3,000 characters (~12 s). History entry 59.
+  // Nameless ones (`<invoke>\n</invoke>`, history entry 62) sometimes open a reply that then carries a real action, so those need six.
   if ((text.match(/<invoke name="[^"]*">\s*<\/invoke>/g) ?? []).length >= 3) return true;
+  if ((text.match(/<invoke(?: name="[^"]*")?>\s*<\/invoke>/g) ?? []).length >= 6) return true;
   if (text.length < 3000) return false;
   const lines = text.slice(-6000).split("\n").map((l) => l.trim()).filter(Boolean);
   if (lines.length < 40) return false;
