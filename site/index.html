@@ -77,7 +77,7 @@ footer a { color: var(--muted); }
 <div class="wrap">
   <header class="top">
     <a class="brand" href="#"><svg viewBox="23 28 54 44" width="28" height="23" aria-hidden="true"><g fill="#c96442"><rect x="26.4" y="31.7" width="2.5" height="36.7"/><rect x="26.4" y="31.7" width="8.8" height="2.5"/><rect x="26.4" y="65.9" width="8.8" height="2.5"/><rect x="71.1" y="31.7" width="2.5" height="36.7"/><rect x="64.8" y="31.7" width="8.8" height="2.5"/><rect x="64.8" y="65.9" width="8.8" height="2.5"/><rect x="39.7" y="39.6" width="20.6" height="20.6"/></g></svg>Narrowbit</a>
-    <nav><a href="#how">How it works</a><a href="#results">Results</a><a href="#limits">Limits</a><a class="gh" href="https://github.com/sanjuraw/narrowbit">GitHub</a></nav>
+    <nav><a href="#how">How it works</a><a href="#memory">Memory</a><a href="#results">Results</a><a href="#limits">Limits</a><a class="gh" href="https://github.com/sanjuraw/narrowbit">GitHub</a></nav>
   </header>
 
   <div class="hero">
@@ -85,7 +85,7 @@ footer a { color: var(--muted); }
     <h1>A coding agent that sends<br>only what the model needs</h1>
     <p class="lede">Narrowbit runs on your Mac, works with the model you already pay for, and keeps a local log of everything it does, so each step sees the smallest useful slice of your code.</p>
     <span class="badge">Early: version 0.1, macOS</span>
-    <div class="install"><code id="cmd">git clone https://github.com/sanjuraw/narrowbit.git ~/Narrowbit &amp;&amp; ~/Narrowbit/scripts/install.sh</code><button class="copy" id="copy" type="button">Copy</button></div>
+    <div class="install"><code id="cmd">git clone https://github.com/sanjuraw/narrowbit.git ~/Narrowbit &amp;&amp; ~/Narrowbit/scripts/install.sh</code><button class="copy" data-target="cmd" type="button">Copy</button></div>
     <p class="sub">The installer asks before installing anything. Then: <code>narrowbit ui</code> for the app, or <code>narrowbit agent "fix the failing test"</code>.</p>
   </div>
 
@@ -100,6 +100,19 @@ footer a { color: var(--muted); }
       <div class="card"><h3>Local-first</h3><p>No telemetry and no repository upload. Code goes only to the model provider you choose. Secrets are redacted from what the agent stores.</p></div>
       <div class="card"><h3>App and terminal</h3><p>A native Mac app with live progress, plus a CLI and an MCP server. Skills for common jobs and connectors for MCP tools such as GitHub.</p></div>
     </div>
+  </section>
+
+  <section id="memory">
+    <h2>Narrowbit Memory</h2>
+    <p class="intro">Project memory for any coding agent. It keeps what isn't in the code: a decision and its reason, a constraint, a convention, an approach that already failed. It ships inside Narrowbit and also works on its own with Claude Code, Codex or any agent that speaks MCP.</p>
+    <div class="grid">
+      <div class="card"><h3>Plain Markdown files</h3><p>One note per file in the project, readable and editable by hand, or opened as an Obsidian vault. Kept out of git.</p></div>
+      <div class="card"><h3>Knows when a note may be stale</h3><p>A note about a file remembers that file's state; if the file has changed since, recall says so instead of presenting it as current.</p></div>
+      <div class="card"><h3>Local, no model calls</h3><p>Nothing is sent anywhere or summarised by an AI. Notes are found by keyword and file, with secrets scrubbed before saving.</p></div>
+    </div>
+    <div class="install" style="margin-top:18px"><code id="memcmd">claude mcp add narrowbit-memory -- node ~/Narrowbit/packages/memory/bin/narrowbit-memory.js serve</code><button class="copy" data-target="memcmd" type="button">Copy</button></div>
+    <ul class="labels"><li>no proven token saving yet</li><li>measured on single-file fixes, where it didn't pay</li><li>early, not on npm</li></ul>
+    <p style="margin-top:16px"><a href="https://github.com/sanjuraw/narrowbit-memory">narrowbit-memory on GitHub</a></p>
   </section>
 
   <section id="results">
@@ -158,14 +171,16 @@ footer a { color: var(--muted); }
   </section>
 
   <footer>
-    Narrowbit is open source under the MIT license. <a href="https://github.com/sanjuraw/narrowbit">Source</a> · <a href="https://github.com/sanjuraw/narrowbit/blob/main/SECURITY.md">Report a vulnerability</a> · <a href="https://github.com/sanjuraw/narrowbit/issues">Issues</a>
+    Narrowbit is open source under the MIT license. <a href="https://github.com/sanjuraw/narrowbit">Source</a> · <a href="https://github.com/sanjuraw/narrowbit-memory">Memory</a> · <a href="mailto:hello@narrowbit.dev">hello@narrowbit.dev</a> · <a href="https://github.com/sanjuraw/narrowbit/blob/main/SECURITY.md">Report a vulnerability</a> · <a href="https://github.com/sanjuraw/narrowbit/issues">Issues</a>
   </footer>
 </div>
 <script>
-document.getElementById("copy").addEventListener("click", function () {
-  var b = this, text = document.getElementById("cmd").textContent;
-  function done(ok) { b.textContent = ok ? "Copied" : "Select and copy"; setTimeout(function () { b.textContent = "Copy"; }, 1600); }
-  try { navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); }); } catch (e) { done(false); }
+document.querySelectorAll("button.copy").forEach(function (b) {
+  b.addEventListener("click", function () {
+    var text = document.getElementById(b.dataset.target).textContent;
+    function done(ok) { b.textContent = ok ? "Copied" : "Select and copy"; setTimeout(function () { b.textContent = "Copy"; }, 1600); }
+    try { navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); }); } catch (e) { done(false); }
+  });
 });
 </script>
 </body>
