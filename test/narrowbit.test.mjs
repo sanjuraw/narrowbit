@@ -3296,6 +3296,18 @@ describe("eleventh audit: a repo's own config can't redirect keys or read outsid
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  test("commands do not run with NO_COLOR set (a project's own tests can depend on it), but colour is off and CI is on", async () => {
+    const { commandEnv } = await dist("compress.js");
+    const saved = process.env.NO_COLOR;
+    delete process.env.NO_COLOR;
+    try {
+      const env = commandEnv();
+      assert.equal(env.NO_COLOR, undefined);
+      assert.equal(env.FORCE_COLOR, "0");
+      assert.equal(env.CI, "1");
+    } finally { if (saved !== undefined) process.env.NO_COLOR = saved; }
+  });
+
   test("verify lints only the changed source files; a full check lints everything", async () => {
     const { root } = tinyRepo();
     try {

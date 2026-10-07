@@ -309,6 +309,15 @@ export interface RunResult {
 }
 
 /** `onOutput` receives the command's output as it arrives (stdout and stderr together), for showing it live. */
+/**
+ * The environment commands run in: CI mode and no forced colour. `NO_COLOR` is deliberately not set: the output is stripped of colour
+ * codes anyway, and projects' own tests can depend on it (Hono's `showRoutes` test fails under `NO_COLOR=1` and passes without it,
+ * which sent the model chasing a failure its change did not cause; history entry 63).
+ */
+export function commandEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, CI: "1", FORCE_COLOR: "0" };
+}
+
 export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number; cwd?: string; signal?: AbortSignal; onOutput?: (text: string) => void } = {}): Promise<RunResult> {
   const t0 = Date.now();
   return new Promise((resolveP) => {
@@ -365,7 +374,7 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
     }
     // Its own process group, so Stop and the timeout can end everything the command started: killing only the shell
     // left a background process (a dev server, a hung test) running, and the call waited for it.
-    const child = spawn(command, { cwd: opts.cwd ?? p.root, shell: true, detached: true, env: { ...process.env, CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" } });
+    const child = spawn(command, { cwd: opts.cwd ?? p.root, shell: true, detached: true, env: commandEnv() });
     killTree = (sig) => {
       try {
         process.kill(-child.pid!, sig);
