@@ -4881,7 +4881,7 @@ describe("Claude answers through structured output when actions are asked for as
     assert.deepEqual(deltaOf(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: '{"acti' } } })), { text: '{"acti' });
   });
 
-  test("runTask with jsonActions on Claude passes the action schema, and the structured reply drives the loop", async () => {
+  test("Claude gets the action schema by default, and the structured reply drives the loop; jsonActions: false turns it off", async () => {
     const { ACTION_SCHEMA } = await dist("runtime.js");
     const { root, p } = tinyRepo();
     const dir = mkdtempSync(join(tmpdir(), "nb-schema-"));
@@ -4904,12 +4904,12 @@ if (i >= 0) {
 }
 `, { mode: 0o755 });
     try {
-      const r = await runTask(p, "look", { claudeBin: bin, boss: false, maxSteps: 3, jsonActions: true });
+      const r = await runTask(p, "look", { claudeBin: bin, boss: false, maxSteps: 3 });
       assert.equal(r.outcome, "done");
       assert.equal(readFileSync(join(dir, "schemas.log"), "utf8").trim().split("\n")[0], ACTION_SCHEMA);
       writeFileSync(join(dir, "schemas.log"), "");
-      await runTask(p, "look", { claudeBin: bin, boss: false, maxSteps: 1 });
-      assert.match(readFileSync(join(dir, "schemas.log"), "utf8"), /^none/, "off unless asked for");
+      await runTask(p, "look", { claudeBin: bin, boss: false, maxSteps: 1, jsonActions: false });
+      assert.match(readFileSync(join(dir, "schemas.log"), "utf8"), /^none/, "off when asked to be");
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
   });
 });

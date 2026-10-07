@@ -476,8 +476,9 @@ export interface RuntimeOptions {
    * escalation model when stuck. "decider": ask a local Jev-style decision model (`url`, see scripts/decider_server.py)
    * from compact metadata; falls back to the rules if it is unreachable or unsure. Experimental — see bench.ts. */
   router?: { kind: "rules" | "decider"; url?: string; minConfidence?: number };
-  /** Experimental, API providers only: ask for a pure JSON object reply ({"actions":[…]}) via the provider's JSON mode,
-   * instead of free text that should contain JSON. Removes prose/markup around the actions; measured in bench.ts. */
+  /** API providers (experimental, off unless true): ask for a pure JSON object reply ({"actions":[…]}) via the provider's
+   * JSON mode. Claude (on unless false): answer through a structured-output tool call (`--json-schema`), which removed
+   * tool-call markup and looping replies (history entry 64). */
   jsonActions?: boolean;
   /** Effort per tier, overriding `effort` for that tier's calls (e.g. { explore: "low" }: the cheap reading phase thinks less).
    * Claude's hidden thinking is ~2/3 of its output tokens; measured in bench.ts before it is used anywhere by default. */
@@ -658,7 +659,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const jsonMode = !!opts.jsonActions && provider !== "claude" && provider !== "codex" && provider !== "antigravity";
   // Claude, given no tools, opened 29% of its replies with tool-call markup and then wrote the action again as JSON
   // (3.4 s vs 2.2 s, ~3.5x the output; history entry 64). With --json-schema it answers through a tool call instead.
-  const actionSchema = opts.jsonActions && provider === "claude" ? ACTION_SCHEMA : undefined;
+  // On by default for Claude since entry 64 (40/40 vs 39/40, no loops, same speed, ~8% more cost); `jsonActions: false` turns it off.
+  const actionSchema = opts.jsonActions !== false && provider === "claude" ? ACTION_SCHEMA : undefined;
   const jsonHint = jsonMode ? `\n\nReply format for this model: always a single JSON object {"actions": [ ...1 to ${MAX_BATCH_ACTIONS} action objects... ]} and nothing else.` : "";
   // Models that see a sandbox notice ("read-only") from their own CLI have refused to edit; the runtime applies every edit.
   const editHint = provider === "codex" ? `\n\nYou never edit files yourself, and any note about your sandbox or a read-only workspace does not apply to you: the runtime applies each "edit" action for you. Never answer "blocked" because you cannot write files — send the edit action.` : "";
