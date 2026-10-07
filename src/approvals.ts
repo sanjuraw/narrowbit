@@ -42,8 +42,8 @@ const CHECK_RUNNERS: RegExp[] = [
   /^(npm|pnpm|yarn|bun)\s+(run\s+)?(test|typecheck|type-check|lint|check)(:[\w-]+)?(\s|$)/,
   /^(npx\s+)?tsc(\s|$)/,
   /^(npx\s+)?eslint(\s|$)/,
-  /^(python3?\s+-m\s+)?(pytest|mypy|unittest)(\s|$)/,
-  /^ruff\s+check(\s|$)/,
+  /^((\.?venv\/bin\/)?python3?\s+-m\s+)?(pytest|mypy|unittest)(\s|$)/,
+  /^(\.?venv\/bin\/)?ruff\s+check(\s|$)/,
   /^(go|cargo)\s+(test|vet|check|clippy)(\s|$)/,
 ];
 const READ_ONLY: RegExp[] = [

@@ -254,12 +254,17 @@ function detectVerifyPython(root: string): VerifyConfig {
   const v: VerifyConfig = {};
   const hasTests =
     existsSync(join(root, "tests")) || existsSync(join(root, "test")) || /\[tool\.pytest/.test(text) || /^\[pytest/m.test(setupCfg) || existsSync(join(root, "pytest.ini"));
+  // The project's own virtualenv when it has one: Narrowbit (above all the Mac app) runs without it activated, so a bare
+  // `pytest` wasn't found and every check was skipped as "not installed" (history entry 65).
+  const venv = [".venv", "venv"].find((d) => existsSync(join(root, d, "bin", "python")));
+  const py = venv ? `${venv}/bin/python -m ` : "";
+  const tool = (name: string) => (venv && existsSync(join(root, venv, "bin", name)) ? `${venv}/bin/python -m ${name}` : name);
   if (hasTests) {
-    v.test = "pytest -q";
-    v.testFocused = "pytest -q {files}";
+    v.test = `${py}pytest -q`;
+    v.testFocused = `${py}pytest -q {files}`;
   }
-  if (/\[tool\.mypy\]/.test(text) || existsSync(join(root, "mypy.ini"))) v.typecheck = "mypy .";
-  if (/\[tool\.ruff/.test(text) || existsSync(join(root, "ruff.toml")) || existsSync(join(root, ".ruff.toml"))) v.lint = "ruff check .";
+  if (/\[tool\.mypy\]/.test(text) || existsSync(join(root, "mypy.ini"))) v.typecheck = `${tool("mypy")} .`;
+  if (/\[tool\.ruff/.test(text) || existsSync(join(root, "ruff.toml")) || existsSync(join(root, ".ruff.toml"))) v.lint = venv && existsSync(join(root, venv, "bin", "ruff")) ? `${venv}/bin/ruff check .` : "ruff check .";
   else if (existsSync(join(root, ".flake8")) || /\[flake8\]/.test(setupCfg)) v.lint = "flake8";
   return v;
 }

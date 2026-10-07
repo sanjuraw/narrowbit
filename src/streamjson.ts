@@ -58,6 +58,7 @@ export function parseStream(jsonl: string) {
 /** Concatenated assistant text content from a stream-json transcript (ignores tool_use blocks). */
 export function extractText(jsonl: string): string {
   let text = "";
+  let structured: string | undefined;
   for (const line of jsonl.split("\n")) {
     if (!line.trim()) continue;
     let ev: any;
@@ -69,6 +70,8 @@ export function extractText(jsonl: string): string {
     if (ev.type === "assistant" && ev.message?.content) {
       for (const c of ev.message.content) if (c.type === "text") text += c.text;
     }
+    // A call made with --json-schema answers through a tool call; the validated object is on the result line.
+    if (ev.type === "result" && ev.structured_output !== undefined && ev.structured_output !== null) structured = JSON.stringify(ev.structured_output);
   }
-  return text.trim();
+  return structured ?? text.trim();
 }

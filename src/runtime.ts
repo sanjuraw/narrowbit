@@ -267,6 +267,13 @@ function parseNativeToolMarkup(text: string): Decision[] {
   return out;
 }
 
+/** The reply shape for Claude's structured output: up to MAX_BATCH_ACTIONS action objects (fields as in SYSTEM_INSTRUCTIONS). */
+export const ACTION_SCHEMA = JSON.stringify({
+  type: "object",
+  properties: { actions: { type: "array", minItems: 1, maxItems: MAX_BATCH_ACTIONS, items: { type: "object", properties: { action: { type: "string" } }, required: ["action"] } } },
+  required: ["actions"],
+});
+
 export function parseDecisions(text: string): Decision[] | null {
   const trimmed = text.trim();
   // Try the whole text, then every balanced [...] / {...} slice in order — not a greedy first-to-last-bracket
@@ -649,6 +656,9 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // and read for 20 steps without ever editing. Say it plainly for them; Claude already batches unprompted.
   const batchHint = provider === "claude" ? "" : `\n\nWorking style for this model: send a JSON ARRAY of up to ${MAX_BATCH_ACTIONS} actions whenever they are independent — for example [{"action":"read",...},{"action":"read",...},{"action":"grep",...}] to look at several files at once. One action per turn wastes the step budget. Read only what you need, then edit; a task rarely needs more than a handful of reads before the first edit.`;
   const jsonMode = !!opts.jsonActions && provider !== "claude" && provider !== "codex" && provider !== "antigravity";
+  // Claude, given no tools, opened 29% of its replies with tool-call markup and then wrote the action again as JSON
+  // (3.4 s vs 2.2 s, ~3.5x the output; history entry 64). With --json-schema it answers through a tool call instead.
+  const actionSchema = opts.jsonActions && provider === "claude" ? ACTION_SCHEMA : undefined;
   const jsonHint = jsonMode ? `\n\nReply format for this model: always a single JSON object {"actions": [ ...1 to ${MAX_BATCH_ACTIONS} action objects... ]} and nothing else.` : "";
   // Models that see a sandbox notice ("read-only") from their own CLI have refused to edit; the runtime applies every edit.
   const editHint = provider === "codex" ? `\n\nYou never edit files yourself, and any note about your sandbox or a read-only workspace does not apply to you: the runtime applies each "edit" action for you. Never answer "blocked" because you cannot write files — send the edit action.` : "";
@@ -898,6 +908,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       sessionId,
       resume: !freshSessionPending,
       jsonObject: jsonMode,
+      jsonSchema: actionSchema,
       attachments: attachmentsPending ? opts.attachments : undefined,
       onDelta: progress?.model,
     };

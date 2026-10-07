@@ -196,6 +196,28 @@ describe("stream-json parsing (benchmark)", () => {
 });
 
 describe("detectVerify: Python projects (pytest/mypy/ruff), not just package.json", () => {
+  test("a project's own .venv is used, since the app runs without it activated (a bare pytest wasn't found)", () => {
+    const root = mkdtempSync(join(tmpdir(), "nb-py-"));
+    try {
+      mkdirSync(join(root, "tests"));
+      mkdirSync(join(root, ".venv", "bin"), { recursive: true });
+      for (const f of ["python", "mypy", "ruff"]) writeFileSync(join(root, ".venv", "bin", f), "");
+      writeFileSync(join(root, "pyproject.toml"), "[tool.mypy]\nstrict = true\n\n[tool.ruff]\nline-length = 100\n");
+      const v = detectVerify(root);
+      assert.equal(v.test, ".venv/bin/python -m pytest -q");
+      assert.equal(v.testFocused, ".venv/bin/python -m pytest -q {files}");
+      assert.equal(v.typecheck, ".venv/bin/python -m mypy .");
+      assert.equal(v.lint, ".venv/bin/ruff check .");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a venv's test runner counts as a check in Ask-except-checks mode", async () => {
+    const { allowedAsCheck } = await dist("approvals.js");
+    assert.ok(allowedAsCheck(".venv/bin/python -m pytest -q tests/test_x.py 2>&1 | tail -20", []));
+    assert.ok(allowedAsCheck("venv/bin/ruff check src", []));
+    assert.ok(!allowedAsCheck(".venv/bin/python script.py", []), "running an arbitrary script is not a check");
+  });
+
   test("a pyproject.toml project with a tests/ folder, mypy and ruff configured gets all three commands", () => {
     const root = mkdtempSync(join(tmpdir(), "nb-py-"));
     try {
@@ -4843,5 +4865,51 @@ describe("reads come back in one piece for ordinary source files", () => {
       const big = results.find((e) => e.summary.startsWith("read big.ts"));
       assert.match(big.summary, /truncated here — this file has 3001 lines; continue with start:\d+/);
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("Claude answers through structured output when actions are asked for as JSON (history entry 64)", () => {
+  test("the validated object on the result line is the reply; tool-input pieces stream like text", async () => {
+    const { extractText } = await dist("streamjson.js");
+    const { deltaOf } = await dist("providers/claude-cli.js");
+    const raw = [
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "StructuredOutput", input: { actions: [{ action: "verify" }] } }] } }),
+      JSON.stringify({ type: "result", subtype: "success", result: "", structured_output: { actions: [{ action: "verify" }] } }),
+    ].join("\n");
+    assert.equal(extractText(raw), '{"actions":[{"action":"verify"}]}');
+    assert.equal(extractText(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: " plain " }] } })), "plain", "no structured output: the text, as before");
+    assert.deepEqual(deltaOf(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: '{"acti' } } })), { text: '{"acti' });
+  });
+
+  test("runTask with jsonActions on Claude passes the action schema, and the structured reply drives the loop", async () => {
+    const { ACTION_SCHEMA } = await dist("runtime.js");
+    const { root, p } = tinyRepo();
+    const dir = mkdtempSync(join(tmpdir(), "nb-schema-"));
+    const bin = join(dir, "claude");
+    // Answers like Claude Code under --json-schema: a StructuredOutput tool call, the object on the result line.
+    // Without the flag it answers with markup only, which no JSON parser reads as a "done".
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("fs");
+const i = process.argv.indexOf("--json-schema");
+fs.appendFileSync(${JSON.stringify(join(dir, "schemas.log"))}, (i < 0 ? "none" : process.argv[i + 1]) + "\\n");
+const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+const obj = { actions: [{ action: "done", summary: "nothing needed" }] };
+if (i >= 0) {
+  console.log(JSON.stringify({ type: "assistant", message: { id: "m", content: [{ type: "tool_use", name: "StructuredOutput", input: obj }], usage } }));
+  console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "", structured_output: obj, usage, total_cost_usd: 0, num_turns: 2, session_id: "s" }));
+} else {
+  const text = "<invoke>\\n</invoke>";
+  console.log(JSON.stringify({ type: "assistant", message: { id: "m", content: [{ type: "text", text }], usage } }));
+  console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
+}
+`, { mode: 0o755 });
+    try {
+      const r = await runTask(p, "look", { claudeBin: bin, boss: false, maxSteps: 3, jsonActions: true });
+      assert.equal(r.outcome, "done");
+      assert.equal(readFileSync(join(dir, "schemas.log"), "utf8").trim().split("\n")[0], ACTION_SCHEMA);
+      writeFileSync(join(dir, "schemas.log"), "");
+      await runTask(p, "look", { claudeBin: bin, boss: false, maxSteps: 1 });
+      assert.match(readFileSync(join(dir, "schemas.log"), "utf8"), /^none/, "off unless asked for");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
   });
 });

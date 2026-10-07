@@ -46,6 +46,9 @@ export interface ModelCallOptions {
   model?: string;
   /** low | medium | high | xhigh | max. Passed straight through to `--effort`. */
   effort?: string;
+  /** A JSON Schema the reply must match (`--json-schema`): the model answers through a structured-output tool call
+   * instead of free text, and the validated object becomes the reply text. */
+  jsonSchema?: string;
   /** Usage-ledger attribution bucket, e.g. "planning" | "retrieval" | "execution" | "verification". */
   role: string;
   claudeBin?: string;
@@ -104,6 +107,8 @@ export function deltaOf(line: string): { text?: string; thinkingTokens?: number 
   try {
     const o = JSON.parse(line);
     if (o.type === "stream_event" && o.event?.type === "content_block_delta" && o.event.delta?.type === "text_delta") return { text: String(o.event.delta.text ?? "") };
+    // With --json-schema the reply is written as a tool call's input: it streams as JSON pieces, shown and checked like text.
+    if (o.type === "stream_event" && o.event?.type === "content_block_delta" && o.event.delta?.type === "input_json_delta") return { text: String(o.event.delta.partial_json ?? "") };
     if (o.type === "system" && o.subtype === "thinking_tokens" && typeof o.estimated_tokens === "number") return { thinkingTokens: o.estimated_tokens };
   } catch {}
   return null;
@@ -245,7 +250,7 @@ function startLive(bin: string, args: string[], cwd: string, key: string, sessio
 
 async function persistentTurn(bin: string, args: string[], opts: ModelCallOptions, stdinMessage: string): Promise<ModelCallResult> {
   const sessionId = opts.sessionId!;
-  const key = JSON.stringify([bin, opts.model ?? "sonnet", opts.effort ?? "", opts.cwd]);
+  const key = JSON.stringify([bin, opts.model ?? "sonnet", opts.effort ?? "", opts.cwd, opts.jsonSchema ?? ""]);
   let s = live.get(sessionId);
   if (s && (s.dead || s.busy || s.key !== key)) {
     await endSession(sessionId);
@@ -372,6 +377,7 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
   else args.push("--no-session-persistence");
   if (opts.systemPrompt !== undefined) args.push("--system-prompt", opts.systemPrompt);
   if (opts.effort) args.push("--effort", opts.effort);
+  if (opts.jsonSchema) args.push("--json-schema", opts.jsonSchema);
   args.push(
     "--model",
     opts.model ?? "sonnet",

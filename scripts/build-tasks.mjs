@@ -11,6 +11,8 @@
  * No model calls — this is all local git and test runs.
  *
  *   node scripts/build-tasks.mjs --repo ../hono --out bench-hono.json --max 40 --verify-each
+ *   node scripts/build-tasks.mjs --repo ../click --out bench-click.json --max 40 --verify-each --setup "<command that makes .venv>"
+ * Python repos (pyproject.toml/setup.py) are tested with pytest, through the repo's .venv when it has one.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -34,8 +36,10 @@ const keep = has("keep-worktree");
 const withBody = has("with-body");
 
 const git = (cwd, ...a) => execFileSync("git", a, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-const isTest = (p) => /(?:\.|-)(?:test|spec)\.[cm]?[jt]sx?$/.test(p) || /(?:^|\/)(?:__tests__|tests?)\//.test(p);
-const isSource = (p) => /\.[cm]?[jt]sx?$/.test(p) && !isTest(p) && !/\.d\.ts$/.test(p) && !/(?:^|\/)(?:dist|build|examples?|benchmarks?|docs?)\//.test(p);
+// JS/TS and Python: `foo.test.ts`, `__tests__/`, `tests/`, `test_foo.py`, `foo_test.py`.
+const CODE = /\.(?:[cm]?[jt]sx?|py)$/;
+const isTest = (p) => CODE.test(p) && (/(?:\.|-)(?:test|spec)\.[cm]?[jt]sx?$/.test(p) || /(?:^|\/)(?:__tests__|tests?)\//.test(p) || /(?:^|\/)test_[^/]*\.py$/.test(p) || /_test\.py$/.test(p));
+const isSource = (p) => CODE.test(p) && !isTest(p) && !/\.d\.ts$/.test(p) && !/(?:^|\/)conftest\.py$/.test(p) && !/(?:^|\/)(?:dist|build|examples?|benchmarks?|docs?)\//.test(p);
 
 /** Commit subject → a prompt a developer would plausibly type. */
 function toPrompt(subject, body, testPaths) {
@@ -59,6 +63,9 @@ function toPrompt(subject, body, testPaths) {
 }
 
 function detectTestCmd(root) {
+  if (existsSync(join(root, "pyproject.toml")) || existsSync(join(root, "setup.py")) || existsSync(join(root, "pytest.ini"))) {
+    return existsSync(join(root, ".venv", "bin", "python")) ? ".venv/bin/python -m pytest -q {files}" : "python3 -m pytest -q {files}";
+  }
   const pkgPath = join(root, "package.json");
   const pkg = existsSync(pkgPath) ? JSON.parse(readFileSync(pkgPath, "utf8")) : {};
   const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
@@ -105,7 +112,7 @@ console.error(`${candidates.length} candidate commit(s) changed source + tests`)
 // ---- 2. Optionally prove each task is winnable (tests fail at start, pass with the real fix).
 const wt = join(repo, "..", `.bench-build-${basename(repo)}`);
 const tasks = [];
-const run = (cmd, cwd) => spawnSync(cmd, { cwd, shell: true, encoding: "utf8", env: { ...process.env, CI: "1", NO_COLOR: "1" }, timeout: 15 * 60_000 });
+const run = (cmd, cwd) => spawnSync(cmd, { cwd, shell: true, encoding: "utf8", env: { ...process.env, CI: "1", FORCE_COLOR: "0" }, timeout: 15 * 60_000 });
 
 if (verifyEach) {
   if (existsSync(wt)) git(repo, "worktree", "remove", "--force", wt);
@@ -139,7 +146,7 @@ for (const c of candidates) {
   }
   try {
     git(wt, "checkout", "--detach", "--force", c.parent);
-    run("git clean -fdq -e node_modules", wt);
+    run("git clean -fdq -e node_modules -e .venv", wt);
     git(wt, "checkout", c.hash, "--", ...c.tests);
     const before = run(verify, wt);
     if (before.status === 0) {
@@ -173,7 +180,7 @@ const spec = {
   timeoutMinutes: 30,
   maxBudgetUsd: Number(flag("max-budget-usd", 3)),
   ...(setup ? { setup: String(setup) } : {}),
-  claudeArgs: ["--permission-mode", "acceptEdits", "--allowedTools", "Bash(npx vitest:*) Bash(npx jest:*) Bash(npm test:*) Bash(npx tsc:*) mcp__narrowbit"],
+  claudeArgs: ["--permission-mode", "acceptEdits", "--allowedTools", "Bash(npx vitest:*) Bash(npx jest:*) Bash(npm test:*) Bash(npx tsc:*) Bash(.venv/bin/python -m pytest:*) Bash(python3 -m pytest:*) Bash(pytest:*) mcp__narrowbit"],
   arms: [{ name: "native" }, { name: "narrowbit", narrowbit: true }],
   tasks,
 };
