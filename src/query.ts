@@ -1,12 +1,13 @@
+import { join } from "node:path";
 import type { NarrowbitConfig, Paths } from "./config.js";
 import { outline, readLines, snippet } from "./package.js";
 import { rank, relatedTests } from "./ranker.js";
 import type { Store, SymbolRow } from "./store.js";
 import { parseTask } from "./taskparse.js";
 import type { TaskRecord } from "./tasks.js";
-import { redact } from "./redact.js";
+import { redact, redactBlocksKeepingLines } from "./redact.js";
 import { loadWeights } from "./train.js";
-import { estimateTokens, sh } from "./util.js";
+import { estimateTokens, sh, sourceText } from "./util.js";
 
 /** Deterministic lookups served to agents (CLI + MCP). Each returns compact text. */
 
@@ -38,7 +39,7 @@ export function symbolText(p: Paths, store: Store, name: string, opts: { maxLine
   if (!hits.length) return `no symbol matching "${name}"`;
   const [first, ...rest] = hits;
   const out = [snippet(p.root, first.path!, first.start_line, first.end_line, opts.maxLines ?? 160)];
-  if (rest.length) out.push(`other matches:\n${rest.map((s) => `  ${s.path}:${s.start_line} ${s.kind} ${s.qualified} — ${s.signature}`).join("\n")}`);
+  if (rest.length) out.push(`other matches:\n${rest.map((s) => `  ${s.path}:${s.start_line} ${s.kind} ${s.qualified} — ${redact(s.signature)}`).join("\n")}`);
   return out.join("\n\n");
 }
 
@@ -101,7 +102,7 @@ export function searchText(p: Paths, store: Store, query: string, limit = 10): s
   return r.files
     .slice(0, limit)
     .map((f) => {
-      const syms = f.symbols.slice(0, 3).map((s) => `\n    L${s.start}-${s.end} ${s.signature}`).join("");
+      const syms = f.symbols.slice(0, 3).map((s) => `\n    L${s.start}-${s.end} ${redact(s.signature)}`).join("");
       return `${f.path} [${f.score.toFixed(1)}] ${f.reasons.slice(0, 2).join("; ")}${syms}`;
     })
     .join("\n");
@@ -139,7 +140,12 @@ export function grepText(p: Paths, store: Store, pattern: string, opts: { glob?:
     );
     out.push(`${path} (${f.lines} lines)`);
     const seenSym = new Set<string>();
-    for (const h of hits.slice(0, 6)) {
+    // A line inside a private-key block is not a match on its own: the block is judged as a whole, before any line is shown.
+    const shownHits = hits.slice(0, 6);
+    const whole = sourceText(p.root, join(p.root, path));
+    const blockSafe = whole === null ? null : redactBlocksKeepingLines(whole).split("\n");
+    for (const h of shownHits) if (blockSafe && blockSafe[h.line - 1] !== undefined) h.text = blockSafe[h.line - 1];
+    for (const h of shownHits) {
       const enc = syms.find((s) => s.start_line <= h.line && s.end_line >= h.line);
       const tag = enc ? ` [${enc.qualified}]` : "";
       const repeat = enc && seenSym.has(enc.qualified);

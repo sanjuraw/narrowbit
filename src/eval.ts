@@ -9,6 +9,9 @@ import { loadWeights } from "./train.js";
 import { DEFAULT_RERANK, rerank, type RerankConfig, type RerankStats } from "./rerank.js";
 import { sh, shortId, assertProjectPath, writeProjectFile } from "./util.js";
 
+// History bookkeeping must not run the repository's own hooks (post-checkout fires on `worktree add` and `checkout`).
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
+
 /**
  * Offline selection benchmark over git history — free (no model calls).
  * For each past commit: index the parent, use the commit message as the task,
@@ -76,7 +79,7 @@ export async function evalHistory(p: Paths, opts: { commits?: number; budget?: n
   const wt = join(wtBase, `run-${shortId()}`);
   assertProjectPath(state, wt);
   if (existsSync(wt)) throw new Error(`${wt} already exists — run again`);
-  const r = sh("git", ["worktree", "add", "--detach", wt, cands[0].parent], p.root);
+  const r = sh("git", [...NO_HOOKS, "worktree", "add", "--detach", wt, cands[0].parent], p.root);
   if (r.code !== 0) throw new Error(`git worktree add failed: ${r.stderr}`);
   assertProjectPath(state, wt);
   const wp: Paths = { ...paths(wt), nb: evalNb, db: join(evalNb, "index.db"), memory: join(evalNb, "memory"), tasks: join(evalNb, "tasks") };
@@ -89,7 +92,7 @@ export async function evalHistory(p: Paths, opts: { commits?: number; budget?: n
   const rrStats: RerankStats = { calls: 0, errors: 0, inputTokens: 0, ms: 0, estCostUsd: 0 };
   try {
     for (const c of cands) {
-      const co = sh("git", ["checkout", "--detach", "--force", c.parent], wt);
+      const co = sh("git", [...NO_HOOKS, "checkout", "--detach", "--force", c.parent], wt);
       if (co.code !== 0) {
         log(`skip ${c.hash.slice(0, 8)}: checkout failed`);
         continue;
@@ -137,7 +140,7 @@ export async function evalHistory(p: Paths, opts: { commits?: number; budget?: n
     }
   } finally {
     store.close();
-    sh("git", ["worktree", "remove", "--force", wt], p.root);
+    sh("git", [...NO_HOOKS, "worktree", "remove", "--force", wt], p.root);
   }
   const mean = (f: (c: EvalCase) => number) => (cases.length ? cases.reduce((a, c) => a + f(c), 0) / cases.length : 0);
   const summary = {

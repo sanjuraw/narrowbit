@@ -23,7 +23,7 @@ import { redact } from "./redact.js";
 import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
 import { termsOf } from "./terms.js";
-import { estimateTokens, sha1, sh, shortId, isGitInternal, isGitConfigInclude, isNarrowbitOwn, isSecretFile, realRel, visible } from "./util.js";
+import { estimateTokens, sha1, sh, shortId, isGitInternal, isGitConfigInclude, isNarrowbitOwn, isSecretFile, realRel, sourceText, visible } from "./util.js";
 import { verify } from "./verify.js";
 
 /**
@@ -324,6 +324,18 @@ export function scriptWarning(command: string, edited: Iterable<string>): string
   }
   if (!hits.length) return undefined;
   return `The agent edited ${hits.slice(0, 4).join(", ")}${hits.length > 4 ? ` and ${hits.length - 4} more` : ""} during this task, which can change what this command actually runs — check the diff before allowing it.`;
+}
+
+/** A fingerprint of the script-defining files at the project root (content hash per file), so a change made by a command can be noticed. */
+export function scriptFileFingerprint(root: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const name of SCRIPT_FILES) {
+    for (const cand of [name, name.charAt(0).toUpperCase() + name.slice(1)]) {
+      const text = sourceText(root, join(root, cand));
+      if (text !== null && !out.has(cand)) out.set(cand, createHash("sha1").update(text).digest("hex"));
+    }
+  }
+  return out;
 }
 
 export { isGitInternal };
@@ -690,7 +702,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const approveWithContext: RuntimeOptions["approve"] = opts.approve
     ? async (command, _warning, key) => {
         const warning = scriptWarning(command, editedPaths);
-        if (!key && opts.permissionMode === "checks" && allowedAsCheck(command, checkCommands, warning)) {
+        if (!key && opts.permissionMode === "checks" && allowedAsCheck(command, checkCommands, warning, p.root)) {
           appendEvent(p, taskId, { actor: "system", type: "decision", summary: `ran without asking (a check or read-only command): ${redact(command).slice(0, 300)}`, meta: { autoAllowed: "checks", command: redact(command) } });
           return true;
         }
@@ -736,6 +748,11 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     log(`[plan] (${tiers.escalate}) planning`);
     plan = await leadPlan(lead, taskText, store);
     if (plan) log(`      → ${plan.steps.length} steps`);
+    if (!plan && opts.planApproval && opts.ask) {
+      // The user asked to approve a plan first; with no plan there is nothing to approve, and work must not start unreviewed.
+      rejected = "You asked to approve a plan first, but no plan could be made, so nothing was changed. Try again or turn off plan approval.";
+      appendEvent(p, taskId, { actor: "system", type: "decision", summary: "plan approval was required but no plan could be made — task stopped before any edit" });
+    }
     if (plan && opts.planApproval && opts.ask) {
       // Only an explicit "Approve" lets work start. Anything else — Reject, or a typed answer such as "No, stop" — must not
       // be read as approval: a typed answer is taken as feedback for one revision, and the revised plan needs approving too.
@@ -743,7 +760,12 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       let decided = false;
       for (let round = 0; round < 2 && !decided; round++) {
         const choice = await opts.ask(`${round ? "Revised plan" : "Proposed plan"}:\n\n${renderPlanForWorker(plan)}`, OPTIONS);
-        if (choice === null) break; // nobody available to ask: proceed, same as when planApproval is off
+        if (choice === null) {
+          // The question was asked but no answer came (the user stopped it, the app closed): that is not an approval.
+          rejected = "The plan needed your approval and no answer arrived, so nothing was changed.";
+          appendEvent(p, taskId, { actor: "system", type: "decision", summary: "plan approval asked but not answered — task stopped before any edit" });
+          break;
+        }
         if (choice === "Approve") {
           appendEvent(p, taskId, { actor: "user", type: "decision", summary: "plan approved" });
           decided = true;
@@ -1125,11 +1147,22 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         meta: { action: decision.action, question: decision.question, options: decision.options, path: decision.path, command: decision.command, query: decision.query, pattern: decision.pattern, glob: decision.glob, start: decision.start, end: decision.end, note: decision.note, model: turnModel },
       });
       let resultText: string;
+      const scriptsBefore = decision.action === "run" || decision.action === "verify" ? scriptFileFingerprint(p.root) : null;
       try {
         resultText = await executeAction(p, taskId, decision, approveWithContext, opts.ask, asks, gate, opts.signal, progress?.output);
       } catch (e: any) {
         resultText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
+      }
+      // Whatever an action returned (a connector's error or tool description included) is cleaned once more on its way to the
+      // model: the individual actions redact at their source, this covers the ones that build text from outside input.
+      resultText = redact(resultText);
+      // A command (or the repo's own checks) can rewrite the files that decide what a later command runs; that counts as an
+      // edit for the approval rules, exactly as if the agent had made it.
+      if (scriptsBefore) {
+        const after = scriptFileFingerprint(p.root);
+        for (const [f, h] of after) if (scriptsBefore.get(f) !== h) { editedPaths.add(f); editLog.push(f); }
+        for (const f of scriptsBefore.keys()) if (!after.has(f)) { editedPaths.add(f); editLog.push(f); }
       }
       log(`      → ${resultText.split("\n")[0].slice(0, 100)}`);
       if (opts.memoryInject === "path" && decision.action === "read" && decision.path && resultText.startsWith("read ")) {

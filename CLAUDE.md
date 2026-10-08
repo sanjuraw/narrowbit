@@ -2,18 +2,17 @@
 
 Local, provider-independent coding-agent runtime (CLI `narrowbit`, native Mac app, MCP server): **task + repository + durable evidence → the smallest useful active context**. Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens. If quality drops, Narrowbit has failed.
 
-**History lives in [`docs/history.md`](docs/history.md)** (every handoff, numbered entries 1-69; entry 70 pending, see below, the full benchmark log). It is not loaded automatically; grep it for specifics (`grep -n "^\*\*4[0-5]\." docs/history.md`, `grep -n "click" docs/history.md`). Add new numbered entries there and keep this file short: it is loaded into every session, and at 220 KB it cost ~91k tokens per session (measured 2026-10-06).
+**History lives in [`docs/history.md`](docs/history.md)** (every handoff, numbered entries 1-71, the full benchmark log). It is not loaded automatically; grep it for specifics (`grep -n "^\*\*4[0-5]\." docs/history.md`, `grep -n "click" docs/history.md`). Add new numbered entries there and keep this file short: it is loaded into every session, and at 220 KB it cost ~91k tokens per session (measured 2026-10-06).
 
 ## Current state (handoff, 2026-10-08)
 
 - **Repos (both PRIVATE, nothing on npm):** `sanjuraw/narrowbit` (runtime + app) and `sanjuraw/narrowbit-memory` (mirror of `packages/memory/`; source of truth is this repo, refresh with `scripts/sync-memory-repo.sh`). Both go public together (user's decision), after the go-public checklist below.
 - **Machine-specific notes** (folders, accounts, keys, benchmark files, launch-day history cleaning) are in `CLAUDE.local.md`, which is not committed.
-- **Code:** last code commit `00d507a` (Claude structured output on by default). Tests: memory 24, unit 266, UI 95, typecheck clean, gitleaks clean. **GitHub Actions is out of minutes until 1 Nov 2026** (private repo): run `npm test`, `npm run test:ui`, `npm test -w narrowbit-memory` and gitleaks locally before every push. Going public restores free CI.
+- **Code:** last code commit is the twentieth-audit commit after `e5b2ad9` (entry 71; before it `00d507a`, Claude structured output on by default). Tests: memory 27, unit 274, UI 95, typecheck clean, gitleaks clean. **GitHub Actions is out of minutes until 1 Nov 2026** (private repo): run `npm test`, `npm run test:ui`, `npm test -w narrowbit-memory` and gitleaks locally before every push. Going public restores free CI.
 - **Deployed (2026-10-08):** `/Users/Shared/NarrowbitApp` is at `2f79d25`, built; the Mac app was rebuilt (`mac/` changed: `ShellEnv.swift`, `main.swift`) and copied to `/Applications/Narrowbit.app`. That copy is now owned by the main account (it was the second account's); the old bundle is kept as the hidden `/Applications/.Narrowbit.app.previous` (delete once the new one is confirmed; rename it back to roll back). Not launched or tested after the rebuild; the in-app updater may refuse to run on a copy the other account doesn't own (untested).
-- **History file permission:** `docs/history.md` is owned by the second account and read-only for the main account, so entry 70 (the memory experiment result, text in the session scratchpad `entry70.md`) is not in it yet. Fix the ownership (the user's call), then append it. `CLAUDE.md` is group-writable and fine.
 - **Site:** `narrowbit.dev` (Cloudflare registrar, WHOIS redacted) is live on Cloudflare Pages from this repo, serving `soon/` (a coming-soon page with no links into the private repo). The full one-page site is in `site/` (results with their limits, a Narrowbit Memory section); on launch day switch the Pages build output directory from `soon` to `site`. `www.narrowbit.dev` also works. Every other path serves the same page (no source exposed, checked).
 - **Email:** `hello@narrowbit.dev` on Zoho Mail (free plan); MX, SPF and DKIM published and checked; the user confirmed mail arrives (2026-10-08). Listed in `SECURITY.md` and the site footer. Optional DMARC (`_dmarc` TXT `v=DMARC1; p=none; rua=mailto:hello@narrowbit.dev`) not yet added by the user. Don't enable Cloudflare Email Routing (it would replace Zoho's MX).
-- **Security work:** audit rounds 1-19 fixed (history entries 1-17, 21, 30-44). Open gaps are stated in `SECURITY.md` → Known limitations (archives extracted over an existing project; checks run project-defined commands; some config files that run under a test command aren't called out).
+- **Security work:** audit rounds 1-20 fixed (history entries 1-17, 21, 30-44, 71). Open gaps are stated in `SECURITY.md` → Known limitations (archives extracted over an existing project; checks run project-defined commands; some config files that run under a test command aren't called out).
 
 ## Evidence (never claim more)
 
@@ -35,15 +34,15 @@ All n=1 per task, public code, Claude Sonnet 5.5 on both sides unless noted; ful
 
 ## Waiting on the user (don't do unasked)
 
-1. Codex's own audit Part 3 and its re-check of entries 43-44: after its weekly limit resets (10 Oct). Don't run Codex until told.
-2. The optional DMARC record (`_dmarc` TXT).
+1. A second Codex run of the entry-43 re-check (entry 71: its Part 3 is done and fixed, but its sandbox could not run the on-disk cases of the re-check, so that part is still open); run it with a workspace-write sandbox if the user says so. Don't run Codex until told.
+2. The optional DMARC record (`_dmarc` TXT). Also a decision on the blanket `mcp__narrowbit` permission that `narrowbit install claude` adds (it lets an injected model call `nb_run`/`nb_verify` without a prompt; entry 71).
 3. The explicit go-ahead to go public (after the checklist), and whether to create a `narrowbit` GitHub organization for the new repos.
 4. Personal items: see `CLAUDE.local.md`.
 
 ## Next steps
 
 1. **Speed on Python:** Narrowbit is ~1.4× slower than native on click (entry 68); break the time down as in entry 62 (model, verify, loops, commands) and fix the largest part.
-2. **Go-public checklist:** (a) Codex audit Part 3 and fixes; (b) done: Python result in README and site; (c) run `~/.narrowbit-launch/clean-history.sh`, rename the old repo, publish the cleaned history as a new repo (and `narrowbit-memory`); (d) Pages output dir `soon` → `site`, reconnect Pages to the new repo; (e) the user's explicit yes.
+2. **Go-public checklist:** (a) done: Codex audit Part 3 and fixes (entry 71); still open: the entry-43 on-disk re-check; (b) done: Python result in README and site; (c) run `~/.narrowbit-launch/clean-history.sh`, rename the old repo, publish the cleaned history as a new repo (and `narrowbit-memory`); (d) Pages output dir `soon` → `site`, reconnect Pages to the new repo; (e) the user's explicit yes.
 3. Open speed work: Narrowbit is ~1.2-1.5× slower than native at the median; per-call model time is already on par, the rest is turns and checks.
 4. **Memory on multi-file tasks** (entry 69; result 2026-10-08): no win. 15 pairs x 3 repeats, 90 B runs, success 45/45 in both arms; median per-task cost ratio memory/none 1.09 (rule: <= 0.90), only 6/15 tasks cheaper (rule: >= 10), total cost ratio 0.975. Don't claim a memory saving; README and site stay as they are. Revisit only with a new idea for what a note should contain. The full write-up (entry 70) is in the session scratchpad until `docs/history.md` is writable again (it is owned by the second account, mode 644; append the text then).
 5. Older open items: scout at scale, parallel independent subtasks, per-provider usage-limit burn rate, DeepSeek as fallback.

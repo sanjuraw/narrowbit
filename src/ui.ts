@@ -271,6 +271,8 @@ function workingDiff(root: string, skipUntracked: Set<string> = new Set()) {
     }
     diff += `diff --git a/${f} b/${f}\nnew file\n--- /dev/null\n+++ b/${f}\n${body}\n`;
   }
+  // The preview is what a "Draft as feedback" note quotes from, and so can reach a model: show it redacted, as everything else is.
+  diff = redact(diff);
   const MAX = 400_000;
   return {
     files,

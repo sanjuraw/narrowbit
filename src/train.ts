@@ -8,6 +8,9 @@ import { Store } from "./store.js";
 import { parseTask } from "./taskparse.js";
 import { sh, writeProjectFile, assertProjectPath, stateText, shortId } from "./util.js";
 
+// History bookkeeping must not run the repository's own hooks (post-checkout fires on `worktree add` and `checkout`).
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
+
 /**
  * Learn per-signal weights from the repository's own history — locally, no model calls.
  *
@@ -140,7 +143,7 @@ export async function train(
   const wt = join(wtBase, `run-${shortId()}`);
   assertProjectPath(state, wt);
   if (existsSync(wt)) throw new Error(`${wt} already exists — run again`);
-  const add = sh("git", ["worktree", "add", "--detach", wt, cands[0].parent], p.root);
+  const add = sh("git", [...NO_HOOKS, "worktree", "add", "--detach", wt, cands[0].parent], p.root);
   if (add.code !== 0) throw new Error(`git worktree add failed: ${add.stderr}`);
   assertProjectPath(state, wt);
   const wp: Paths = { ...paths(wt), nb: trainNb, db: join(trainNb, "index.db"), memory: join(trainNb, "memory"), tasks: join(trainNb, "tasks") };
@@ -148,7 +151,7 @@ export async function train(
   const examples: Example[] = [];
   try {
     for (const c of cands) {
-      if (sh("git", ["checkout", "--detach", "--force", c.parent], wt).code !== 0) continue;
+      if (sh("git", [...NO_HOOKS, "checkout", "--detach", "--force", c.parent], wt).code !== 0) continue;
       sh("git", ["clean", "-fdq"], wt);
       indexRepo(wp, store);
       // noGit: the future commit must not leak through recency/dirty signals.
@@ -161,7 +164,7 @@ export async function train(
     }
   } finally {
     store.close();
-    sh("git", ["worktree", "remove", "--force", wt], p.root);
+    sh("git", [...NO_HOOKS, "worktree", "remove", "--force", wt], p.root);
   }
   if (examples.length < 10) throw new Error(`only ${examples.length} usable examples; need 10+`);
 

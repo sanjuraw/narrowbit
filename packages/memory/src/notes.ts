@@ -78,6 +78,12 @@ function parseScalar(s: string): string {
   return s;
 }
 
+/** Notes are prose, so besides token shapes (redact) a "password is X" / "api_key=X" style assignment is scrubbed too. */
+export function scrubNote(x: string): string {
+  return redact(x).replace(/\b(password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b(\s*(?:is|=|:)\s*)(['"]?)([^\s'",;]{6,})\3/gi, "$1$2$3[REDACTED]$3");
+}
+
+
 /** Parse a note written by us *or by hand* (Obsidian-style frontmatter subset). */
 export function fromMarkdown(md: string, fallback: { id: string; type?: MemoryType; date?: string }): MemoryEntry | null {
   const fm: Record<string, unknown> = {};
@@ -243,7 +249,9 @@ export class Memory {
       } else if (ent.name.endsWith(".md")) {
         try {
           const e = fromMarkdown(external ? readFileSync(abs, "utf8") : readPlain(abs), { id: basename(ent.name, ".md"), type });
-          if (e) out.push({ ...e, file: abs, external });
+          // A note on disk can hold anything (written by hand, shipped in a repo, saved before scrubbing existed): what leaves
+          // here toward a model is scrubbed whatever its origin.
+          if (e) out.push({ ...e, text: scrubNote(e.text), reason: e.reason === undefined ? undefined : scrubNote(e.reason), attempt: e.attempt === undefined ? undefined : scrubNote(e.attempt), result: e.result === undefined ? undefined : scrubNote(e.result), file: abs, external });
         } catch {
           /* unreadable note: skip */
         }
@@ -263,9 +271,8 @@ export class Memory {
     // Notes are plain Markdown that outlives the task (and may be synced or shared), so a secret must never reach them:
     // scrubbed here, at the one place every note passes through (idea from Hindsight's "memory defense").
     // Token-shaped secrets go through redact(); notes are prose, so also "password is X" / "api_key=X" style assignments.
-    const scrub = (x: string) => redact(x).replace(/\b(password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b(\s*(?:is|=|:)\s*)(['"]?)([^\s'",;]{6,})\3/gi, "$1$2$3[REDACTED]$3");
-    const clean = (x?: string) => (typeof x === "string" ? scrub(x) : x);
-    const entry: MemoryEntry = { id: `${e.type.slice(0, 3)}-${shortId()}`, date: now(), status: "active", ...e, text: scrub(e.text), reason: clean(e.reason), attempt: clean(e.attempt), result: clean(e.result) };
+    const clean = (x?: string) => (typeof x === "string" ? scrubNote(x) : x);
+    const entry: MemoryEntry = { id: `${e.type.slice(0, 3)}-${shortId()}`, date: now(), status: "active", ...e, text: scrubNote(e.text), reason: clean(e.reason), attempt: clean(e.attempt), result: clean(e.result) };
     if (entry.files?.length && !entry.fileHashes) entry.fileHashes = this.hashFiles(entry.files);
     entry.file = this.write(entry);
     return entry;

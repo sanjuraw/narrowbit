@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import { isSecretFile } from "./util.js";
 
 /**
@@ -55,7 +57,32 @@ const FILTERS = /^(tail|head|grep|rg|wc|sort|uniq|cat)(\s|$)/;
 const RUNNER_WRITES = /(^|\s)(--fix\b|--write\b|-u\b|--update(Snapshot)?\b|--watch\b|-w\b|--outDir\b|--outFile\b|--output\b|-o\b)/;
 const READER_WRITES = /(^|\s)(-exec\b|-execdir\b|-delete\b|-ok\b|-okdir\b|-fprint\w*\b|-fls\b|--output\b|-o\b)/;
 
-export function allowedAsCheck(command: string, checks: readonly string[], warning?: string): boolean {
+// Flags that make a read-only tool run a program or read outside what it was pointed at: rg --pre runs a script on every file,
+// git --ext-diff / --textconv run configured drivers, -c sets git config, --output writes.
+const READER_DANGER = /^(--pre(=|$)|--pre-glob|--ext-diff|--textconv|--output(=|$)|--exec-path|--git-dir|--work-tree|--no-index|--config|--hostname-bin|--open-files-in-pager|-O$|-c$|-C$|-fprint)/;
+
+/**
+ * A reader may look at this project's files only: no absolute or home paths, no `..`, and nothing that is (or is a link to)
+ * something outside the project. Words that are not paths (a search pattern) simply do not exist as files and pass.
+ */
+function readerStaysInside(part: string, root?: string): boolean {
+  for (const raw of part.split(/\s+/).slice(1)) {
+    const word = raw.replace(/^["']|["']$/g, "");
+    if (!word) continue;
+    if (word.startsWith("-")) { if (READER_DANGER.test(word)) return false; continue; }
+    if (word.startsWith("/") || word.startsWith("~") || word.split(/[\\/]/).includes("..")) return false;
+    if (root) {
+      try {
+        const real = realpathSync(resolve(root, word));
+        const base = realpathSync(root);
+        if (real !== base && !real.startsWith(base + sep)) return false;
+      } catch { /* does not exist: a pattern, or a path that will fail on its own */ }
+    }
+  }
+  return true;
+}
+
+export function allowedAsCheck(command: string, checks: readonly string[], warning?: string, root?: string): boolean {
   if (warning) return false;
   const cmd = command.trim().replace(/\s+2>&1(?=\s|$)/g, "");
   if (!cmd || /[;&`\n<>]|\$\(|\|\|/.test(cmd)) return false;
@@ -67,6 +94,10 @@ export function allowedAsCheck(command: string, checks: readonly string[], warni
   const runner = CHECK_RUNNERS.some((r) => r.test(head));
   const reader = READ_ONLY.some((r) => r.test(head));
   if (!configured && !(runner && !RUNNER_WRITES.test(head)) && !(reader && !READER_WRITES.test(head))) return false;
+  // Readers (and their filters) are held to the project: see readerStaysInside.
+  const readerOnly = !configured && !(runner && !RUNNER_WRITES.test(head));
+  if (readerOnly && !readerStaysInside(head, root)) return false;
+  if (!rest.every((x) => readerStaysInside(x, root))) return false;
   // A filter only reads its input; `sort -o` would write a file.
   return rest.every((s) => FILTERS.test(s) && !/^sort\b.*(\s-o\b|--output\b)/.test(s));
 }

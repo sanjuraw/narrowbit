@@ -448,3 +448,41 @@ describe("secrets that are not token-shaped", () => {
     assert.doesNotMatch(api.redactBlocksKeepingLines("-----BEGIN PRIVATE KEY-----\nABCDEF123456\n"), /ABCDEF123456/, "a cut-off block is redacted to the end");
   });
 });
+
+describe("twentieth audit, part 3: what the memory layer lets through", () => {
+  const T = "sk-abcdefghijklmnopqrstuvwxyz123456";
+
+  test("a secret assignment is redacted whether or not its name has a prefix, and short values count", () => {
+    for (const line of ["PASSWORD=abcdefgh", "TOKEN=abcdefgh", "API_KEY=abcdefgh", "SECRET=abcdefgh", "DB_PASSWORD=abcdef", "DB_PASSWORD=[abcdefgh]"]) {
+      assert.match(api.redact(line), /=\[redacted value\]$/, line);
+    }
+    // settings that only look like secrets stay readable
+    for (const line of ["MAX_TOKENS=4096", "MAX_TOKENS=100000", "TOKEN=true", "API_KEY=[redacted value]", "NEXT_PUBLIC_X=1"]) assert.equal(api.redact(line), line, line);
+  });
+
+  test("a note on disk is scrubbed when it is loaded, whoever wrote it", () => {
+    const root = project();
+    const dir = join(root, ".narrowbit", "memory", "conventions");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "hand-written.md"), `---\ntype: convention\n---\n\nDeploy with token ${T} and the password is hunter2hunter2\n`);
+    const mem = api.openMemory(api.memoryPaths(root));
+    const loaded = mem.load();
+    assert.equal(loaded.length, 1);
+    assert.doesNotMatch(JSON.stringify(loaded), /abcdefghijklmnopqrstuvwxyz123456|hunter2hunter2/);
+    assert.doesNotMatch(api.renderMemory(loaded[0]), /abcdefghijklmnopqrstuvwxyz123456|hunter2hunter2/);
+  });
+
+  test("event metadata is scrubbed on the way in and on the way out", () => {
+    const root = project();
+    const p = api.memoryPaths(root);
+    const id = "rt-20261008-abcde";
+    api.appendEvent(p, id, { actor: "model", type: "tool_call", summary: `read ${T}`, meta: { note: T, nested: { list: [T] }, n: 3 } });
+    const raw = readFileSync(join(p.runtime, id, "events.jsonl"), "utf8");
+    assert.doesNotMatch(raw, /abcdefghijklmnopqrstuvwxyz123456/);
+    assert.equal(api.readEvents(p, id)[0].meta.n, 3, "other values are kept");
+    // a log written before this scrubbing existed
+    const old = join(p.runtime, id, "events.jsonl");
+    writeFileSync(old, JSON.stringify({ id: "e1", taskId: id, at: new Date().toISOString(), actor: "model", type: "tool_call", summary: "x", meta: { note: T } }) + "\n");
+    assert.doesNotMatch(JSON.stringify(api.readEvents(p, id)), /abcdefghijklmnopqrstuvwxyz123456/);
+  });
+});

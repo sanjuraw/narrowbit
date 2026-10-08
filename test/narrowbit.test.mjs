@@ -4913,3 +4913,152 @@ if (i >= 0) {
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe("twentieth audit, part 3: what a code search or grep puts in front of the model", () => {
+  const T = "sk-abcdefghijklmnopqrstuvwxyz123456";
+  const KEY = ["-----BEGIN RSA PRIVATE KEY-----", "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun", "VTLw7onLRnrq0/IzW7yWR7QkrmBL7jTKEn5u+qKhbwKfBstIs+bMY2Zkp18gnTxK", "-----END RSA PRIVATE KEY-----"].join("\n");
+  const indexed = async () => {
+    const { root, p } = tinyRepo();
+    writeFileSync(join(root, "keys.ts"), `export const apiKey = "${T}";\nexport function f() { return 1; }\n`);
+    writeFileSync(join(root, "keys.txt"), `intro\n${KEY}\noutro\n`);
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], { cwd: root });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "k"], { cwd: root });
+    const store = new Store(p.db);
+    indexRepo(p, store);
+    return { root, p, store };
+  };
+
+  test("a hard-coded key in a symbol's signature is redacted in search and in the symbol list", async () => {
+    const { root, p, store } = await indexed();
+    try {
+      const { searchText, symbolText } = await dist("query.js");
+      assert.doesNotMatch(searchText(p, store, "apiKey"), /abcdefghijklmnopqrstuvwxyz123456/);
+      assert.doesNotMatch(symbolText(p, store, "apiKey"), /abcdefghijklmnopqrstuvwxyz123456/);
+    } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a grep hit inside a private key shows nothing of the key", async () => {
+    const { root, p, store } = await indexed();
+    try {
+      const g = grepText(p, store, "VTLw7onLRnrq0");
+      assert.match(g, /1 match\(es\) in 1 file/, "the file is found, so the line is judged, not skipped");
+      assert.doesNotMatch(g, /VTLw7onLRnrq0\/IzW7yWR/);
+      assert.match(g, /REDACTED PRIVATE KEY/);
+    } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("twentieth audit, part 3: command output, approvals and what the model is sent", () => {
+  const T = "sk-abcdefghijklmnopqrstuvwxyz123456";
+  const KEY = ["-----BEGIN RSA PRIVATE KEY-----", "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun", "VTLw7onLRnrq0/IzW7yWR7QkrmBL7jTKEn5u+qKhbwKfBstIs+bMY2Zkp18gnTxK", "-----END RSA PRIVATE KEY-----"].join("\n");
+
+  test("a command's summary, a key block among many lines, the stored raw log and the header are all clean", async () => {
+    const { compressOutput, runCommand } = await dist("compress.js");
+    const c = compressOutput(`npm error token ${T}\n`, 1);
+    assert.doesNotMatch(JSON.stringify(c), /abcdefghijklmnopqrstuvwxyz123456/, "text and summary");
+    const long = Array.from({ length: 30 }, (_, i) => `intro line number ${i} with distinct words ${i * 7}`).join("\n");
+    assert.doesNotMatch(JSON.stringify(compressOutput(`${long}\n${KEY}\n`, 1)), /VTLw7onLRnrq0|MIIEowIBAAKCAQEA/);
+    const { root, p } = tinyRepo();
+    try {
+      const r = await runCommand(p, `printf '%s\\n' '${T}' && echo done`, {});
+      assert.doesNotMatch(r.rendered, /abcdefghijklmnopqrstuvwxyz123456/, "the header names the command");
+      const logs = join(p.nb, "logs");
+      const all = readdirSync(logs).map((f) => readFileSync(join(logs, f), "utf8")).join("\n");
+      assert.doesNotMatch(all, /abcdefghijklmnopqrstuvwxyz123456/, "the raw log on disk");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("'ask, except checks' does not run programs the repo names or read outside the project", async () => {
+    const { allowedAsCheck } = await dist("approvals.js");
+    const { root } = tinyRepo();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-out-")));
+    try {
+      writeFileSync(join(outside, "secret.txt"), "opaque\n");
+      symlinkSync(join(outside, "secret.txt"), join(root, "innocent.txt"));
+      const checks = ["npm test"];
+      for (const bad of ["rg --pre=./evil.sh foo", "rg --pre ./evil.sh foo", "git log --ext-diff -p", "git diff --textconv", "cat ~/.narrowbit/keys.json", "cat /etc/passwd", "cat ../x", "ls -la /", "git log -c core.pager=x", "cat innocent.txt", "ls | cat /etc/hosts"]) {
+        assert.equal(allowedAsCheck(bad, checks, undefined, root), false, bad);
+      }
+      for (const good of ["git diff", "git status", "ls", "grep -rn foo src", "cat a.txt | head -20", "git log -p -- a.txt", "npm test"]) {
+        assert.equal(allowedAsCheck(good, checks, undefined, root), true, good);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  test("a command that rewrites package.json ends 'allow until files change' and raises the script warning", async () => {
+    const { root, p } = tinyRepo();
+    writeFileSync(join(root, "package.json"), '{"scripts":{"test":"echo old"}}\n');
+    const fake = fakeClaude([
+      JSON.stringify({ action: "run", command: "echo first" }),
+      JSON.stringify({ action: "run", command: `node -e "require('fs').writeFileSync('package.json','{\\"scripts\\":{\\"test\\":\\"echo evil\\"}}')"` }),
+      JSON.stringify({ action: "run", command: "echo second" }),
+      JSON.stringify({ action: "done", summary: "ok" }),
+    ]);
+    const seen = [];
+    try {
+      await runTask(p, "run some things", { claudeBin: fake.bin, boss: false, maxSteps: 8, approve: async (cmd, warning, key, edits) => { seen.push({ cmd, warning, edits: [...(edits ?? [])] }); return true; } });
+      const second = seen.find((s) => s.cmd === "echo second");
+      assert.ok(second, "the third command was put to the approver");
+      assert.match(second.warning ?? "", /package\.json/, "the approval says the script file changed");
+      assert.ok(second.edits.includes("package.json"), "the edit log counts the change the command made");
+      assert.equal(seen.find((s) => s.cmd === "echo first").edits.length, 0);
+    } finally { rmSync(fake.dir, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("plan approval fails closed: no plan, or a question nobody answered, stops the task before any edit", async () => {
+    for (const mode of ["noplan", "unanswered"]) {
+      const { root, p } = tinyRepo();
+      const fake = fakeClaude(mode === "noplan"
+        ? ["I cannot make a plan", JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "bye" }), JSON.stringify({ action: "done", summary: "x" })]
+        : [JSON.stringify({ plan: ["change a.txt"], files: ["a.txt"] }), JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "bye" }), JSON.stringify({ action: "done", summary: "x" })]);
+      try {
+        const r = await runTask(p, "change a.txt", { claudeBin: fake.bin, boss: true, planApproval: true, ask: async () => null, maxSteps: 6 });
+        assert.equal(r.outcome, "stopped", mode);
+        assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "hello\n", "nothing was edited");
+      } finally { rmSync(fake.dir, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
+    }
+  });
+
+  test("evaluation and training run none of the repository's own git hooks", async () => {
+    const { evalHistory } = await dist("eval.js");
+    const { train } = await dist("train.js");
+    const { root, p } = tinyRepo();
+    const git = (...a) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root });
+    const ran = join(tmpdir(), `nb-hook-ran-${process.pid}-${Date.now()}`);
+    try {
+      writeFileSync(join(root, "a.ts"), "export const a = 0;\n"); git("add", "a.ts"); git("commit", "-qm", "add the a module");
+      for (let i = 1; i <= 12; i++) { writeFileSync(join(root, "a.ts"), `export const a = ${i};\n`); git("commit", "-qam", `change the value of a to ${i} in a.ts`); }
+      const hook = join(root, ".git", "hooks", "post-checkout");
+      writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(ran)}\n`, { mode: 0o755 });
+      await evalHistory(p, { commits: 1, log: () => {} });
+      try { await train(p, { commits: 12, log: () => {} }); } catch { /* too few usable examples is fine */ }
+      assert.equal(existsSync(ran), false, "no hook ran");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(ran, { force: true }); }
+  });
+
+  test("a connector error or a name that holds a secret is cleaned before it is sent back to the model", async () => {
+    const { root, p } = tinyRepo();
+    const dir = mkdtempSync(join(tmpdir(), "nb-fake-"));
+    const bin = join(dir, "claude");
+    const replies = [JSON.stringify({ action: "describe", server: `srv-${T}`, tool: "x" }), JSON.stringify({ action: "done", summary: "ok" })];
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("fs");
+process.stdin.once("data", (d) => {
+  const input = String(d);
+  const f = ${JSON.stringify(join(dir, "n"))}; const n = fs.existsSync(f) ? Number(fs.readFileSync(f, "utf8")) : 0; fs.writeFileSync(f, String(n + 1));
+  fs.appendFileSync(${JSON.stringify(join(dir, "prompts.log"))}, input + "\\n=====\\n");
+  const r = ${JSON.stringify(replies)}; const text = r[Math.min(n, r.length - 1)];
+  const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+  console.log(JSON.stringify({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }));
+  console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
+  process.exit(0);
+});
+`, { mode: 0o755 });
+    try {
+      await runTask(p, "look at a connector", { claudeBin: bin, boss: false, maxSteps: 4 });
+      const sent = readFileSync(join(dir, "prompts.log"), "utf8");
+      assert.match(sent, /no connector named/, "the model was told the connector does not exist");
+      assert.doesNotMatch(sent, /abcdefghijklmnopqrstuvwxyz123456/);
+    } finally { rmSync(dir, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
+  });
+});

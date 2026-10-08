@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import type { Paths } from "./config.js";
-import { redact } from "./redact.js";
+import { redact, redactBlocksKeepingLines } from "./redact.js";
 import { estimateTokens, shortId, stripAnsi, writeProjectFile } from "./util.js";
 
 export interface Compressed {
@@ -279,7 +279,10 @@ function grepOut(lines: string[]): Compressed | null {
   return { kind: "generic", text: out.slice(0, 120).join("\n"), errorCount: 0, summary: out[0] };
 }
 
-export function compressOutput(raw: string, exit: number): Compressed {
+export function compressOutput(rawOutput: string, exit: number): Compressed {
+  // A private key printed by a command is judged as a whole block before any line is dropped, filtered or cut: once the BEGIN
+  // line is gone the body no longer looks like a key.
+  const raw = redactBlocksKeepingLines(rawOutput);
   const all = stripAnsi(raw).split("\n");
   const lines = groupSimilar(collapse(all.filter((l) => !NOISE.some((re) => re.test(l)))));
   const r = tsc(lines) ?? tests(lines) ?? eslint(lines) ?? gitDiff(lines) ?? grepOut(lines) ?? npm(lines) ?? generic(lines, exit);
@@ -290,10 +293,10 @@ export function compressOutput(raw: string, exit: number): Compressed {
   const lostTooMuch = crit.length >= 3 && crit.filter((t) => r.text.includes(t)).length < Math.ceil(crit.length * 0.85);
   if (r.text.length >= raw.length || !r.text.trim() || lostTooMuch) {
     const t = redact(raw.length > 12_000 ? raw.slice(0, 12_000) + "\n… (truncated)" : raw);
-    return { kind: "generic", text: t, errorCount: r.errorCount, summary: r.summary };
+    return { kind: "generic", text: t, errorCount: r.errorCount, summary: redact(r.summary) };
   }
   const text = r.text.length > 12_000 ? r.text.slice(0, 12_000) + "\n… (truncated)" : r.text;
-  return { ...r, text: redact(text) };
+  return { ...r, text: redact(text), summary: redact(r.summary) };
 }
 
 export interface RunResult {
@@ -344,7 +347,7 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
       const logName = `${shortId()}.log`;
       const rawLog = join(p.logs, logName);
       try {
-        writeProjectFile(dirname(p.nb), rawLog, `$ ${command}\n# exit ${exit}\n${raw}`);
+        writeProjectFile(dirname(p.nb), rawLog, `$ ${redact(command)}\n# exit ${exit}\n${redact(redactBlocksKeepingLines(raw))}`);
       } catch {
         // Non-essential: the compressed result below still gets returned to the caller either way. This
         // callback runs from a child process's own 'close' event, outside any promise chain a caller could
@@ -353,7 +356,7 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
       }
       const c = compressOutput(raw, exit);
       const rawLines = raw.split("\n").length;
-      const head = `$ ${command}  (exit ${exit}${signal ? `, ${signal}` : ""}; ${rawLines} lines → ${c.text.split("\n").length}; raw: ${relative(p.root, rawLog)})`;
+      const head = `$ ${redact(command)}  (exit ${exit}${signal ? `, ${signal}` : ""}; ${rawLines} lines → ${c.text.split("\n").length}; raw: ${relative(p.root, rawLog)})`;
       const rendered = `${head}\n${c.text}`;
       resolveP({
         command,

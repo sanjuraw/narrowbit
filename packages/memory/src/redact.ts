@@ -4,10 +4,11 @@
  */
 const PATTERNS: [RegExp, string][] = [
   // .env / shell style: NAME_WITH_SECRET=value. Token-shaped values are caught below; this catches the rest (a database
-  // password, a session secret). Upper-case names at the start of a line only, values of 8+ characters, so ordinary code
-  // and numbers like MAX_TOKENS=4096 are left alone. Not "[REDACTED …]": the commit check reads that prefix as a certain
-  // credential, and a placeholder in a .env.example is only a hint.
-  [/(?<=^[ \t]*(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_?KEY|CREDENTIALS?|ACCESS_?KEY)[A-Z0-9_]*[ \t]*=[ \t]*)(?!\[|\*\*\*)["']?[^\s#"'][^\r\n#]{6,}/gm, "[redacted value]"],
+  // password, a session secret). Upper-case names at the start of a line only (the name may be just the keyword: PASSWORD=x).
+  // Values of 4+ characters; a short number (MAX_TOKENS=4096), true/false/null and an already-redacted marker are left alone,
+  // as are names ending in TOKENS (a count, not a credential). Not "[REDACTED …]": the commit check reads that prefix as a
+  // certain credential, and a placeholder in a .env.example is only a hint.
+  [/(?<=^[ \t]*(?:export[ \t]+)?(?:[A-Z][A-Z0-9_]*)?(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_?KEY|CREDENTIALS?|ACCESS_?KEY)[A-Z0-9_]*[ \t]*=[ \t]*)(?<!TOKENS[ \t]*=[ \t]*)(?!\[(?:redacted|REDACTED)|\*\*\*|(?:true|false|null|none)\b|\d{1,5}(?:\s|$))["']?[^\s#"'][^\r\n#]{3,}/gm, "[redacted value]"],
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]"],
   [/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED AWS KEY]"],
   [/\bsk-(?:ant-|proj-|live_|test_)?[A-Za-z0-9_-]{20,}\b/g, "[REDACTED KEY]"],

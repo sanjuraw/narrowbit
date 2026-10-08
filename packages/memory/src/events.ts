@@ -64,11 +64,19 @@ export function ensureTaskDir(p: MemoryPaths, taskId: string): string {
   return dir;
 }
 
+/** Every string inside event metadata, however deeply nested, passes through redact(); other values are kept as they are. */
+function scrubMeta(v: unknown, depth = 0): unknown {
+  if (typeof v === "string") return redact(v);
+  if (depth > 8 || v === null || typeof v !== "object") return v;
+  if (Array.isArray(v)) return v.map((x) => scrubMeta(x, depth + 1));
+  return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, scrubMeta(x, depth + 1)]));
+}
+
 export function appendEvent(p: MemoryPaths, taskId: string, e: Omit<Event, "id" | "taskId" | "at"> & Partial<Pick<Event, "id" | "at">>): Event {
   ensureTaskDir(p, taskId);
-  // Summaries carry model text and shell commands, either of which can contain a secret.
-  const meta = e.meta && typeof e.meta.command === "string" ? { ...e.meta, command: redact(e.meta.command) } : e.meta;
-  const full: Event = { actor: e.actor, type: e.type, summary: redact(e.summary), evidenceRef: e.evidenceRef, tokens: e.tokens, meta, id: e.id ?? shortId(), taskId, at: e.at ?? now() };
+  // Summaries carry model text and shell commands, either of which can contain a secret; so can any string in the metadata
+  // (a model's note, a tool name, an error), which later reaches a hand-over prompt.
+  const full: Event = { actor: e.actor, type: e.type, summary: redact(e.summary), evidenceRef: e.evidenceRef, tokens: e.tokens, meta: scrubMeta(e.meta) as Event["meta"], id: e.id ?? shortId(), taskId, at: e.at ?? now() };
   appendNoFollow(eventsFile(p, taskId), JSON.stringify(full) + "\n");
   for (const fn of listeners.get(taskId) ?? []) fn(full);
   return full;
@@ -100,7 +108,11 @@ export function readEvents(p: MemoryPaths, taskId: string): Event[] {
   return text
     .split("\n")
     .filter(Boolean)
-    .map((l) => JSON.parse(l) as Event);
+    .map((l) => {
+      // A log written before metadata was scrubbed (or edited by hand) is cleaned on the way in, too.
+      const ev = JSON.parse(l) as Event;
+      return { ...ev, summary: redact(ev.summary), meta: scrubMeta(ev.meta) as Event["meta"] };
+    });
 }
 
 export interface FoldedState {
