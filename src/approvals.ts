@@ -73,9 +73,10 @@ function staysInside(part: string, root?: string): boolean {
   const noSingle = part.replace(/'[^']*'/g, "''");
   for (const dq of noSingle.match(/"[^"]*"/g) ?? []) if (/[$`\\]/.test(dq)) return false;
   if (/[*?\[\]{}$\\]/.test(noSingle.replace(/"[^"]*"/g, '""'))) return false;
+  const words = shellWords(part);
+  if (!words) return false;
   const isGit = FOLLOW_OK_FOR_GIT.test(part);
-  for (const raw of part.split(/\s+/).slice(1)) {
-    const word = raw.replace(/^["']|["']$/g, "");
+  for (const word of words.slice(1)) {
     if (!word) continue;
     if (word.startsWith("-")) {
       const eq = word.indexOf("=");
@@ -87,6 +88,32 @@ function staysInside(part: string, root?: string): boolean {
     if (!pathOk(word, root)) return false;
   }
   return true;
+}
+
+/** The words the shell would pass to the program: quotes group a word (so a path with a space stays one path) and are removed.
+ * Null when a quote is left open. Backslashes never reach here (they are refused above). */
+function shellWords(part: string): string[] | null {
+  const words: string[] = [];
+  let cur = "";
+  let inWord = false;
+  let quote: string | null = null;
+  for (const ch of part) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+      inWord = true;
+    } else if (/\s/.test(ch)) {
+      if (inWord) { words.push(cur); cur = ""; inWord = false; }
+    } else {
+      cur += ch;
+      inWord = true;
+    }
+  }
+  if (quote) return null;
+  if (inWord) words.push(cur);
+  return words;
 }
 
 function pathOk(word: string, root?: string): boolean {
@@ -101,6 +128,12 @@ function pathOk(word: string, root?: string): boolean {
   return true;
 }
 
+/** `git branch` lists, but with a name it creates and with -d / -D / -m / -c it deletes, renames or copies: only the listing forms run free. */
+function gitBranchIsListing(head: string): boolean {
+  const args = (shellWords(head) ?? []).slice(2);
+  return args.every((a) => /^(-a|-r|-v|-vv|--all|--remotes|--verbose|--list|--show-current)$/.test(a));
+}
+
 export function allowedAsCheck(command: string, checks: readonly string[], warning?: string, root?: string): boolean {
   if (warning) return false;
   const cmd = command.trim().replace(/\s+2>&1(?=\s|$)/g, "");
@@ -113,6 +146,7 @@ export function allowedAsCheck(command: string, checks: readonly string[], warni
   const runner = CHECK_RUNNERS.some((r) => r.test(head));
   const reader = READ_ONLY.some((r) => r.test(head));
   if (!configured && !(runner && !RUNNER_WRITES.test(head)) && !(reader && !READER_WRITES.test(head))) return false;
+  if (!configured && /^git\s+branch(\s|$)/.test(head) && !gitBranchIsListing(head)) return false;
   // The project's own configured check is the user's; everything else, and every filter after a pipe, is held to the project.
   if (!configured && !staysInside(head, root)) return false;
   if (!rest.every((x) => staysInside(x, root))) return false;

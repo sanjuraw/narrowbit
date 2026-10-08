@@ -287,3 +287,14 @@ export function isSecretFile(relPath: string): boolean {
   if (segs.includes("env") && !(segs.length > 1 && /^(ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|swift|md|txt)$/.test(last))) return !/^(example|sample|template|dist|defaults?)$/.test(last);
   return /\.(pem|key|p12|pfx|keystore)$/.test(base) || /^id_(rsa|ed25519|ecdsa|dsa)/.test(base) || /^credentials.*\.json$/.test(base) || /^secrets\..+/.test(base);
 }
+
+/**
+ * A command that starts with `git` runs with the repository's own program hooks switched off, the way Narrowbit's own git calls
+ * do (gitArgs): core.fsmonitor names a program git would run on a plain `git status`, and an external diff or text conversion
+ * driver would run on `diff`, `log` and `show`. The command shown to the user is the one they typed; this is only what runs.
+ */
+export function hardenGitCommand(command: string): string {
+  return command
+    .replace(/^(\s*)git(\s+)/, (_m, lead, sp) => `${lead}git -c core.fsmonitor=false${sp}`)
+    .replace(/^(\s*git -c core\.fsmonitor=false\s+(?:diff|log|show))(?=\s|$)/, "$1 --no-ext-diff --no-textconv");
+}

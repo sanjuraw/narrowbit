@@ -11,11 +11,14 @@ const PATTERNS: [RegExp, string][] = [
   // Labelled values in any config style (YAML `password: x`, ini `db_password = x`, .env `PASSWORD=1234`), whatever the case. A name
   // that means a password/secret/private key has no length or number exemption (a 4-digit PIN is still a password); a type
   // annotation (`password: string`), a placeholder, and an expression (`this.token`, a call) are not values.
-  [/(?<=^[ \t]*(?:export[ \t]+)?["']?[\w.-]*(?:secret|passw(?:or)?d|pwd|private[_-]?key|credentials?)[\w.-]*["']?[ \t]*[:=][ \t]*)(?!\[(?:redacted|REDACTED)|\*\*\*|(?:string|number|boolean|any|unknown|never|void|null|undefined|true|false|object|bigint|symbol|required|optional)\b|(?:this|self|process|req|args|opts|options|config|env|params|props|state|ctx|os|input|data)\.)["']?[^\s#"',;{}()\[\]<>][^\r\n#,;(){}\[\]]{2,}/gim, "[redacted value]"],
+  [/(?<=^[ \t]*(?:export[ \t]+)?["']?[\w.-]*(?:secret|passw(?:or)?d|pwd|private[_-]?key|credentials?)[\w.-]*["']?[ \t]*[:=][ \t]*)(?!\[(?:redacted|REDACTED)|\*\*\*|(?:string|number|boolean|any|unknown|never|void|null|undefined|true|false|object|bigint|symbol|required|optional)\b|(?:this|self|process|req|args|opts|options|config|env|params|props|state|ctx|os|input|data)\.)["']?[^\s#"',;{}()\[\]<>][^\r\n#,;(){}\[\]]*/gim, "[redacted value]"],
   // Token-like names get the same, except a short count (`max_tokens: 4096`) and names that end in "tokens".
   [/(?<=^[ \t]*(?:export[ \t]+)?["']?[\w.-]*(?:token|api[_-]?key|access[_-]?key|auth)[\w.-]*["']?[ \t]*[:=][ \t]*)(?<!tokens["']?[ \t]*[:=][ \t]*)(?!\[(?:redacted|REDACTED)|\*\*\*|(?:string|number|boolean|any|unknown|never|void|null|undefined|true|false|object|bigint|symbol|required|optional)\b|\d{1,5}(?:\s|$|,|;)|(?:this|self|process|req|args|opts|options|config|env|params|props|state|ctx|os|input|data)\.)["']?[^\s#"',;{}()\[\]<>][^\r\n#,;(){}\[\]]{2,}/gim, "[redacted value]"],
-  // A quoted JSON string whose key names a credential, anywhere on the line.
-  [/(?<="[\w.-]*(?:secret|passw(?:or)?d|pwd|private[_-]?key|credentials?|token|api[_-]?key|access[_-]?key)[\w.-]*"[ \t]*:[ \t]*")(?!\[(?:redacted|REDACTED))[^"\r\n]{3,}(?=")/gi, "[redacted value]"],
+  // A JSON value whose key names a credential, anywhere on the line: a password/secret/private-key field is hidden whatever its
+  // type or length (a number too), a token/API-key field when it is a string of 3+ characters.
+  [/(?<="[\w.-]*(?:secret|passw(?:or)?d|pwd|private[_-]?key|credentials?)[\w.-]*"[ \t]*:[ \t]*")(?!\[(?:redacted|REDACTED))[^"\r\n]+(?=")/gi, "[redacted value]"],
+  [/(?<="[\w.-]*(?:secret|passw(?:or)?d|pwd|private[_-]?key|credentials?)[\w.-]*"[ \t]*:[ \t]*)\d+(?=[ \t]*[,}\]\r\n]|[ \t]*$)/gi, "[redacted value]"],
+  [/(?<="[\w.-]*(?:token|api[_-]?key|access[_-]?key)[\w.-]*"[ \t]*:[ \t]*")(?!\[(?:redacted|REDACTED))[^"\r\n]{3,}(?=")/gi, "[redacted value]"],
   [/(?<=^[ \t]*(?:export[ \t]+)?(?:[A-Z][A-Z0-9_]*)?(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_?KEY|CREDENTIALS?|ACCESS_?KEY)[A-Z0-9_]*[ \t]*=[ \t]*)(?<!TOKENS[ \t]*=[ \t]*)(?!\[(?:redacted|REDACTED)|\*\*\*|(?:true|false|null|none)\b|\d{1,5}(?:\s|$))["']?[^\s#"'][^\r\n#]{3,}/gm, "[redacted value]"],
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]"],
   // A key whose END line is missing (cut off, half-copied) is still a key: hide it to the end of the text.

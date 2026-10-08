@@ -1596,6 +1596,34 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { page.close(); }
   });
 
+  test("an approval answer that did not go through gives the buttons back, says so, and sends again on the next click", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const page = await openPage(app.url);
+    try {
+      await page.until(() => page.w.__nb && page.w.__nb.view(), "the page's conversation view");
+      const nb = page.w.__nb, doc = page.w.document;
+      const v = nb.view(); v.taskId = "rt-retry"; v.pendingNew = false;
+      let fail = true; const sent = [];
+      page.w.fetch = (url, opts) => {
+        if (!String(url).includes("/api/approve")) return Promise.resolve({ ok: true, status: 200, json: async () => ({}), text: async () => "{}" });
+        sent.push(JSON.parse(opts.body).decision);
+        return fail ? Promise.reject(new Error("SIMULATED_NETWORK_FAILURE")) : Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true }), text: async () => "{}" });
+      };
+      nb.stream({ type: "approval", id: "r1", task: "rt-retry", command: "npm test" });
+      const box = [...doc.querySelectorAll(".approval")].pop();
+      const buttons = () => [...box.querySelectorAll("button")];
+      buttons().find((b) => /^Allow once/.test(b.textContent)).click();
+      await page.until(() => /not confirmed/i.test(doc.getElementById("banner").textContent), "the not-confirmed message");
+      assert.ok(buttons().every((b) => !b.disabled), "the buttons are usable again");
+      fail = false;
+      buttons().find((b) => /^Allow once/.test(b.textContent)).click();
+      await page.until(() => sent.length === 2, "the second attempt");
+      assert.deepEqual(sent, ["once", "once"]);
+      assert.ok(buttons().every((b) => b.disabled), "after a confirmed answer they are locked as before");
+    } finally { page.close(); }
+  });
+
   test("live progress: the model's note as it is written, then the running command's latest output, each replaced by the finished step", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });

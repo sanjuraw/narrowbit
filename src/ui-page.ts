@@ -2093,7 +2093,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     a.decide = function (d) {
       if (a.done) return; a.done = true;
       Array.prototype.forEach.call(btns.querySelectorAll("button"), function (b) { b.disabled = true; });
-      api("/api/approve", { id: ev.id, decision: d }).catch(function (e) { banner("bad", e.message); });
+      api("/api/approve", { id: ev.id, decision: d }).catch(function (e) {
+        // Not confirmed: the request failed, so the command may still be waiting. Give the buttons back instead of leaving a
+        // question that can no longer be answered; if the answer did arrive after all, the server says so on the next try.
+        a.done = false;
+        Array.prototype.forEach.call(btns.querySelectorAll("button"), function (b) { b.disabled = false; });
+        banner("bad", "Your answer was not confirmed (" + e.message + "). The command may still be waiting; choose again.");
+      });
     };
     btns.appendChild(el("button", { cls: "primary", onclick: function () { a.decide("once"); } }, "Allow once ", el("kbd", { text: "1" })));
     // A command runs code the agent can edit, so the usual remembered allowance ends at the agent's next edit; the whole-task

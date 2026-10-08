@@ -16,4 +16,5 @@ regexes = [
   '''hunter2hunter2''',
   '''7f3a9c1e5b8d2f4a''',
   '''MIIEowIBAAKCAQEAu1SU1LfVLPHCozMx''',
+  '''PRIVATE_BODY_CANARY''',
 ]

@@ -5248,6 +5248,32 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { rmSync(dir, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
   });
 
+  test("a quoted path with a space is judged as one path, and git commands cannot delete or create branches or run the repo's file-system monitor", async () => {
+    const { allowedAsCheck } = await dist("approvals.js");
+    const { runCommand } = await dist("compress.js");
+    const { root, p } = tinyRepo();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-out-")));
+    try {
+      writeFileSync(join(outside, "secret.txt"), "OUTSIDE_CANARY\n");
+      symlinkSync(outside, join(root, "alias folder"));
+      for (const bad of ["cat 'alias folder/secret.txt'", 'cat "alias folder/secret.txt"', "git branch --delete victim", "git branch -D victim", "git branch newbranch", "git branch -m old new", "cat 'unclosed"]) {
+        assert.equal(allowedAsCheck(bad, ["npm test"], undefined, root), false, bad);
+      }
+      for (const good of ["git branch", "git branch -a", "git branch -vv", "git branch --show-current", "cat 'a.txt'", "git status"]) assert.equal(allowedAsCheck(good, ["npm test"], undefined, root), true, good);
+      // git status names a program in core.fsmonitor and would run it; the command that runs is hardened.
+      const marker = join(outside, "monitor-ran");
+      const hook = join(outside, "monitor.sh");
+      writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nprintf '\\0'\n`, { mode: 0o755 });
+      execFileSync("git", ["config", "core.fsmonitor", hook], { cwd: root });
+      execFileSync("git", ["status"], { cwd: root, stdio: "ignore" });
+      assert.equal(existsSync(marker), true, "control: plain git runs the monitor");
+      rmSync(marker);
+      const r = await runCommand(p, "git status", {});
+      assert.match(r.rendered, /git status/);
+      assert.equal(existsSync(marker), false, "the monitor did not run");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
   test("a file name that holds a key is redacted in what the MCP server returns", async () => {
     const { root, p } = tinyRepo();
     try {

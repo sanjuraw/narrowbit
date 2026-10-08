@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import type { Paths } from "./config.js";
 import { redact, redactBlocksKeepingLines } from "./redact.js";
-import { estimateTokens, shortId, stripAnsi, writeProjectFile } from "./util.js";
+import { estimateTokens, hardenGitCommand, shortId, stripAnsi, writeProjectFile } from "./util.js";
 
 export interface Compressed {
   kind: "tsc" | "eslint" | "tests" | "npm" | "generic";
@@ -379,7 +379,7 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
     }
     // Its own process group, so Stop and the timeout can end everything the command started: killing only the shell
     // left a background process (a dev server, a hung test) running, and the call waited for it.
-    const child = spawn(command, { cwd: opts.cwd ?? p.root, shell: true, detached: true, env: commandEnv() });
+    const child = spawn(hardenGitCommand(command), { cwd: opts.cwd ?? p.root, shell: true, detached: true, env: commandEnv() });
     killTree = (sig) => {
       try {
         process.kill(-child.pid!, sig);

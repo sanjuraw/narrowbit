@@ -501,6 +501,14 @@ describe("twentieth audit, second pass (Codex on 0ceeeff): labelled values, key 
     }
   });
 
+  test("a password-labelled value is hidden whatever its type or length, while counts and types stay readable", () => {
+    for (const [line, want] of [
+      ['{"password":123456}', '{"password":[redacted value]}'], ['{"password":"ab"}', '{"password":"[redacted value]"}'], ["password: ab", "password: [redacted value]"],
+      ["secret = x", "secret = [redacted value]"], ["PASSWORD=1", "PASSWORD=[redacted value]"], ['{"api_key":"abcd"}', '{"api_key":"[redacted value]"}'],
+    ]) assert.equal(api.redact(line), want, line);
+    for (const line of ['{"max_tokens":4096}', "password: string;", "token: this.token,", "max_tokens: 4096"]) assert.equal(api.redact(line), line, line);
+  });
+
   test("a private key with no END line is hidden to the end, in text and in a saved note", () => {
     assert.doesNotMatch(api.redact("Key: -----BEGIN PRIVATE KEY-----\nPRIVATE_BODY_CANARY"), /PRIVATE_BODY_CANARY/);
     const root = project();
