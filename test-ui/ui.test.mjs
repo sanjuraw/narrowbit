@@ -741,6 +741,29 @@ describe("app page with a folder open", () => {
     assert.match(page.$("input").value, /a\.txt/);
   });
 
+  test("a commit that edits a hook file is paused with a clear message, and the button sends the acknowledgement", async () => {
+    const doc = page.w.document;
+    const commitBox = await page.until(() => doc.querySelector(".changes .commit input, .changes .commit textarea"), "the commit message box on the Changes card");
+    const real = page.w.fetch.bind(page.w);
+    const sent = [];
+    page.w.fetch = (url, opts) => {
+      if (!String(url).includes("/api/commit")) return real(url, opts);
+      const body = JSON.parse(opts.body); sent.push(body);
+      const reply = (status, j) => Promise.resolve({ ok: status < 400, status, statusText: "", json: async () => j, text: async () => JSON.stringify(j) });
+      return body.hooksOk ? reply(200, { ok: true, head: "abc1234", leftStaged: [] }) : reply(409, { error: "hooks", files: [".husky/pre-commit"] });
+    };
+    try {
+      commitBox.value = "update the hook";
+      [...doc.querySelectorAll(".changes .commit button")].find((b) => b.textContent === "Commit").click();
+      const anyway = await page.until(() => [...doc.querySelectorAll("#banner button")].find((b) => /Commit anyway \(I've read them\)/.test(b.textContent)), "the hook warning with its button");
+      assert.match(doc.getElementById("banner").textContent, /git hook files/);
+      assert.match(doc.getElementById("banner").textContent, /\.husky\/pre-commit/);
+      anyway.click();
+      await page.until(() => /Committed abc1234/.test(doc.body.textContent.replace(/\s+/g, " ")), "the commit to go through");
+      assert.deepEqual(sent.map((b) => !!b.hooksOk), [false, true]);
+    } finally { page.w.fetch = real; }
+  });
+
   test("a Claude usage reading from 40 minutes ago is shown flagged as possibly stale, not as current", async () => {
     const wins = await page.until(() => { const w = [...page.w.document.querySelectorAll(".limits .win")]; return w.length ? w : null; }, "the limits rows");
     const staleWin = wins.find((w) => w.classList.contains("stale"));
@@ -869,6 +892,21 @@ describe("app page with a folder open", () => {
     assert.equal(paused.status, 409);
     assert.equal((await paused.json()).error, "secrets");
     assert.equal((await post({ message: "add leak", force: true })).status, 200);
+  });
+
+  test("commit is paused when the change edits a git hook file, and goes through once that is acknowledged", async () => {
+    mkdirSync(join(repo, ".husky"), { recursive: true });
+    writeFileSync(join(repo, ".husky", "pre-commit"), "#!/bin/sh\necho checking\n");
+    writeFileSync(join(repo, "notes-for-hooks.txt"), "an ordinary file\n");
+    const post = (body) => fetch(`${app.base}/api/commit`, { method: "POST", headers: { "x-narrowbit-token": app.token, "content-type": "application/json" }, body: JSON.stringify(body) });
+    const paused = await post({ message: "touch a hook" });
+    assert.equal(paused.status, 409);
+    const j = await paused.json();
+    assert.equal(j.error, "hooks");
+    assert.deepEqual(j.files, [".husky/pre-commit"]);
+    // the page shows it with a button that sends the acknowledgement
+    const ok = await post({ message: "touch a hook", hooksOk: true });
+    assert.equal(ok.status, 200, await ok.clone().text());
   });
 
   test("commit takes only the files shown, not a secret that was staged and then hidden from the working tree", async () => {

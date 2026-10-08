@@ -42,7 +42,7 @@ import { providerCallFor, runTask, type Progress } from "./runtime.js";
 import { acknowledgeUpdateNotes, applyUpdate, checkUpdate, pendingUpdateNotes, readVersion } from "./update.js";
 import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { uiPage } from "./ui-page.js";
-import { sh, visible, writeProjectFile, removeProjectPath, stateText } from "./util.js";
+import { isHookFile, sh, visible, writeProjectFile, removeProjectPath, stateText } from "./util.js";
 import { updateCli } from "./providers/models.js";
 import { covered, editsSince, type Grant } from "./approvals.js";
 import { suggestFollowUp, suggestionFromEvents } from "./followup.js";
@@ -1187,6 +1187,11 @@ export function startUi(opts: UiOptions) {
             const risky = auditRepo(root, { files }).filter((f) => f.severity === "high");
             if (risky.length) return json(res, 409, { error: "secrets", findings: risky.slice(0, 8) });
           }
+          // The repository's hooks run on commit, as in a terminal. A change to a hook file in this very commit (an agent edited
+          // .husky/pre-commit, say) would run with it, so it is shown first.
+          const hooksPath = sh("git", ["config", "--get", "core.hooksPath"], root).stdout.trim() || undefined;
+          const hookFiles = files.filter((f) => isHookFile(f, hooksPath));
+          if (hookFiles.length && body.hooksOk !== true) return json(res, 409, { error: "hooks", files: hookFiles.slice(0, 8) });
           const add = sh("git", ["add", "-A", "--", ...files], root);
           if (add.code !== 0) return json(res, 500, { error: add.stderr.trim() || "git add failed" });
           // Commit exactly the files shown on the Changes card (as they are on disk, which is what was scanned above) —

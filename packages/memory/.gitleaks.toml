@@ -13,4 +13,6 @@ regexes = [
   '''OPAQUE_CANARY_84267''',
   '''OPAQUE_CANARY_97531''',
   '''\$\{C\}''',
+  '''BEGIN RSA PRIVATE KEY-----\\n" \}\);''',
+  '''BEGIN RSA PRIVATE KEY-----\\n"\.repeat''',
 ]

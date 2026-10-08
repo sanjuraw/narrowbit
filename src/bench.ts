@@ -152,6 +152,9 @@ const DEFAULT_ARMS: BenchArm[] = [{ name: "native" }, { name: "narrowbit", narro
 export { parseStream } from "./streamjson.js";
 import { parseStream } from "./streamjson.js";
 
+// Benchmark bookkeeping must not run the repository's own hooks (post-checkout fires on `worktree add` and `checkout`).
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
+
 function runClaude(bin: string, cwd: string, args: string[], outFile: string, env: Record<string, string>, timeoutMs: number, state: string): Promise<number> {
   return new Promise((res) => {
     const child = spawn(bin, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
@@ -212,7 +215,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
           continue;
         }
         log(`${tag}: preparing worktree @ ${commit.slice(0, 8)}`);
-        const add = sh("git", ["worktree", "add", "--detach", "--force", wt, commit], p.root);
+        const add = sh("git", [...NO_HOOKS, "worktree", "add", "--detach", "--force", wt, commit], p.root);
         if (add.code !== 0) throw new Error(`git worktree add failed: ${add.stderr}`);
         try {
           if (spec.setup) {
@@ -222,7 +225,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             symlinkSync(join(p.root, "node_modules"), join(wt, "node_modules"));
           }
           if (t.apply?.paths.length) {
-            const ap = sh("git", ["checkout", t.apply.from, "--", ...t.apply.paths], wt);
+            const ap = sh("git", [...NO_HOOKS, "checkout", t.apply.from, "--", ...t.apply.paths], wt);
             if (ap.code !== 0) throw new Error(`${tag}: could not apply ${t.apply.paths.join(", ")} from ${t.apply.from}: ${ap.stderr.trim()}`);
           }
           const env: Record<string, string> = {};
@@ -415,7 +418,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
         } finally {
           // Keep the runtime arm's event logs: they are the only record of what the model said and did.
           if (arm.runtime) sh("cp", ["-R", join(wt, ".narrowbit", "runtime"), join(runDir, `${t.id}-${arm.name}-${r}-runtime`)], p.root);
-          sh("git", ["worktree", "remove", "--force", wt], p.root);
+          sh("git", [...NO_HOOKS, "worktree", "remove", "--force", wt], p.root);
           if (existsSync(wt)) rmSync(wt, { recursive: true, force: true });
         }
       }

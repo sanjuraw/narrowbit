@@ -101,7 +101,7 @@ npm run build
 
 if [ "$LINK" = 1 ]; then
   say "Putting the narrowbit command on your PATH"
-  npm link || { echo "  npm link needs write access to npm's global folder. Try: sudo npm link   (or set an npm prefix in your home folder)" >&2; exit 1; }
+  npm link || { echo "  npm link needs write access to npm's global folder. Set an npm prefix in your home folder instead (npm config set prefix ~/.npm-global, then put ~/.npm-global/bin on your PATH). Avoid sudo: npm link runs this project's build scripts as root" >&2; exit 1; }
 fi
 
 if [ "$APP" = 1 ]; then

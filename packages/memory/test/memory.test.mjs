@@ -592,3 +592,27 @@ describe("twentieth audit, fourth pass (Codex on c661506): neighbouring formats,
     }
   });
 });
+
+describe("own audit (2026-10-09): hostile text cannot make redaction slow", () => {
+  const within = (ms, f) => { const t = performance.now(); f(); const took = performance.now() - t; assert.ok(took < ms, `took ${Math.round(took)} ms (limit ${ms})`); };
+
+  test("a long run of spaces or tabs next to a credential-looking word is handled in well under a second (it took 93 s)", () => {
+    const sp = " ".repeat(100000), tb = "\t".repeat(100000);
+    for (const text of ["password" + sp + ":", "password" + sp + "=", sp + "password: x", tb + "password: x", '"password"' + sp + ":", "<password" + sp + ">", "authorization" + sp + ":", "ENV a=b" + sp, "ENV PASSWORD" + sp, "Server=x;" + "Password=a;".repeat(20000), "kind: Secret" + sp]) {
+      within(3000, () => api.redact(text));
+      within(3000, () => api.findSecrets(text));
+    }
+  });
+
+  test("thousands of key markers with no end, and thousands of Terraform variables, stay linear", () => {
+    within(2000, () => api.redact("-----BEGIN RSA PRIVATE KEY-----\n".repeat(30000)));
+    within(2000, () => api.redactBlocksKeepingLines("-----BEGIN RSA PRIVATE KEY-----\n".repeat(30000)));
+    within(2000, () => api.redact('variable "password" { default = '.repeat(8000)));
+    assert.match(api.redact("a\n-----BEGIN RSA PRIVATE KEY-----\nBODY\n-----END RSA PRIVATE KEY-----\nb"), /^a\n\[REDACTED PRIVATE KEY\]\nb$/);
+    assert.doesNotMatch(api.redact("x -----BEGIN PRIVATE KEY-----\nBODY_CANARY"), /BODY_CANARY/);
+  });
+
+  test("findSecrets on a big file with many matches does not slow down quadratically", () => {
+    within(3000, () => assert.ok(api.findSecrets("password=abcdefgh\n".repeat(40000)).length >= 40000));
+  });
+});

@@ -2354,8 +2354,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       } });
       var commit = el("button", { cls: "primary", text: "Commit", onclick: function () {
         if (!msg.value.trim()) { msg.focus(); return; }
+        var hooksOk = false;
         var doCommit = function (force) {
-          api("/api/commit", { message: msg.value.trim(), task: id, force: force }).then(function (r) { banner("", null); finishCard(card, "Committed " + r.head + " — " + msg.value.trim() + (r.leftStaged && r.leftStaged.length ? " (not included: " + r.leftStaged.length + " other file(s) you had already staged — they stay staged)" : "")); load(); }).catch(function (e) {
+          api("/api/commit", { message: msg.value.trim(), task: id, force: force, hooksOk: hooksOk }).then(function (r) { banner("", null); finishCard(card, "Committed " + r.head + " — " + msg.value.trim() + (r.leftStaged && r.leftStaged.length ? " (not included: " + r.leftStaged.length + " other file(s) you had already staged — they stay staged)" : "")); load(); }).catch(function (e) {
             if (e.status === 409 && e.data && e.data.error === "secrets") {
               var box = el("div");
               box.appendChild(el("strong", { text: "Possible secrets in this change — commit paused." }));
@@ -2364,6 +2365,14 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
               box.appendChild(ul);
               box.appendChild(el("button", { text: "Commit anyway (I've checked)", onclick: function () { doCommit(true); } }));
               banner("warn", box);
+            } else if (e.status === 409 && e.data && e.data.error === "hooks") {
+              var hbox = el("div");
+              hbox.appendChild(el("strong", { text: "This commit changes git hook files — commit paused." }));
+              hbox.appendChild(el("div", { text: "Hooks run when you commit, with your permissions. Read what changed in them first:" }));
+              var hul = el("ul"); e.data.files.forEach(function (f) { hul.appendChild(el("li", { text: f })); });
+              hbox.appendChild(hul);
+              hbox.appendChild(el("button", { text: "Commit anyway (I've read them)", onclick: function () { hooksOk = true; doCommit(force); } }));
+              banner("warn", hbox);
             } else banner("bad", e.message);
           });
         };

@@ -307,3 +307,19 @@ export function hardenGitCommand(command: string): string {
 export function hardenRunnerCommand(command: string): string {
   return command.replace(/^(\s*)(?:npx|bunx|pnpm\s+exec)\s+(?:(?:--no-install|--no|-y|--yes)\s+)*(vitest|jest|mocha|ava|tap|eslint|tsc)(?=\s|$)/, "$1./node_modules/.bin/$2");
 }
+
+/**
+ * A file that runs when someone commits: a hook folder (.husky, .githooks), a hook manager's config (lefthook, pre-commit,
+ * lint-staged), or anything under the folder `core.hooksPath` names. The app's Commit button runs the repository's hooks as a
+ * terminal would, so a change to one of these is called out before the commit rather than discovered after.
+ */
+export function isHookFile(rel: string, hooksPath?: string): boolean {
+  const r = rel.split("\\").join("/");
+  if (/^(\.husky|\.githooks|\.git-hooks)\//i.test(r)) return true;
+  if (/(^|\/)\.?lefthook(-local)?\.(ya?ml|toml|json)$|(^|\/)\.pre-commit-config\.ya?ml$|(^|\/)\.huskyrc(\.\w+)?$|(^|\/)\.lintstagedrc(\.\w+)?$|(^|\/)lint-staged\.config\.\w+$/i.test(r)) return true;
+  if (hooksPath && !hooksPath.startsWith("/") && !hooksPath.startsWith("~")) {
+    const dir = hooksPath.replace(/^\.\//, "").replace(/\/+$/, "");
+    if (dir && r.startsWith(dir + "/")) return true;
+  }
+  return false;
+}

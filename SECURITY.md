@@ -61,6 +61,12 @@ These are known and not yet closed. Each one needs something you would notice do
   own content, and only labelled and token-shaped values are hidden. Keep credentials out of git.
 - **Unlabelled secrets.** Redaction recognises known token shapes and values next to a credential-like name. A random
   string with no label, or a password written in a sentence, cannot be recognised by shape.
+- **Commands run with your environment.** A command you approve (and a check in free-run mode) runs as you, with the
+  environment Narrowbit was started with, including any API keys you export in your shell. A project's tests can read them.
+  Do not run tasks on code you would not run `npm test` on.
+- **Commit and Push run your git setup.** Hooks run when you commit, and a repository's own config can name programs git
+  runs on push (a credential helper, `core.sshCommand`). Narrowbit warns before a commit that changes hook files in the same
+  commit, but opening a repository you did not write and clicking Commit or Push is as risky as doing it in a terminal.
 
 Narrowbit is early software. `narrowbit audit` and the built-in "Security review" skill are aids, not a
 substitute for a human review of anything that handles real money or sensitive data.
