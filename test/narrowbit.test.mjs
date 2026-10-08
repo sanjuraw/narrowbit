@@ -5036,6 +5036,21 @@ describe("twentieth audit, part 3: command output, approvals and what the model 
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(ran, { force: true }); }
   });
 
+  test("install claude pre-approves only the tools that read, and takes an older blanket approval out", async () => {
+    const { installClaude } = await dist("claude.js");
+    const { root, p } = tinyRepo();
+    try {
+      mkdirSync(join(root, ".claude"), { recursive: true });
+      writeFileSync(join(root, ".claude", "settings.local.json"), JSON.stringify({ permissions: { allow: ["mcp__narrowbit", "Bash(ls:*)"] } }));
+      installClaude(p, { hook: false });
+      const allow = JSON.parse(readFileSync(join(root, ".claude", "settings.local.json"), "utf8")).permissions.allow;
+      assert.ok(!allow.includes("mcp__narrowbit"), "no blanket approval");
+      for (const t of ["nb_run", "nb_verify", "nb_remember"]) assert.ok(!allow.includes(`mcp__narrowbit__${t}`), t);
+      for (const t of ["nb_search", "nb_symbol", "nb_lines", "nb_grep"]) assert.ok(allow.includes(`mcp__narrowbit__${t}`), t);
+      assert.ok(allow.includes("Bash(ls:*)"), "the user's own entries stay");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test("a connector error or a name that holds a secret is cleaned before it is sent back to the model", async () => {
     const { root, p } = tinyRepo();
     const dir = mkdtempSync(join(tmpdir(), "nb-fake-"));

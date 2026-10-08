@@ -71,6 +71,8 @@ function readJson(root: string, file: string): any {
   }
 }
 
+const READ_ONLY_TOOLS = ["nb_context", "nb_symbol", "nb_refs", "nb_outline", "nb_search", "nb_expand", "nb_grep", "nb_tests", "nb_lines", "nb_memory"];
+
 /**
  * `narrowbit install claude`: register the MCP server (project .mcp.json) and a
  * UserPromptSubmit hook (.claude/settings.local.json) so plain `claude` sessions get
@@ -95,7 +97,11 @@ export function installClaude(p: Paths, opts: { hook: boolean }): string[] {
   mkdirSync(dirname(settingsPath), { recursive: true });
   s.enabledMcpjsonServers = [...new Set([...(s.enabledMcpjsonServers ?? []), "narrowbit"])];
   s.permissions ??= {};
-  s.permissions.allow = [...new Set([...(s.permissions.allow ?? []), "mcp__narrowbit"])];
+  // Only the tools that read are pre-approved. nb_run and nb_verify run commands and nb_remember writes a note, so Claude Code
+  // asks about those as it does for any other tool; a blanket "mcp__narrowbit" (written by older versions) is taken out, since
+  // it would let an injected instruction run commands without a prompt.
+  const readOnly = READ_ONLY_TOOLS.map((t) => `mcp__narrowbit__${t}`);
+  s.permissions.allow = [...new Set([...(s.permissions.allow ?? []).filter((x: string) => x !== "mcp__narrowbit"), ...readOnly])];
   if (opts.hook) {
     const cmd = [self.command, ...self.args, "hook", "prompt"].map((x) => (/\s/.test(x) ? JSON.stringify(x) : x)).join(" ");
     s.hooks ??= {};
@@ -106,7 +112,7 @@ export function installClaude(p: Paths, opts: { hook: boolean }): string[] {
     changes.push(`${settingsPath}: hooks.UserPromptSubmit → narrowbit hook prompt`);
   }
   writeProjectFile(p.root, settingsPath, JSON.stringify(s, null, 2) + "\n", 0o644);
-  changes.push(`${settingsPath}: enabledMcpjsonServers += narrowbit, permissions.allow += mcp__narrowbit`);
+  changes.push(`${settingsPath}: enabledMcpjsonServers += narrowbit, permissions.allow += the read-only nb_* tools (not nb_run, nb_verify, nb_remember)`);
   return changes;
 }
 
