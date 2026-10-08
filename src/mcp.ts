@@ -1,3 +1,4 @@
+import { redact } from "./redact.js";
 import { createInterface } from "node:readline";
 import { loadConfig, type Paths } from "./config.js";
 import { runCommand } from "./compress.js";
@@ -234,7 +235,8 @@ export async function serveMcp(p: Paths): Promise<void> {
           const name = params?.name;
           const args = params?.arguments ?? {};
           try {
-            const text = await call(name, args);
+            // Whatever a tool returns (file names and headers included) is cleaned once more at the boundary.
+            const text = redact(await call(name, args));
             log(name, args, text);
             result = { content: [{ type: "text", text }] };
           } catch (e: any) {

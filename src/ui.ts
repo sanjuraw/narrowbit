@@ -582,7 +582,7 @@ export function startUi(opts: UiOptions) {
         emit(thisRun, {
           type: "finished",
           outcome: result.outcome,
-          summary: result.summary,
+          summary: redact(result.summary),
           steps: result.steps,
           taskId: result.taskId,
           changed,

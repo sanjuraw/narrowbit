@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelCallOptions, ModelCallResult } from "./claude-cli.js";
-import { attachmentKind, promptWithFiles } from "../attachments.js";
+import { attachmentKind, promptWithFiles, storedButNotPlain } from "../attachments.js";
 
 /**
  * Model adapter for the owned runtime, backed by the `codex` CLI under the user's ChatGPT
@@ -73,7 +73,7 @@ export function callCodex(opts: ModelCallOptions): Promise<ModelCallResult> {
   // Images go through `-i`; PDFs become text in the prompt (Codex takes no PDFs).
   const prompt = promptWithFiles(opts.prompt, opts.attachments, { images: true, pdfs: false });
   // `-i` takes any number of files, so a `--` must end the list or the prompt would be read as another file.
-  const imageFlags = (opts.attachments ?? []).filter((f) => attachmentKind(f) === "image").flatMap((f) => ["-i", f]);
+  const imageFlags = (opts.attachments ?? []).filter((f) => attachmentKind(f) === "image" && !storedButNotPlain(f)).flatMap((f) => ["-i", f]);
   let args: string[];
   let instr: string | undefined;
   if (opts.sessionId && opts.resume) {

@@ -5077,3 +5077,188 @@ process.stdin.once("data", (d) => {
     } finally { rmSync(dir, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("twentieth audit, second pass (Codex on 0ceeeff)", () => {
+  const T = "sk-abcdefghijklmnopqrstuvwxyz1234567890";
+
+  test("free-run mode refuses expansions, link-following flags, other projects and program-loading flags, and still allows ordinary reads and checks", async () => {
+    const { allowedAsCheck } = await dist("approvals.js");
+    const { root } = tinyRepo();
+    try {
+      const checks = ["npm test"];
+      for (const bad of ["cat *.txt", "cat $NB_AUDIT_FILE", 'cat "$HOME/x"', 'cat "a"*', "rg -L foo .", "grep -R foo .", "npm test --prefix /tmp/other", "npm run test --prefix=/tmp/other", "npx vitest --root /tmp/other", "pytest /tmp/other", "npm test --script-shell ./e.sh", "git -C /tmp log", "ls | cat /etc/hosts"]) {
+        assert.equal(allowedAsCheck(bad, checks, undefined, root), false, bad);
+      }
+      for (const good of ["git diff", "git status", "ls -la", "grep -rn foo .", 'grep -rn "a.*b" .', "cat a.txt | head -20", "git log -p -- a.txt", "git show HEAD~1", "git log --follow -- a.txt", "npm test", "npx vitest run a.test.ts", "pytest -q tests/test_x.py"]) {
+        assert.equal(allowedAsCheck(good, checks, undefined, root), true, good);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("in the agent loop, a glob that expands to a link out of the project is put to the approver, not run", async () => {
+    const { root, p } = tinyRepo();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-out-")));
+    writeFileSync(join(outside, "secret.txt"), "OUTSIDE_PROMPT_CANARY\n");
+    symlinkSync(join(outside, "secret.txt"), join(root, "alias.txt"));
+    const fake = fakeClaude([JSON.stringify({ action: "run", command: "cat *.txt" }), JSON.stringify({ action: "done", summary: "no" })]);
+    const asked = [];
+    try {
+      await runTask(p, "read it", { claudeBin: fake.bin, boss: false, maxSteps: 4, permissionMode: "checks", approve: async (c) => { asked.push(c); return false; } });
+      assert.deepEqual(asked, ["cat *.txt"], "the approver was asked");
+    } finally { rmSync(fake.dir, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  test("environment files in every common spelling are secret files and stay out of the index; env.ts is code", async () => {
+    const { isSecretFile } = await dist("util.js");
+    for (const f of ["prod.env", "env.production", "app.env", ".env", "config/.env.local", "staging.env.json", ".ENV"]) assert.equal(isSecretFile(f), true, f);
+    for (const f of [".env.example", "env.ts", "src/env.d.ts", "environment.ts", "env.sample"]) assert.equal(isSecretFile(f), false, f);
+    const { listFiles } = await dist("files.js");
+    const { root, p } = tinyRepo();
+    try {
+      writeFileSync(join(root, "prod.env"), "SOMETHING=opaque\n"); writeFileSync(join(root, "env.production"), "X=opaque\n"); writeFileSync(join(root, "env.ts"), "export const env = 1;\n");
+      const files = listFiles(p);
+      assert.ok(!files.includes("prod.env") && !files.includes("env.production"));
+      assert.ok(files.includes("env.ts"));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("test-runner, bundler, linter and make configuration files raise the script warning when edited", async () => {
+    const { scriptWarning, isScriptFile } = await import(join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "runtime.js"));
+    for (const f of ["vitest.config.ts", "jest.config.js", "vite.config.mts", ".yarnrc.yml", ".yarnrc", "config/included.mk", ".mocharc.json", "webpack.config.js", "noxfile.py", "lefthook.yml"]) {
+      assert.match(scriptWarning("npm test", [f]) ?? "", /edited/, f);
+      assert.equal(isScriptFile(f.split("/").pop()), true, f);
+    }
+    assert.equal(scriptWarning("npm test", ["src/app.ts"]), undefined);
+  });
+
+  test("a finished task's summary and the progress it reports are clean, as the stored event is", async () => {
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([JSON.stringify({ action: "read", path: "a.txt" }), JSON.stringify({ action: "done", summary: `I used the key ${T} to finish.` })]);
+    const logged = [];
+    try {
+      const r = await runTask(p, "look", { claudeBin: fake.bin, boss: false, maxSteps: 4, log: (m) => logged.push(m) });
+      assert.doesNotMatch(r.summary, /abcdefghijklmnopqrstuvwxyz1234567890/);
+      assert.doesNotMatch(logged.join("\n"), /abcdefghijklmnopqrstuvwxyz1234567890/);
+    } finally { rmSync(fake.dir, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("one huge line cannot get past the output cap", async () => {
+    const { capOutput } = await dist("compress.js");
+    assert.ok(capOutput("x".repeat(500000), 800).length < 6000);
+    assert.match(capOutput("x".repeat(500000), 800), /more characters on this line/);
+  });
+
+  test("a stored attachment is judged by its place whatever the letter case, and a link there never reaches Codex's -i flags", async () => {
+    const { readAttachment, storedButNotPlain } = await dist("attachments.js");
+    const { callCodex } = await dist("providers/codex-cli.js");
+    const { root } = tinyRepo();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-out-")));
+    const bin = join(outside, "codex");
+    writeFileSync(bin, `#!/usr/bin/env node
+require("fs").appendFileSync(${JSON.stringify(join(outside, "args.log"))}, JSON.stringify(process.argv.slice(2)) + "\\n");
+console.log(JSON.stringify({ type: "thread.started", thread_id: "th-1" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "ok" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+`, { mode: 0o755 });
+    const old = process.env.NARROWBIT_CODEX;
+    try {
+      writeFileSync(join(outside, "private.png"), "PRIVATE");
+      mkdirSync(join(root, ".narrowbit", "attachments"), { recursive: true });
+      const linked = join(root, ".narrowbit", "attachments", "12345678-image.png");
+      symlinkSync(join(outside, "private.png"), linked);
+      assert.equal(readAttachment(join(root, ".narrowbit", "ATTACHMENTS", "12345678-image.png")), null, "another spelling of the same folder");
+      assert.equal(storedButNotPlain(linked), true);
+      process.env.NARROWBIT_CODEX = bin;
+      await callCodex({ cwd: outside, prompt: "look", model: "gpt-6-luna", role: "t", attachments: [linked] });
+      assert.doesNotMatch(readFileSync(join(outside, "args.log"), "utf8"), /12345678-image\.png/, "not passed to the Codex CLI");
+    } finally { if (old === undefined) delete process.env.NARROWBIT_CODEX; else process.env.NARROWBIT_CODEX = old; rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+  });
+
+  test("a token request that is redirected to another origin is not followed, so the refresh token stays put", async () => {
+    const { createServer } = await import("node:http");
+    const got = [];
+    const b = createServer((req, res) => { let body = ""; req.on("data", (d) => (body += d)); req.on("end", () => { got.push(body); res.writeHead(200, { "content-type": "application/json" }); res.end('{"access_token":"stolen"}'); }); });
+    await new Promise((r) => b.listen(0, "127.0.0.1", r));
+    const a = createServer((req, res) => { req.resume(); res.writeHead(307, { location: `http://127.0.0.1:${b.address().port}/token` }); res.end(); });
+    await new Promise((r) => a.listen(0, "127.0.0.1", r));
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-home-")));
+    const old = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      mkdirSync(join(home, ".narrowbit"), { recursive: true });
+      const url = "https://mcp.example.test/mcp";
+      writeFileSync(join(home, ".narrowbit", "oauth.json"), JSON.stringify({ srv: { resource: url, clientId: "c", tokenEndpoint: `http://127.0.0.1:${a.address().port}/token`, access: "old", refresh: "REFRESH_CANARY", expiresAt: 1 } }), { mode: 0o600 });
+      const { accessToken } = await dist("oauth.js");
+      assert.equal(await accessToken("srv", url), null, "the refresh failed instead of following");
+      assert.deepEqual(got, [], "the other origin never received the request");
+    } finally { process.env.HOME = old; a.close(); b.close(); rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test("the connector list put in the first prompt is cleaned, even when a tool is named like a key", async () => {
+    const { saveConnector } = await dist("connectors.js");
+    const { root, p } = tinyRepo();
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "nb-fake-")));
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-home-")));
+    const oldHome = process.env.HOME;
+    const server = join(dir, "server.js");
+    writeFileSync(server, `const rl = require("readline").createInterface({ input: process.stdin });
+rl.on("line", (l) => { const m = JSON.parse(l); if (m.id === undefined) return;
+  const result = m.method === "tools/list" ? { tools: [{ name: ${JSON.stringify(T)}, description: "d", inputSchema: { type: "object" } }] } : { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "s", version: "1" } };
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, result }) + "\\n"); });
+`);
+    const bin = join(dir, "claude");
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("fs");
+fs.appendFileSync(${JSON.stringify(join(dir, "argv.log"))}, process.argv.join(" ") + "\\n=====\\n");
+const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+const text = ${JSON.stringify(JSON.stringify({ action: "done", summary: "ok" }))};
+console.log(JSON.stringify({ type: "assistant", message: { id: "m", content: [{ type: "text", text }], usage } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
+`, { mode: 0o755 });
+    try {
+      process.env.HOME = home;
+      saveConnector("tok", process.execPath, [server]);
+      await runTask(p, "say hi", { claudeBin: bin, boss: false, maxSteps: 3 });
+      const sent = readFileSync(join(dir, "argv.log"), "utf8");
+      assert.match(sent, /Connected external tools/, "the connector was listed");
+      assert.doesNotMatch(sent, /abcdefghijklmnopqrstuvwxyz1234567890/);
+    } finally { process.env.HOME = oldHome; rmSync(dir, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a benchmark's raw provider output is saved without credentials", async () => {
+    const { runBenchmark } = await dist("bench.js");
+    const { root, p } = tinyRepo();
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "nb-fake-")));
+    const bin = join(dir, "claude");
+    writeFileSync(bin, `#!/usr/bin/env node
+const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+console.error(${JSON.stringify("warning: using key " + T)});
+console.log(JSON.stringify({ type: "assistant", message: { id: "m", content: [{ type: "text", text: ${JSON.stringify("the key is " + T)} }], usage } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: ${JSON.stringify("done " + T)}, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" }));
+`, { mode: 0o755 });
+    try {
+      const spec = join(root, "spec.json");
+      writeFileSync(spec, JSON.stringify({ claudeBin: bin, repeats: 1, arms: [{ name: "native" }], tasks: [{ id: "t", prompt: "x", verify: "true" }] }));
+      await runBenchmark(p, spec, { log: () => {} });
+      const found = [];
+      const walk = (d) => { for (const e of readdirSync(d, { withFileTypes: true })) { const f = join(d, e.name); if (e.isDirectory()) walk(f); else if (/\.jsonl(\.stderr)?$/.test(e.name)) found.push(readFileSync(f, "utf8")); } };
+      walk(join(p.benchmarks, "runs"));
+      assert.ok(found.length >= 1, "raw output was saved");
+      assert.doesNotMatch(found.join("\n"), /abcdefghijklmnopqrstuvwxyz1234567890/);
+    } finally { rmSync(dir, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a file name that holds a key is redacted in what the MCP server returns", async () => {
+    const { root, p } = tinyRepo();
+    try {
+      writeFileSync(join(root, `handler-${T}.ts`), "export function handler() { return 1; }\n");
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], { cwd: root });
+      execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "h"], { cwd: root });
+      execFileSync("node", [join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "narrowbit.js"), "index"], { cwd: root, stdio: "ignore" });
+      const msgs = [{ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } } }, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "nb_outline", arguments: { path: `handler-${T}.ts` } } }, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "nb_search", arguments: { query: "handler" } } }];
+      const r = spawnSync("node", [join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "narrowbit.js"), "mcp", "--root", root], { input: msgs.map((m) => JSON.stringify(m)).join("\n") + "\n", encoding: "utf8", timeout: 60000 });
+      assert.match(r.stdout, /"id":3/, "the server answered");
+      assert.doesNotMatch(r.stdout, /abcdefghijklmnopqrstuvwxyz1234567890/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});

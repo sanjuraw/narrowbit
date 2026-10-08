@@ -1,3 +1,4 @@
+import { redact, redactBlocksKeepingLines } from "./redact.js";
 import { spawn } from "node:child_process";
 import { appendNoFollow } from "narrowbit-memory";
 import { assertProjectPath, writeProjectFile, stateText } from "./util.js";
@@ -156,11 +157,15 @@ function runClaude(bin: string, cwd: string, args: string[], outFile: string, en
     const child = spawn(bin, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
     const chunks: Buffer[] = [];
     child.stdout.on("data", (d) => chunks.push(d));
-    child.stderr.on("data", (d) => { try { assertProjectPath(state, outFile + ".stderr"); appendNoFollow(outFile + ".stderr", String(d)); } catch { /* not through a link */ } });
+    // Raw provider output is kept for later inspection, but never with a credential in it: stdout and stderr are each
+    // redacted as a whole when the process ends (a token split across two chunks would slip past a per-chunk filter).
+    const errChunks: Buffer[] = [];
+    child.stderr.on("data", (d) => errChunks.push(Buffer.from(d)));
     const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
     child.on("close", (code) => {
       clearTimeout(timer);
-      try { writeProjectFile(state, outFile, Buffer.concat(chunks)); } catch { return res(1); }
+      try { writeProjectFile(state, outFile, redact(redactBlocksKeepingLines(Buffer.concat(chunks).toString("utf8")))); } catch { return res(1); }
+      try { if (errChunks.length) writeProjectFile(state, outFile + ".stderr", redact(redactBlocksKeepingLines(Buffer.concat(errChunks).toString("utf8")))); } catch { /* not through a link */ }
       res(code ?? 1);
     });
     child.on("error", () => res(127));

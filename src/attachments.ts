@@ -47,8 +47,8 @@ export function saveAttachment(root: string, name: string, data: Buffer): string
 /** A file under a project's `.narrowbit/attachments` is Narrowbit's own copy, so it must be a plain file: a link or a
  * hard link there (a cloned repository can ship one) would send some other file's bytes to the model. A file the user
  * attached by its own path from anywhere else is theirs to choose and is read as it is. */
-function storedButNotPlain(path: string): boolean {
-  if (basename(dirname(path)) !== "attachments" || basename(dirname(dirname(path))).toLowerCase() !== ".narrowbit") return false;
+export function storedButNotPlain(path: string): boolean {
+  if (basename(dirname(path)).toLowerCase() !== "attachments" || basename(dirname(dirname(path))).toLowerCase() !== ".narrowbit") return false;
   try {
     const st = lstatSync(path);
     return st.isSymbolicLink() || !st.isFile() || st.nlink > 1 || lstatSync(dirname(path)).isSymbolicLink() || lstatSync(dirname(dirname(path))).isSymbolicLink();

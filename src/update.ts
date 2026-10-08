@@ -196,12 +196,24 @@ export async function applyUpdate(): Promise<UpdateNotes> {
   const pulled = await exec("git", ["pull", "--ff-only", "--quiet", "origin", BRANCH], 60_000);
   if (pulled.code !== 0) throw new Error(`git pull failed: ${pulled.out.split("\n").slice(-2).join(" ").slice(0, 200)}`);
   const newHead = git(["rev-parse", "HEAD"]).out;
+  const changedDeps = git(["diff", "--name-only", oldHead, newHead, "--", "package.json", "package-lock.json"]).out.length > 0;
+  // Going back means getting a working copy back, not only an old commit: the code, then (if the update changed them) the
+  // dependencies that go with it, then a build. Each step is checked, and if one fails the message says so instead of "rolled back".
   const rollback = async (why: string): Promise<never> => {
-    git(["reset", "--hard", oldHead]);
-    await exec("npm", ["run", "build"], 180_000);
+    const problems: string[] = [];
+    const reset = git(["reset", "--hard", oldHead]);
+    if (reset.code !== 0 || git(["rev-parse", "HEAD"]).out !== oldHead) problems.push("restoring the previous code failed");
+    else {
+      if (changedDeps) {
+        const inst = await exec("npm", ["install", "--no-audit", "--no-fund"], 300_000);
+        if (inst.code !== 0) problems.push("reinstalling the previous dependencies failed");
+      }
+      const rebuilt = await exec("npm", ["run", "build"], 180_000);
+      if (rebuilt.code !== 0) problems.push("rebuilding the previous version failed");
+    }
+    if (problems.length) throw new Error(`${why} — and going back did not work (${problems.join("; ")}). Run "npm install && npm run build" in ${INSTALL_ROOT}, or reinstall Narrowbit.`);
     throw new Error(`${why} — rolled back to the previous version.`);
   };
-  const changedDeps = git(["diff", "--name-only", oldHead, newHead, "--", "package.json", "package-lock.json"]).out.length > 0;
   if (changedDeps || !existsSync(join(INSTALL_ROOT, "node_modules"))) {
     const inst = await exec("npm", ["install", "--no-audit", "--no-fund"], 300_000);
     if (inst.code !== 0) await rollback(`npm install failed: ${inst.out.split("\n").slice(-2).join(" ").slice(0, 200)}`);

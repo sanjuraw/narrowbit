@@ -193,19 +193,27 @@ export function assertProjectPath(root: string, target: string): void {
  */
 export function writeProjectFile(root: string, file: string, data: string | Uint8Array, mode = 0o600): void {
   assertProjectPath(root, file);
-  let existed = true;
-  try { lstatSync(file); } catch { existed = false; }
-  const fd = openPlain(file, constants.O_WRONLY | constants.O_CREAT, mode);
+  // Create exclusively first: if that works, this call made the file and is the only one entitled to remove it. If the name is
+  // already taken, open the existing file without creating anything. What the path pointed to a moment ago says nothing about
+  // which file the descriptor is.
+  let created = true;
+  let fd: number;
+  try {
+    fd = openPlain(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
+  } catch (e: any) {
+    if (e?.code !== "EEXIST") throw e;
+    created = false;
+    fd = openPlain(file, constants.O_WRONLY, mode);
+  }
   try {
     try {
       assertProjectPath(root, file);
       if (fstatSync(fd).ino !== lstatSync(file).ino) throw new Error(`${file} changed while it was being written — nothing was written`);
     } catch (e) {
-      // The open may just have created an empty file somewhere the path now leads (a folder swapped for a link after the
-      // first check). Take it away again, but only if it is provably the one this call made: new, empty, same inode.
+      // A file this call just created, and still empty, is taken away again — the one we hold, not whatever the path leads to now.
       try {
         const st = fstatSync(fd);
-        if (!existed && st.size === 0 && lstatSync(file).ino === st.ino) unlinkSync(file);
+        if (created && st.size === 0 && lstatSync(file).ino === st.ino) unlinkSync(file);
       } catch { /* nothing to undo */ }
       throw e;
     }
@@ -272,6 +280,10 @@ export function sourceText(root: string, file: string, maxBytes = Infinity): str
  */
 export function isSecretFile(relPath: string): boolean {
   const base = relPath.split(/[\\/]/).pop()?.toLowerCase() ?? "";
-  if (/^\.env(\..+)?$/.test(base)) return !/\.(example|sample|template|dist|defaults?)$/.test(base);
+  // An environment file in any common spelling: .env, .env.local, prod.env, env.production, staging.env.json. A source file that
+  // merely loads the environment (env.ts, env.d.ts) is code, and a template (.env.example) is not a secret.
+  const segs = base.split(".");
+  const last = segs[segs.length - 1];
+  if (segs.includes("env") && !(segs.length > 1 && /^(ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|swift|md|txt)$/.test(last))) return !/^(example|sample|template|dist|defaults?)$/.test(last);
   return /\.(pem|key|p12|pfx|keystore)$/.test(base) || /^id_(rsa|ed25519|ecdsa|dsa)/.test(base) || /^credentials.*\.json$/.test(base) || /^secrets\..+/.test(base);
 }

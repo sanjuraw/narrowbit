@@ -124,6 +124,6 @@ export async function openHttpSession(c: Connector, timeoutMs: number, stop?: Ab
 
   await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "narrowbit", version: "0.1.0" } });
   // A notification has no reply (202); a failure here is harmless for servers that don't care.
-  await post({ jsonrpc: "2.0", method: "notifications/initialized" }).then((r) => r.text()).catch(() => "");
+  await post({ jsonrpc: "2.0", method: "notifications/initialized" }).then((r) => r.body?.cancel()).catch(() => "");
   return { request };
 }

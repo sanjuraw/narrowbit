@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { loadConfig, type AgentConfig, type Paths } from "./config.js";
 import { parseMentions, renderMentions, resolveMentions } from "./mentions.js";
@@ -312,6 +312,12 @@ export function capSummary(text: string, capTokens = 800): string {
  * something the user never saw when they approved that command text. */
 const SCRIPT_FILES = new Set(["package.json", "pyproject.toml", "setup.py", "setup.cfg", "tox.ini", "noxfile.py", "conftest.py", "pytest.ini", "makefile", "gnumakefile", "justfile", "taskfile.yml", "taskfile.yaml", "rakefile", "cargo.toml", "build.rs", ".npmrc", "deno.json", "deno.jsonc", "bunfig.toml"]);
 
+// Tool configuration that a check loads and runs (test runner, bundler, linter, formatter, task runner, git hook manager, make includes).
+const SCRIPT_FILE_PATTERN = /^(?:(?:vitest|vite|jest|webpack|rollup|babel|eslint|prettier|playwright|karma|cypress|tsup|esbuild|mocha|ava|nx|turbo|gulpfile|gruntfile|metro|next|nuxt|svelte|astro|stylelint|commitlint|lint-staged|swc|tailwind|postcss|lefthook|remix|vitest\.workspace|jest\.setup|vitest\.setup)(?:\.config)?\.(?:c|m)?(?:js|ts|json|ya?ml|toml)|\.(?:yarnrc(?:\.ya?ml)?|mocharc(?:\.[\w]+)?|babelrc(?:\.[\w]+)?|eslintrc(?:\.[\w]+)?|prettierrc(?:\.[\w]+)?|huskyrc|lintstagedrc(?:\.[\w]+)?|pre-commit-config\.ya?ml|envrc)|gemfile|build\.gradle(?:\.kts)?|pom\.xml|cmakelists\.txt|dockerfile|docker-compose\.ya?ml|.+\.(?:mk|cmake|gradle))$/i;
+export function isScriptFile(base: string): boolean {
+  return SCRIPT_FILES.has(base.toLowerCase()) || SCRIPT_FILE_PATTERN.test(base);
+}
+
 /** A warning for the approval prompt when this task's own edits change what `command` does, else undefined.
  * Covers script-defining files (package.json and friends) and any edited file the command names directly. */
 export function scriptWarning(command: string, edited: Iterable<string>): string | undefined {
@@ -320,7 +326,7 @@ export function scriptWarning(command: string, edited: Iterable<string>): string
   const named = (word: string) => word.length > 2 && new RegExp(`(^|[\\s/'"=])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s'";&|)])`).test(command);
   for (const f of edited) {
     const base = f.split("/").pop() ?? f;
-    if (SCRIPT_FILES.has(base.toLowerCase()) || named(f) || named(base)) hits.push(f);
+    if (isScriptFile(base) || named(f) || named(base)) hits.push(f);
   }
   if (!hits.length) return undefined;
   return `The agent edited ${hits.slice(0, 4).join(", ")}${hits.length > 4 ? ` and ${hits.length - 4} more` : ""} during this task, which can change what this command actually runs — check the diff before allowing it.`;
@@ -329,11 +335,12 @@ export function scriptWarning(command: string, edited: Iterable<string>): string
 /** A fingerprint of the script-defining files at the project root (content hash per file), so a change made by a command can be noticed. */
 export function scriptFileFingerprint(root: string): Map<string, string> {
   const out = new Map<string, string>();
-  for (const name of SCRIPT_FILES) {
-    for (const cand of [name, name.charAt(0).toUpperCase() + name.slice(1)]) {
-      const text = sourceText(root, join(root, cand));
-      if (text !== null && !out.has(cand)) out.set(cand, createHash("sha1").update(text).digest("hex"));
-    }
+  let names: string[] = [];
+  try { names = readdirSync(root); } catch { return out; }
+  for (const cand of names) {
+    if (!isScriptFile(cand)) continue;
+    const text = sourceText(root, join(root, cand));
+    if (text !== null) out.set(cand, createHash("sha1").update(text).digest("hex"));
   }
   return out;
 }
@@ -660,11 +667,12 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // request, the provider's own overhead included, since that is what the window holds). An explicit
   // `compactThreshold` keeps the old fixed-size meaning (tests, benchmarks, tuning for cost rather than fit).
   const compactThreshold = opts.compactThreshold;
-  const log = opts.log ?? (() => {});
+  // What is printed or streamed as progress passes the same filter as what is stored.
+  const log = opts.log ? (m: string) => opts.log!(redact(m)) : () => {};
   // Zero-cost when no connectors are configured (listConnectors() is a sync file read, no
   // subprocess spawned); otherwise one discovery call per connector at task start, not per turn —
   // matches SYSTEM_INSTRUCTIONS being sent once per session, not resent every step.
-  const connectorsBlock = await discoverConnectors();
+  const connectorsBlock = redact(await discoverConnectors()).slice(0, 4000);
   // Some models (seen with Codex's GPT-6) answer with exactly one action per turn however many the rules allow,
   // and read for 20 steps without ever editing. Say it plainly for them; Claude already batches unprompted.
   const batchHint = provider === "claude" ? "" : `\n\nWorking style for this model: send a JSON ARRAY of up to ${MAX_BATCH_ACTIONS} actions whenever they are independent — for example [{"action":"read",...},{"action":"read",...},{"action":"grep",...}] to look at several files at once. One action per turn wastes the step budget. Read only what you need, then edit; a task rarely needs more than a handful of reads before the first edit.`;
@@ -1299,7 +1307,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   checkpointNow(p, taskId, steps + 1, "end of task");
   appendEvent(p, taskId, { actor: "system", type: "decision", summary: `outcome: ${outcome}`, meta: { outcome, summary, steps, ...(failure ? { errorKind: failure.kind, resets: failure.resets } : {}) } });
   store.close();
-  return { taskId, outcome, summary, steps, actionCounts, compactions };
+  return { taskId, outcome, summary: redact(summary), steps, actionCounts, compactions };
 }
 
 /** A one-line, content-free description of what an action returned — this is all the router's decision model sees. */

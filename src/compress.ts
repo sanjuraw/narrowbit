@@ -72,7 +72,9 @@ export function groupSimilar(lines: string[], minRun = 3): string[] {
  */
 export function capOutput(text: string, capTokens = 800): string {
   if (estimateTokens(text) <= capTokens) return text;
-  const lines = text.split("\n");
+  const MAX_LINE = 600;
+  // One enormous line (minified code, a log without newlines) must not slip through as "a single line": each line is cut first.
+  const lines = text.split("\n").map((l) => (l.length > MAX_LINE ? l.slice(0, MAX_LINE) + ` … [${l.length - MAX_LINE} more characters on this line]` : l));
   const budget = Math.floor(capTokens * 3.6);
   const take = (from: number, to: number, step: 1 | -1, chars: number) => {
     const got: number[] = [];

@@ -66,6 +66,17 @@ export const DEFAULT_CONFIG: NarrowbitConfig = {
 export const DEFAULT_IGNORE = `# Narrowbit exclusions (gitignore syntax subset). .gitignore is also respected.
 .env
 .env.*
+*.env
+*.env.*
+env.production
+env.prod
+env.staging
+env.development
+env.dev
+env.local
+env.test
+env.secret
+env.secrets
 *.pem
 *.key
 *.p12

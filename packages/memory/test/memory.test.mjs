@@ -486,3 +486,43 @@ describe("twentieth audit, part 3: what the memory layer lets through", () => {
     assert.doesNotMatch(JSON.stringify(api.readEvents(p, id)), /abcdefghijklmnopqrstuvwxyz123456/);
   });
 });
+
+describe("twentieth audit, second pass (Codex on 0ceeeff): labelled values, key blocks, metadata, damaged logs", () => {
+  const T = "sk-abcdefghijklmnopqrstuvwxyz123456";
+
+  test("labelled credentials are hidden in YAML, ini, .env and JSON styles, whatever their case, length or digits", () => {
+    for (const [line, secret] of [
+      ["password: OPAQUE_AUDIT_CREDENTIAL_8472", "OPAQUE_AUDIT"], ["TOKEN: OPAQUE_AUDIT_CREDENTIAL_8472", "OPAQUE_AUDIT"], ["db_password = hunter2hunter2", "hunter2"],
+      ["PASSWORD=1234", "1234"], ['{"password":"1234","token":"abcd"}', "1234"], ['{"password":"1234","token":"abcd"}', "abcd"], ["client_secret: s3cr3tvalue", "s3cr3t"],
+    ]) assert.ok(!api.redact(line).includes(secret), line);
+    // code and settings that only look similar stay readable
+    for (const line of ["password: string;", "  token: this.token,", "max_tokens: 4096", "MAX_TOKENS=4096", "TOKEN=true", "const password = getPassword();", "  apiKey: process.env.KEY,", "NEXT_PUBLIC_X=1"]) {
+      assert.equal(api.redact(line), line, line);
+    }
+  });
+
+  test("a private key with no END line is hidden to the end, in text and in a saved note", () => {
+    assert.doesNotMatch(api.redact("Key: -----BEGIN PRIVATE KEY-----\nPRIVATE_BODY_CANARY"), /PRIVATE_BODY_CANARY/);
+    const root = project();
+    const mem = api.openMemory(api.memoryPaths(root));
+    const e = mem.add({ type: "fact", text: "copied by hand: -----BEGIN PRIVATE KEY-----\nPRIVATE_BODY_CANARY" });
+    assert.doesNotMatch(JSON.stringify(mem.load()), /PRIVATE_BODY_CANARY/);
+    assert.doesNotMatch(readFileSync(e.file, "utf8"), /PRIVATE_BODY_CANARY/);
+  });
+
+  test("metadata nested deeper than the scrubber looks is removed, not passed through", () => {
+    const root = project(); const p = api.memoryPaths(root); const id = "rt-20261008-deepx";
+    let deep = { a: T }; for (let i = 0; i < 12; i++) deep = { nested: deep };
+    api.appendEvent(p, id, { actor: "model", type: "tool_call", summary: "x", meta: deep });
+    assert.doesNotMatch(readFileSync(join(p.runtime, id, "events.jsonl"), "utf8"), /abcdefghijklmnopqrstuvwxyz123456/);
+    assert.doesNotMatch(JSON.stringify(api.readEvents(p, id)), /abcdefghijklmnopqrstuvwxyz123456/);
+  });
+
+  test("one damaged line in an event log does not hide the rest of the history", () => {
+    const root = project(); const p = api.memoryPaths(root); const id = "rt-20261008-badln";
+    api.appendEvent(p, id, { actor: "model", type: "decision", summary: "first" });
+    writeFileSync(join(p.runtime, id, "events.jsonl"), readFileSync(join(p.runtime, id, "events.jsonl"), "utf8") + '{"truncated":');
+    api.appendEvent(p, id, { actor: "model", type: "decision", summary: "second" });
+    assert.deepEqual(api.readEvents(p, id).map((e) => e.summary), ["first", "second"]);
+  });
+});

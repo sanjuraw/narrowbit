@@ -57,27 +57,46 @@ const FILTERS = /^(tail|head|grep|rg|wc|sort|uniq|cat)(\s|$)/;
 const RUNNER_WRITES = /(^|\s)(--fix\b|--write\b|-u\b|--update(Snapshot)?\b|--watch\b|-w\b|--outDir\b|--outFile\b|--output\b|-o\b)/;
 const READER_WRITES = /(^|\s)(-exec\b|-execdir\b|-delete\b|-ok\b|-okdir\b|-fprint\w*\b|-fls\b|--output\b|-o\b)/;
 
-// Flags that make a read-only tool run a program or read outside what it was pointed at: rg --pre runs a script on every file,
-// git --ext-diff / --textconv run configured drivers, -c sets git config, --output writes.
-const READER_DANGER = /^(--pre(=|$)|--pre-glob|--ext-diff|--textconv|--output(=|$)|--exec-path|--git-dir|--work-tree|--no-index|--config|--hostname-bin|--open-files-in-pager|-O$|-c$|-C$|-fprint)/;
+// Flags that make a tool run a program the repo names, load code, point it at another project, or read through links:
+// rg --pre runs a script on every file; git --ext-diff / --textconv run configured drivers; --prefix / --cwd / --root pick
+// another project to run; -L / -R / --follow follow symbolic links out of the project.
+const FLAG_DANGER = /^(--pre|--pre-glob|--ext-diff|--textconv|--output|--exec-path|--git-dir|--work-tree|--no-index|--config|--hostname-bin|--open-files-in-pager|--prefix|--cwd|--root|--rootdir|--root-dir|--dir|--directory|--workspace-root|--project-root|--script-shell|--shell|--require|--import|--loader|--experimental-loader|--eval|--print|--rulesdir|--resolve-plugins-relative-to|--follow-symlinks|--dereference|--dereference-recursive)$|^-[A-Za-z]*[LR][A-Za-z]*$|^-(C|c|O)$|^-fprint/;
+const FOLLOW_OK_FOR_GIT = /^(git)\s/;
 
 /**
- * A reader may look at this project's files only: no absolute or home paths, no `..`, and nothing that is (or is a link to)
- * something outside the project. Words that are not paths (a search pattern) simply do not exist as files and pass.
+ * Free-run commands may touch this project and nothing else. The words are checked as the shell will see them: an unquoted glob,
+ * variable or `~` is refused (it expands to something unseen); paths must be relative, free of `..`, and must not lead
+ * (through a link) outside the project; the flags above are refused. Words that are not paths (a search pattern) do not
+ * exist as files and pass.
  */
-function readerStaysInside(part: string, root?: string): boolean {
+function staysInside(part: string, root?: string): boolean {
+  const noSingle = part.replace(/'[^']*'/g, "''");
+  for (const dq of noSingle.match(/"[^"]*"/g) ?? []) if (/[$`\\]/.test(dq)) return false;
+  if (/[*?\[\]{}$\\]/.test(noSingle.replace(/"[^"]*"/g, '""'))) return false;
+  const isGit = FOLLOW_OK_FOR_GIT.test(part);
   for (const raw of part.split(/\s+/).slice(1)) {
     const word = raw.replace(/^["']|["']$/g, "");
     if (!word) continue;
-    if (word.startsWith("-")) { if (READER_DANGER.test(word)) return false; continue; }
-    if (word.startsWith("/") || word.startsWith("~") || word.split(/[\\/]/).includes("..")) return false;
-    if (root) {
-      try {
-        const real = realpathSync(resolve(root, word));
-        const base = realpathSync(root);
-        if (real !== base && !real.startsWith(base + sep)) return false;
-      } catch { /* does not exist: a pattern, or a path that will fail on its own */ }
+    if (word.startsWith("-")) {
+      const eq = word.indexOf("=");
+      const name = eq > 0 ? word.slice(0, eq) : word;
+      if (FLAG_DANGER.test(name) && !(isGit && (name === "--follow" || name === "-L" && word.startsWith("-L:")))) return false;
+      if (eq > 0 && !pathOk(word.slice(eq + 1), root)) return false;
+      continue;
     }
+    if (!pathOk(word, root)) return false;
+  }
+  return true;
+}
+
+function pathOk(word: string, root?: string): boolean {
+  if (word.startsWith("/") || word.startsWith("~") || word.split(/[\\/]/).includes("..")) return false;
+  if (root) {
+    try {
+      const real = realpathSync(resolve(root, word));
+      const base = realpathSync(root);
+      if (real !== base && !real.startsWith(base + sep)) return false;
+    } catch { /* does not exist: a pattern, or a path that will fail on its own */ }
   }
   return true;
 }
@@ -94,10 +113,9 @@ export function allowedAsCheck(command: string, checks: readonly string[], warni
   const runner = CHECK_RUNNERS.some((r) => r.test(head));
   const reader = READ_ONLY.some((r) => r.test(head));
   if (!configured && !(runner && !RUNNER_WRITES.test(head)) && !(reader && !READER_WRITES.test(head))) return false;
-  // Readers (and their filters) are held to the project: see readerStaysInside.
-  const readerOnly = !configured && !(runner && !RUNNER_WRITES.test(head));
-  if (readerOnly && !readerStaysInside(head, root)) return false;
-  if (!rest.every((x) => readerStaysInside(x, root))) return false;
+  // The project's own configured check is the user's; everything else, and every filter after a pipe, is held to the project.
+  if (!configured && !staysInside(head, root)) return false;
+  if (!rest.every((x) => staysInside(x, root))) return false;
   // A filter only reads its input; `sort -o` would write a file.
   return rest.every((s) => FILTERS.test(s) && !/^sort\b.*(\s-o\b|--output\b)/.test(s));
 }

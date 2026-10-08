@@ -56,8 +56,30 @@ export function signOut(name: string): void {
   save(all);
 }
 
+/**
+ * fetch that never carries a request somewhere else: a redirect is followed only within the same origin (max 3, and a POST only
+ * on 307/308, which keep the method). A sign-in server that answers a token request with a redirect to another origin would
+ * otherwise receive the refresh token and client secret in the body.
+ */
+async function sameOriginFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  let target = url;
+  for (let hop = 0; hop < 4; hop++) {
+    const r = await fetch(target, { ...init, redirect: "manual" });
+    if (r.status < 300 || r.status >= 400) return r;
+    const loc = r.headers.get("location");
+    await r.body?.cancel();
+    if (!loc) return r;
+    const next = new URL(loc, target);
+    if (next.origin !== new URL(url).origin) throw new Error(`${new URL(url).host} redirected to another site (${next.host}); not followed`);
+    const method = String(init.method ?? "GET").toUpperCase();
+    if (method !== "GET" && method !== "HEAD" && r.status !== 307 && r.status !== 308) throw new Error(`${new URL(url).host} redirected a ${method}; not followed`);
+    target = next.toString();
+  }
+  throw new Error(`${new URL(url).host} redirected too many times`);
+}
+
 async function getJson(url: string, init?: RequestInit): Promise<any> {
-  const r = await fetch(url, { ...init, signal: AbortSignal.timeout(15_000) });
+  const r = await sameOriginFetch(url, { ...init, signal: AbortSignal.timeout(15_000) });
   if (!r.ok) throw new Error(`${new URL(url).host} answered ${r.status}`);
   return r.json();
 }
@@ -180,7 +202,7 @@ export async function completeSignIn(state: string, code: string): Promise<strin
 }
 
 async function tokenRequest(endpoint: string, form: Record<string, string>): Promise<any> {
-  const r = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: new URLSearchParams(form), signal: AbortSignal.timeout(15_000) });
+  const r = await sameOriginFetch(endpoint, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: new URLSearchParams(form), signal: AbortSignal.timeout(15_000) });
   const j: any = await r.json().catch(() => ({}));
   if (!r.ok || !j.access_token) throw new Error(`sign-in was refused (${j.error_description ?? j.error ?? r.status})`);
   return j;

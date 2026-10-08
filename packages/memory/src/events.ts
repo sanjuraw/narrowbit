@@ -1,5 +1,5 @@
 import { redact } from "./redact.js";
-import { mkdirSync } from "node:fs";
+import { closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import type { MemoryPaths } from "./paths.js";
 import { now, shortId } from "./util.js";
@@ -67,9 +67,29 @@ export function ensureTaskDir(p: MemoryPaths, taskId: string): string {
 /** Every string inside event metadata, however deeply nested, passes through redact(); other values are kept as they are. */
 function scrubMeta(v: unknown, depth = 0): unknown {
   if (typeof v === "string") return redact(v);
-  if (depth > 8 || v === null || typeof v !== "object") return v;
+  if (v === null || typeof v !== "object") return v;
+  // Too deep to check is too deep to keep: a subtree beyond the limit is dropped, never passed through unchecked.
+  if (depth > 8) return "[metadata nested too deeply: removed]";
   if (Array.isArray(v)) return v.map((x) => scrubMeta(x, depth + 1));
-  return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, scrubMeta(x, depth + 1)]));
+  return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [redact(k), scrubMeta(x, depth + 1)]));
+}
+
+function endsMidLine(file: string): boolean {
+  try {
+    if (isLink(file)) return false;
+    const fd = openSync(file, "r");
+    try {
+      const size = fstatSync(fd).size;
+      if (!size) return false;
+      const b = Buffer.alloc(1);
+      readSync(fd, b, 0, 1, size - 1);
+      return b[0] !== 10;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
 }
 
 export function appendEvent(p: MemoryPaths, taskId: string, e: Omit<Event, "id" | "taskId" | "at"> & Partial<Pick<Event, "id" | "at">>): Event {
@@ -77,7 +97,9 @@ export function appendEvent(p: MemoryPaths, taskId: string, e: Omit<Event, "id" 
   // Summaries carry model text and shell commands, either of which can contain a secret; so can any string in the metadata
   // (a model's note, a tool name, an error), which later reaches a hand-over prompt.
   const full: Event = { actor: e.actor, type: e.type, summary: redact(e.summary), evidenceRef: e.evidenceRef, tokens: e.tokens, meta: scrubMeta(e.meta) as Event["meta"], id: e.id ?? shortId(), taskId, at: e.at ?? now() };
-  appendNoFollow(eventsFile(p, taskId), JSON.stringify(full) + "\n");
+  const file = eventsFile(p, taskId);
+  // After an interrupted write the last line has no newline: start this one on a line of its own, or the two would fuse.
+  appendNoFollow(file, (endsMidLine(file) ? "\n" : "") + JSON.stringify(full) + "\n");
   for (const fn of listeners.get(taskId) ?? []) fn(full);
   return full;
 }
@@ -105,14 +127,20 @@ export function readEvents(p: MemoryPaths, taskId: string): Event[] {
   } catch {
     return [];
   }
-  return text
-    .split("\n")
-    .filter(Boolean)
-    .map((l) => {
-      // A log written before metadata was scrubbed (or edited by hand) is cleaned on the way in, too.
-      const ev = JSON.parse(l) as Event;
-      return { ...ev, summary: redact(ev.summary), meta: scrubMeta(ev.meta) as Event["meta"] };
-    });
+  const out: Event[] = [];
+  for (const l of text.split("\n").filter(Boolean)) {
+    // One damaged line (an append cut short) must not take the rest of the history with it.
+    let ev: Event;
+    try {
+      ev = JSON.parse(l) as Event;
+    } catch {
+      continue;
+    }
+    if (!ev || typeof ev !== "object" || typeof ev.summary !== "string") continue;
+    // A log written before metadata was scrubbed (or edited by hand) is cleaned on the way in, too.
+    out.push({ ...ev, summary: redact(ev.summary), meta: scrubMeta(ev.meta) as Event["meta"] });
+  }
+  return out;
 }
 
 export interface FoldedState {
