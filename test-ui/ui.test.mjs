@@ -1624,6 +1624,42 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { page.close(); }
   });
 
+  test("a failed answer to a question gives its controls back; a server resolution that arrives before a late failure is not contradicted", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const page = await openPage(app.url);
+    try {
+      await page.until(() => page.w.__nb && page.w.__nb.view(), "the page's conversation view");
+      const nb = page.w.__nb, doc = page.w.document;
+      const v = nb.view(); v.taskId = "rt-q"; v.pendingNew = false;
+      let reject; const sent = [];
+      page.w.fetch = (url, opts) => {
+        if (String(url).includes("/api/answer")) { sent.push(JSON.parse(opts.body).answer); return new Promise((_ok, no) => { reject = no; }); }
+        if (String(url).includes("/api/approve")) return new Promise((_ok, no) => { reject = no; });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}), text: async () => "{}" });
+      };
+      const banner = () => doc.getElementById("banner").textContent;
+      nb.stream({ type: "question", id: "q1", task: "rt-q", question: "Which one?", options: ["A", "B"] });
+      const qbox = [...doc.querySelectorAll(".question")].pop();
+      const controls = () => [...qbox.querySelectorAll("button, input")];
+      [...qbox.querySelectorAll("button")].find((b) => b.textContent === "A").click();
+      assert.ok(controls().every((c) => c.disabled), "locked while the request is out");
+      reject(new Error("SIMULATED_FAILURE"));
+      await page.until(() => /not confirmed/i.test(banner()), "the not-confirmed message");
+      assert.ok(controls().every((c) => !c.disabled), "the options, the answer box and Send are usable again");
+      // an approval whose answer is lost AFTER the server resolved it: the resolution stands
+      nb.stream({ type: "approval", id: "a9", task: "rt-q", command: "npm test" });
+      const abox = [...doc.querySelectorAll(".approval")].pop();
+      [...abox.querySelectorAll("button")].find((b) => /^Allow once/.test(b.textContent)).click();
+      nb.stream({ type: "approval_resolved", id: "a9", task: "rt-q", allowed: true });
+      doc.getElementById("banner").textContent = "";
+      reject(new Error("RESPONSE_LOST"));
+      await new Promise((r) => setTimeout(r, 50));
+      assert.doesNotMatch(banner(), /not confirmed/i, "no banner that contradicts the resolved card");
+      assert.match(abox.textContent, /Allowed/);
+    } finally { page.close(); }
+  });
+
   test("live progress: the model's note as it is written, then the running command's latest output, each replaced by the finished step", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });

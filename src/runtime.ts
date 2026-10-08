@@ -387,15 +387,23 @@ export type Progress = { kind: "model"; text: string; thinkingTokens: number } |
 function progressFeed(send?: (p: Progress) => void) {
   if (!send) return null;
   const every = 250;
-  const state = { modelText: "", thinking: 0, outCmd: "", outText: "" };
+  const state = { modelText: "", thinking: 0, outCmd: "", outLines: [] as string[], outPartial: "", inKey: false };
   const timers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
   const last: Record<string, number> = {};
+  const cleanLine = (l: string, commit: boolean): string => {
+    if (state.inKey || /-----BEGIN [A-Z ]*PRIVATE KEY/.test(l)) {
+      const ended = /-----END [A-Z ]*PRIVATE KEY/.test(l);
+      if (commit) state.inKey = !ended;
+      return "[REDACTED PRIVATE KEY]";
+    }
+    return redact(l);
+  };
   const emit = (kind: "model" | "output") => {
     last[kind] = Date.now();
     timers[kind] = undefined;
     try {
       if (kind === "model") send({ kind, text: redact(state.modelText.slice(-2000)), thinkingTokens: state.thinking });
-      else send({ kind, command: visible(state.outCmd), tail: redact(state.outText.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").split(/\r?\n|\r/).filter((l) => l.trim()).slice(-12).join("\n")) });
+      else send({ kind, command: visible(state.outCmd), tail: [...state.outLines, ...(state.outPartial.trim() ? [cleanLine(state.outPartial, false)] : [])].slice(-12).join("\n") });
     } catch {}
   };
   const schedule = (kind: "model" | "output") => {
@@ -419,9 +427,20 @@ function progressFeed(send?: (p: Progress) => void) {
     output(command: string, text: string) {
       if (command !== state.outCmd) {
         state.outCmd = command;
-        state.outText = "";
+        state.outLines = [];
+        state.outPartial = "";
+        state.inKey = false;
       }
-      state.outText = (state.outText + text).slice(-6000);
+      // Each line is cleaned as it completes, with the private-key state carried from line to line: choosing the last few lines
+      // first would drop the BEGIN line and leave a key body that no longer looks like one.
+      const pieces = (state.outPartial + text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")).split(/\r?\n|\r/);
+      state.outPartial = pieces.pop() ?? "";
+      for (const l of pieces) {
+        if (!l.trim()) continue;
+        state.outLines.push(cleanLine(l, true));
+        if (state.outLines.length > 40) state.outLines.shift();
+      }
+      if (state.outPartial.length > 4000) state.outPartial = state.outPartial.slice(-4000);
       schedule("output");
     },
     stop() {

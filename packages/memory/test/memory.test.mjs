@@ -534,3 +534,25 @@ describe("twentieth audit, second pass (Codex on 0ceeeff): labelled values, key 
     assert.deepEqual(api.readEvents(p, id).map((e) => e.summary), ["first", "second"]);
   });
 });
+
+describe("twentieth audit, third pass (Codex on 7f48284): credential formats and code that only looks like one", () => {
+  const C = "OPAQUE_CANARY_84267";
+  test("credentials are hidden in XML, Dockerfile, compose, block scalars, escaped JSON keys, auth headers, Terraform, Kubernetes Secrets and PGP blocks", () => {
+    for (const input of [
+      `<password>${C}</password>`, `ENV PASSWORD=${C}`, `environment:\n  - PASSWORD=${C}`, `password: |\n  ${C}\n`, `{"pass\\u0077ord":"${C}"}`,
+      `{"Authorization":"Bearer ${C}"}`, `Cookie: session=${C}`, `Authorization: Bearer ${C}`, `variable "password" { default = "${C}" }`,
+      `apiVersion: v1\nkind: Secret\ndata:\n  db: ${Buffer.from(C).toString("base64")}`,
+      `-----BEGIN PGP PRIVATE KEY BLOCK-----\n${C}\n-----END PGP PRIVATE KEY BLOCK-----`,
+    ]) {
+      const out = api.redact(input);
+      assert.ok(!out.includes(C) && !out.includes(Buffer.from(C).toString("base64")), input.split("\n")[0]);
+    }
+    assert.doesNotMatch(api.redactBlocksKeepingLines(`a\n-----BEGIN PGP PRIVATE KEY BLOCK-----\n${C}\n-----END PGP PRIVATE KEY BLOCK-----\nb`), /OPAQUE/);
+  });
+
+  test("a call expression after a credential name is code and stays readable", () => {
+    for (const line of ["password: validatePassword(input)", "password: getPass()", "token: this.token", "token: loadToken(config)"]) assert.equal(api.redact(line), line, line);
+    // and a Secret's metadata is not its data
+    assert.match(api.redact("kind: Secret\nmetadata:\n  name: db\ndata:\n  pw: aGVsbG8="), /name: db/);
+  });
+});

@@ -2094,6 +2094,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (a.done) return; a.done = true;
       Array.prototype.forEach.call(btns.querySelectorAll("button"), function (b) { b.disabled = true; });
       api("/api/approve", { id: ev.id, decision: d }).catch(function (e) {
+        if (a.resolved) return;   // the server's resolution arrived first: that wins over a late failure
         // Not confirmed: the request failed, so the command may still be waiting. Give the buttons back instead of leaving a
         // question that can no longer be answered; if the answer did arrive after all, the server says so on the next try.
         a.done = false;
@@ -2121,7 +2122,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var send = function (text) {
       if (q.done || !text.trim()) return; q.done = true;
       Array.prototype.forEach.call(box.querySelectorAll("button, input"), function (b) { b.disabled = true; });
-      api("/api/answer", { id: ev.id, answer: text.trim() }).catch(function (e) { q.done = false; banner("bad", e.message); });
+      api("/api/answer", { id: ev.id, answer: text.trim() }).catch(function (e) {
+        if (q.resolved) return;   // the server's resolution arrived first: that wins over a late failure
+        q.done = false;
+        Array.prototype.forEach.call(box.querySelectorAll("button, input"), function (b) { b.disabled = false; });
+        banner("bad", "Your answer was not confirmed (" + e.message + "). The question may still be waiting; answer again.");
+      });
     };
     (ev.options || []).forEach(function (o) { btns.appendChild(el("button", { onclick: function () { send(o); } }, o)); });
     var free = el("input", { type: "text", placeholder: (ev.options && ev.options.length ? "Or type your own answer…" : "Type your answer…"), "aria-label": "Answer" });
@@ -2137,13 +2143,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   }
   function onQuestionResolved(ev) {
     var q = view && view.approvals[ev.id]; if (!q) return;
-    q.done = true; q.box.classList.add("resolved");
+    q.done = true; q.resolved = true; q.box.classList.add("resolved");
     q.box.firstChild.textContent = ev.answer === null ? "Question skipped" : "You answered: " + ev.answer;
     Array.prototype.forEach.call(q.box.querySelectorAll(".btns"), function (b) { b.remove(); });
   }
   function onApprovalResolved(ev) {
     var a = view && view.approvals[ev.id]; if (!a) return;
-    a.done = true; a.box.classList.add("resolved");
+    a.done = true; a.resolved = true; a.box.classList.add("resolved");
     a.box.firstChild.textContent = (ev.allowed ? "✓ Allowed" : "✕ Denied");
     a.btns.remove();
   }

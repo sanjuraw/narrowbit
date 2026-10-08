@@ -56,6 +56,11 @@ These are known and not yet closed. Each one needs something you would notice do
   (`vitest.config.*`, `jest.config.*`, `.yarnrc*`, `*.mk` and similar) is called out when you approve a command
   again, and a command that rewrites one at the project root ends "allow until files change". A command that
   rewrites such a file in a subfolder (for example `packages/app/vitest.config.ts`) is not noticed. Review the diff.
+- **Secrets committed to the repository.** The agent's own read refuses `.env` and key files, but a secret that is in
+  git history can still be read through `git log -p` or `git show` (free-run mode allows them): that is the repository's
+  own content, and only labelled and token-shaped values are hidden. Keep credentials out of git.
+- **Unlabelled secrets.** Redaction recognises known token shapes and values next to a credential-like name. A random
+  string with no label, or a password written in a sentence, cannot be recognised by shape.
 
 Narrowbit is early software. `narrowbit audit` and the built-in "Security review" skill are aids, not a
 substitute for a human review of anything that handles real money or sensitive data.
