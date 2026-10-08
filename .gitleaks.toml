@@ -19,4 +19,6 @@ regexes = [
   '''PRIVATE_BODY_CANARY''',
   '''KEY_BODY_CANARY_\d+''',
   '''OPAQUE_CANARY_84267''',
+  '''OPAQUE_CANARY_97531''',
+  '''\$\{C\}''',
 ]

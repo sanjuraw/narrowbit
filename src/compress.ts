@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import type { Paths } from "./config.js";
 import { redact, redactBlocksKeepingLines } from "./redact.js";
-import { estimateTokens, hardenGitCommand, shortId, stripAnsi, writeProjectFile } from "./util.js";
+import { estimateTokens, hardenGitCommand, hardenRunnerCommand, isSecretFile, shortId, stripAnsi, writeProjectFile } from "./util.js";
 
 export interface Compressed {
   kind: "tsc" | "eslint" | "tests" | "npm" | "generic";
@@ -301,6 +301,25 @@ export function compressOutput(rawOutput: string, exit: number): Compressed {
   return { ...r, text: redact(text), summary: redact(r.summary) };
 }
 
+/**
+ * `git diff`, `git log -p` and `git show` print the changes of every file they find, so a changed `.env` would be printed
+ * without ever being named in the command. Sections for secret files are replaced by one line saying so.
+ */
+export function hideSecretDiffs(text: string): string {
+  if (!text.includes("diff --git")) return text;
+  const out: string[] = [];
+  let hiding = false;
+  for (const line of text.split("\n")) {
+    const m = /^diff --git "?a\/(.+?)"? "?b\/(.+?)"?$/.exec(line);
+    if (m) {
+      hiding = isSecretFile(m[1]) || isSecretFile(m[2]);
+      if (hiding) { out.push(`(changes to ${m[2]} are not shown: it looks like a secrets file)`); continue; }
+    }
+    if (!hiding) out.push(line);
+  }
+  return out.join("\n");
+}
+
 export interface RunResult {
   command: string;
   exit: number;
@@ -344,7 +363,8 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
       clearTimeout(giveUp);
       opts.signal?.removeEventListener("abort", stop);
       process.removeListener("exit", killOnExit);
-      const raw = Buffer.concat(chunks).toString("utf8");
+      const rawAll = Buffer.concat(chunks).toString("utf8");
+      const raw = /^\s*git\s+(?:-c\s+\S+\s+)*(?:diff|log|show|stash)\b/.test(command) ? hideSecretDiffs(rawAll) : rawAll;
       const exit = code ?? (signal ? 124 : 1);
       const logName = `${shortId()}.log`;
       const rawLog = join(p.logs, logName);
@@ -379,7 +399,9 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
     }
     // Its own process group, so Stop and the timeout can end everything the command started: killing only the shell
     // left a background process (a dev server, a hung test) running, and the call waited for it.
-    const child = spawn(hardenGitCommand(command), { cwd: opts.cwd ?? p.root, shell: true, detached: true, env: commandEnv() });
+    const child = spawn(hardenRunnerCommand(hardenGitCommand(command)), { cwd: opts.cwd ?? p.root, shell: true, detached: true, env: commandEnv() });
+    // Nothing is ever typed into a command: a reader with no file to read gets end-of-input at once instead of waiting.
+    child.stdin?.end();
     killTree = (sig) => {
       try {
         process.kill(-child.pid!, sig);

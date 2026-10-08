@@ -384,7 +384,7 @@ export type Progress = { kind: "model"; text: string; thinkingTokens: number } |
  * Collects live progress for one task and sends it at most every 250 ms per kind (the newest state wins, a trailing
  * update is never lost). Text is redacted before it leaves, like everything else shown.
  */
-function progressFeed(send?: (p: Progress) => void) {
+export function progressFeed(send?: (p: Progress) => void) {
   if (!send) return null;
   const every = 250;
   const state = { modelText: "", thinking: 0, outCmd: "", outLines: [] as string[], outPartial: "", inKey: false };
@@ -402,7 +402,7 @@ function progressFeed(send?: (p: Progress) => void) {
     last[kind] = Date.now();
     timers[kind] = undefined;
     try {
-      if (kind === "model") send({ kind, text: redact(state.modelText.slice(-2000)), thinkingTokens: state.thinking });
+      if (kind === "model") send({ kind, text: redact(state.modelText).slice(-2000), thinkingTokens: state.thinking });   // redact first: the tail of a key has no BEGIN line
       else send({ kind, command: visible(state.outCmd), tail: [...state.outLines, ...(state.outPartial.trim() ? [cleanLine(state.outPartial, false)] : [])].slice(-12).join("\n") });
     } catch {}
   };

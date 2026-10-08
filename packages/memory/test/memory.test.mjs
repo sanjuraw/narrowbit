@@ -556,3 +556,39 @@ describe("twentieth audit, third pass (Codex on 7f48284): credential formats and
     assert.match(api.redact("kind: Secret\nmetadata:\n  name: db\ndata:\n  pw: aGVsbG8="), /name: db/);
   });
 });
+
+describe("twentieth audit, fourth pass (Codex on c661506): neighbouring formats, scoping, and the detector agreeing with the scrubber", () => {
+  const C = "OPAQUE_CANARY_97531";
+  const b64 = Buffer.from(C).toString("base64");
+
+  test("connection strings, XML with attributes or on several lines, quoted and nested YAML, TOML blocks, Dockerfile forms, escaped keys, nested Kubernetes Secrets and short URL passwords are hidden", () => {
+    for (const input of [
+      `Server=db;User ID=u;Password=${C};Database=app`, `<password encoding="plain">${C}</password>`, `<password>\n${C}\n</password>`, `"password": |\n  ${C}`,
+      `password:\n  value: ${C}`, `password: | # secret value\n  ${C}`, `{"Author\\u0069zation":"Bearer ${C}"}`, `password = """\n${C}\n"""`, `ENV PASSWORD ${C}`,
+      `ENV A=one PASSWORD=${C}`, `db.pass\\u0077ord=${C}`, `items:\n  - kind: Secret\n    data:\n      db: ${b64}`, "postgres://user:ab@db/app",
+    ]) {
+      const out = api.redact(input);
+      assert.ok(!out.includes(C) && !out.includes(b64) && !out.includes(":ab@"), input.split("\n")[0]);
+    }
+  });
+
+  test("a block value is scoped by indentation (siblings and what follows stay readable), and a Secret's data is scoped to its own document", () => {
+    const yaml = api.redact("auth:\n  password: |\n    secret\n  retries: 3\n  public: hello\nname: keep");
+    assert.match(yaml, /retries: 3/); assert.match(yaml, /public: hello/); assert.match(yaml, /name: keep/); assert.doesNotMatch(yaml, /\bsecret$/m);
+    assert.match(api.redact("password: |\n  x\n"), /password: \|/, "the block indicator is kept");
+    const kube = api.redact("kind: Secret\n---\nkind: ConfigMap\ndata:\n  public: hello world");
+    assert.match(kube, /public: hello world/);
+    assert.match(api.redact("kind: Secret\ndata:\n  db: aGVsbG8=\n---\nkind: ConfigMap\ndata:\n  public: hi"), /public: hi/);
+  });
+
+  test("calls with a space before the parenthesis or type arguments are code and stay readable", () => {
+    for (const line of ["password: validatePassword (input)", "password: factory<string>(input)", "secret: makeSecret<Options>(x)"]) assert.equal(api.redact(line), line, line);
+  });
+
+  test("findSecrets reports what redact hides, on the same lines", () => {
+    for (const [text, line] of [[`variable "password" { default = "${C}" }`, 1], [`{"pass\\u0077ord":"${C}"}`, 1], ["kind: Secret\ndata:\n  db: aGVsbG8=", 3], [`a\npassword: |\n  ${C}`, 3]]) {
+      const found = api.findSecrets(text);
+      assert.ok(found.some((f) => f.line === line), `${JSON.stringify(text).slice(0, 40)} -> ${JSON.stringify(found)}`);
+    }
+  });
+});

@@ -5325,3 +5325,72 @@ describe("twentieth audit, third pass (Codex on 7f48284): free-run mode is an al
     } finally { rmSync(fake.dir, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("twentieth audit, third pass: what the filter sees is what the shell runs", () => {
+  test("the filter's words are the words sh passes, a quoted program name is refused, and npx never downloads a tool", async () => {
+    const { allowedAsCheck, shellWords } = await dist("approvals.js");
+    const { hardenRunnerCommand, hardenGitCommand } = await dist("util.js");
+    const { root } = tinyRepo();
+    try {
+      for (const part of ["ls a.txt", "cat 'a b' c", 'cat "a b"c', "cat a''b", "cat a.txt b", "cat a.txt\u000bb", "cat a.txt\fb", "cat a.txt b", "grep -n \"x y\" a.txt", "head -n 5 a.txt", "cat a\tb"]) {
+        const real = spawnSync("sh", ["-c", "printf '%s\\0' " + part], { encoding: "utf8" }).stdout.split("\0");
+        real.pop();
+        assert.deepEqual(shellWords(part), real, JSON.stringify(part));
+      }
+      for (const quoted of ['"git" status', "'git' status", "g''it status", '"npx" vitest', "'npx' tsc --noEmit", '"cat" a.txt']) assert.equal(allowedAsCheck(quoted, ["npm test"], undefined, root), false, quoted);
+      assert.equal(hardenRunnerCommand("npx vitest run a.test.ts"), "./node_modules/.bin/vitest run a.test.ts");
+      assert.equal(hardenRunnerCommand("npx --no-install eslint src"), "./node_modules/.bin/eslint src");
+      assert.equal(hardenRunnerCommand("pnpm exec tsc --noEmit"), "./node_modules/.bin/tsc --noEmit");
+      assert.equal(hardenRunnerCommand("npx create-react-app x"), "npx create-react-app x", "other npx uses are the user's to approve");
+      assert.match(hardenGitCommand("git status"), /^git -c core\.fsmonitor=false status/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("twentieth audit, fourth pass (Codex on c661506)", () => {
+  test("a space-like or control character at the edge of a command, or inside a word, refuses it; a quoted pipe is not a pipe; head and tail use portable flags", async () => {
+    const { allowedAsCheck } = await dist("approvals.js");
+    const { root } = tinyRepo();
+    try {
+      for (const bad of ["cat sample\r", "cat sample\u000b", "cat sample\f", "cat sample ", "cat sample ", "cat sample﻿", " cat sample", "cat sample", "cat sample\u0085", "cat\x01 sample", "git status\r", "head -q a.txt", "head -v a.txt", "tail -q a.txt"]) {
+        assert.equal(allowedAsCheck(bad, ["npm test"], undefined, root), false, JSON.stringify(bad));
+      }
+      for (const good of ["grep 'a|b' a.txt", 'cat a.txt | grep "x|y"', "head -5 a.txt", "head -n 5 a.txt", "tail -n 5 a.txt", "  cat a.txt  "]) assert.equal(allowedAsCheck(good, ["npm test"], undefined, root), true, good);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a changed .env is not printed by git diff, log or show even though the command never names it; a reader with no file gets end-of-input instead of hanging", async () => {
+    const { runCommand } = await dist("compress.js");
+    const { root, p } = tinyRepo();
+    const git = (...a) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root });
+    try {
+      writeFileSync(join(root, ".env"), "initial\n"); git("add", "-f", ".env"); git("commit", "-qm", "env");
+      writeFileSync(join(root, ".env"), "OPAQUE_ENV_DIFF_CANARY\n"); writeFileSync(join(root, "a.txt"), "hello\nchanged line\n");
+      git("add", "-A"); git("add", "-f", ".env"); git("commit", "-qm", "env2");
+      writeFileSync(join(root, ".env"), "ANOTHER_DIFF_CANARY\n"); writeFileSync(join(root, "a.txt"), "hello\nchanged again\n");
+      for (const cmd of ["git diff", "git log -p -2", "git show HEAD"]) {
+        const r = await runCommand(p, cmd, {});
+        assert.doesNotMatch(r.rendered, /DIFF_CANARY/, cmd);
+        assert.match(r.rendered, /a\.txt|changed (line|again)/, `${cmd}: other files still show`);
+      }
+      const t0 = Date.now();
+      const bare = await runCommand(p, "cat", { timeoutMs: 20000 });
+      assert.equal(bare.exit, 0);
+      assert.ok(Date.now() - t0 < 5000, "a bare cat ended at once");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("live model progress is redacted before its tail is taken, so a long key shows nothing", async () => {
+    const { progressFeed } = await dist("runtime.js");
+    const seen = [];
+    const feed = progressFeed((x) => seen.push(x));
+    feed.model({ text: "-----BEGIN RSA PRIVATE KEY-----\n" });
+    for (let i = 0; i < 150; i++) feed.model({ text: `MODEL_KEY_CANARY_${i}\n` });
+    feed.model({ text: "-----END RSA PRIVATE KEY-----\nand then some words" });
+    await new Promise((r) => setTimeout(r, 600));
+    feed.stop();
+    assert.ok(seen.length >= 1);
+    assert.doesNotMatch(JSON.stringify(seen), /MODEL_KEY_CANARY/);
+    assert.match(JSON.stringify(seen.at(-1)), /and then some words/);
+  });
+});

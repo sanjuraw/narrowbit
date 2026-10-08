@@ -298,3 +298,12 @@ export function hardenGitCommand(command: string): string {
     .replace(/^(\s*)git(\s+)/, (_m, lead, sp) => `${lead}git -c core.fsmonitor=false${sp}`)
     .replace(/^(\s*git -c core\.fsmonitor=false\s+(?:diff|log|show))(?=\s|$)/, "$1 --no-ext-diff --no-textconv");
 }
+
+/**
+ * `npx vitest` in a project that does not have vitest makes npm download it from the registry and run it. A check run without
+ * asking must not fetch code, so the test runners and linters Narrowbit knows are run from the project's own node_modules/.bin
+ * (a missing one fails visibly with "No such file"; `npx --no` would exit 0 without running anything).
+ */
+export function hardenRunnerCommand(command: string): string {
+  return command.replace(/^(\s*)(?:npx|bunx|pnpm\s+exec)\s+(?:(?:--no-install|--no|-y|--yes)\s+)*(vitest|jest|mocha|ava|tap|eslint|tsc)(?=\s|$)/, "$1./node_modules/.bin/$2");
+}

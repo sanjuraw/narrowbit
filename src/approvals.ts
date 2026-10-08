@@ -50,7 +50,7 @@ export function editsSince(grant: Grant, edits: readonly string[]): string[] {
 
 /** The words the shell would pass to the program: quotes group a word (so a path with a space stays one path) and are removed.
  * Null when a quote is left open. Backslashes never reach here (they are refused before). */
-function shellWords(part: string): string[] | null {
+export function shellWords(part: string): string[] | null {
   const words: string[] = [];
   let cur = "";
   let inWord = false;
@@ -62,7 +62,10 @@ function shellWords(part: string): string[] | null {
     } else if (ch === "'" || ch === '"') {
       quote = ch;
       inWord = true;
-    } else if (/\s/.test(ch)) {
+    } else if (ch === "#" && !inWord) {
+      break;   // an unquoted # at the start of a word begins a comment: the shell ignores the rest of the line
+    } else if (ch === " " || ch === "\t") {
+      // The shell splits words on space and tab only (and newline, which is refused earlier); NBSP, form feed and the like are part of a word.
       if (inWord) { words.push(cur); cur = ""; inWord = false; }
     } else {
       cur += ch;
@@ -128,8 +131,8 @@ const READERS: Record<string, Check> = {
   ls: (a, r, f) => !f && argsOk(a, /^-[alhtrS1FdiA]+$/, files(r)),
   wc: (a, r, f) => argsOk(a, /^-[lwcmL]+$/, f ? none : files(r)),
   cat: (a, r, f) => argsOk(a, /^-[nbs]+$/, f ? none : files(r)),
-  head: (a, r, f) => argsOk(a, /^(-[qv]+|-\d+|-n\d+|-c\d+)$/, f ? none : files(r), /^-[nc]$/, (w) => NUM.test(w)),
-  tail: (a, r, f) => argsOk(a, /^(-[qv]+|-\d+|-n\d+|-c\d+)$/, f ? none : files(r), /^-[nc]$/, (w) => NUM.test(w)),
+  head: (a, r, f) => argsOk(a, /^(-\d+|-n\d+|-c\d+)$/, f ? none : files(r), /^-[nc]$/, (w) => NUM.test(w)),
+  tail: (a, r, f) => argsOk(a, /^(-\d+|-n\d+|-c\d+)$/, f ? none : files(r), /^-[nc]$/, (w) => NUM.test(w)),
   file: (a, r, f) => !f && argsOk(a, /^-[bi]+$/, files(r)),
   sort: (a, _r, f) => f && argsOk(a, /^-[nrufbdVs]+$/, none),
   uniq: (a, _r, f) => f && argsOk(a, /^-[cdui]+$/, none),
@@ -203,23 +206,46 @@ function execTool(a: string[], root?: string): boolean {
   return !!tool && ["vitest", "jest", "mocha", "ava", "tap", "eslint", "tsc"].includes(tool) && TOOLS[tool](a.slice(1), root);
 }
 
+/** Splits at the `|` characters the shell treats as pipes (not those inside quotes). Null when a quote is left open. */
+function splitPipes(cmd: string): string[] | null {
+  const parts: string[] = [];
+  let cur = "";
+  let quote: string | null = null;
+  for (const ch of cmd) {
+    if (quote) { if (ch === quote) quote = null; cur += ch; }
+    else if (ch === "'" || ch === '"') { quote = ch; cur += ch; }
+    else if (ch === "|") { parts.push(cur.replace(/^[ \t]+|[ \t]+$/g, "")); cur = ""; }
+    else cur += ch;
+  }
+  if (quote) return null;
+  parts.push(cur.replace(/^[ \t]+|[ \t]+$/g, ""));
+  return parts;
+}
+
 export function allowedAsCheck(command: string, checks: readonly string[], warning?: string, root?: string): boolean {
   if (warning) return false;
-  const cmd = command.trim().replace(/\s+2>&1(?=\s|$)/g, "");
+  // Only plain ASCII text with space and tab between words. Every other control or space-like character (CR, vertical tab, form
+  // feed, NBSP, line and paragraph separators, byte-order mark …) is part of a word for sh but would be trimmed or split by JavaScript,
+  // so the path that was checked would not be the path that is opened.
+  if (/[^\x20-\x7e\t\u00a1-\u2027\u202a-\u205e\u2060-\ufefe\uff00-\u{10ffff}]/u.test(command) || /[\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]/.test(command)) return false;
+  const cmd = command.replace(/^[ \t]+|[ \t]+$/g, "").replace(/[ \t]+2>&1(?=[ \t]|$)/g, "");
   if (!cmd || /[;&`\n<>]|\$\(|\|\|/.test(cmd)) return false;
-  const parts = cmd.split("|").map((s) => s.trim());
-  if (parts.some((s) => !s)) return false;
+  const parts = splitPipes(cmd);
+  if (!parts || parts.some((p) => !p)) return false;
   const [head, ...rest] = parts;
-  const configured = checks.some((c) => c.trim().replace(/\s+2>&1(?=\s|$)/g, "") === head);
+  const configured = checks.some((c) => c.replace(/^[ \t]+|[ \t]+$/g, "").replace(/[ \t]+2>&1(?=[ \t]|$)/g, "") === head);
   const check = (part: string, filter: boolean): boolean => {
     // Expansions are refused as the shell would perform them: an unquoted glob, variable or `~`, a `$` or backtick inside double quotes.
     const noSingle = part.replace(/'[^']*'/g, "''");
     for (const dq of noSingle.match(/"[^"]*"/g) ?? []) if (/[$`\\]/.test(dq)) return false;
     if (/[*?\[\]{}$\\]/.test(noSingle.replace(/"[^"]*"/g, '""'))) return false;
-    if (/(^|\s)~/.test(noSingle.replace(/"[^"]*"/g, '""'))) return false;
+    if (/(^|[ \t])~/.test(noSingle.replace(/"[^"]*"/g, '""'))) return false;
     const words = shellWords(part);
     if (!words || !words.length) return false;
     const [prog, ...args] = words;
+    // The program must be written plainly. Hardening of what runs (git, npx) is done on the spelling it sees, so a quoted `"git"`
+    // would be admitted here and then run unhardened.
+    if (!part.startsWith(prog + " ") && !part.startsWith(prog + "\t") && part !== prog) return false;
     if (prog === "git") return !filter && !!GIT[args[0]] && GIT[args[0]](args.slice(1), root);
     if (READERS[prog]) return READERS[prog](args, root, filter);
     return !filter && runnerOk(words, root);
