@@ -52,9 +52,10 @@ These are known and not yet closed. Each one needs something you would notice do
 - **Checks run the commands your project defines.** `verify` (and `nb_verify` over MCP) runs the typecheck, lint and
   test commands in the project's settings, and a benchmark spec runs the setup commands written in it. Run them only
   on code and spec files you trust, as you would `npm test`.
-- **Config files that run code under an approved test command** (`vitest.config.ts`, `jest.config.*`, `.yarnrc.yml`)
-  are not on the changed-scripts list above: an agent edit to one isn't called out when you approve
-  the test command again. Review the diff.
+- **Configuration files in subfolders.** An edit to a test-runner, bundler, linter or make configuration file
+  (`vitest.config.*`, `jest.config.*`, `.yarnrc*`, `*.mk` and similar) is called out when you approve a command
+  again, and a command that rewrites one at the project root ends "allow until files change". A command that
+  rewrites such a file in a subfolder (for example `packages/app/vitest.config.ts`) is not noticed. Review the diff.
 
 Narrowbit is early software. `narrowbit audit` and the built-in "Security review" skill are aids, not a
 substitute for a human review of anything that handles real money or sensitive data.
