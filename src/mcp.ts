@@ -1,4 +1,4 @@
-import { redact } from "./redact.js";
+import { redact, redactCommand } from "./redact.js";
 import { createInterface } from "node:readline";
 import { loadConfig, type Paths } from "./config.js";
 import { runCommand } from "./compress.js";
@@ -122,7 +122,7 @@ export async function serveMcp(p: Paths): Promise<void> {
   const log = (tool: string, args: Record<string, unknown>, text: string) => {
     const id = tasks.current();
     if (!id) return;
-    tasks.update(id, (t) => t.events.push({ at: now(), tool, args, tokens: estimateTokens(text) }));
+    tasks.update(id, (t) => t.events.push({ at: now(), tool, args: scrubArgs(args) as Record<string, unknown>, tokens: estimateTokens(text) }));
   };
 
   const call = async (name: string, a: any): Promise<string> => {
@@ -168,7 +168,7 @@ export async function serveMcp(p: Paths): Promise<void> {
         const id = tasks.current();
         if (id)
           tasks.update(id, (t) =>
-            t.runs.push({ at: now(), command: r.command, exit: r.exit, rawLog: r.rawLog, rawTokens: r.rawTokens, compressedTokens: r.compressedTokens, kind: r.compressed.kind }),
+            t.runs.push({ at: now(), command: redactCommand(r.command), exit: r.exit, rawLog: r.rawLog, rawTokens: r.rawTokens, compressedTokens: r.compressedTokens, kind: r.compressed.kind }),
           );
         return r.rendered;
       }
@@ -217,6 +217,10 @@ export async function serveMcp(p: Paths): Promise<void> {
         send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
         return;
       }
+      if (!msg || typeof msg !== "object" || Array.isArray(msg)) {
+        send({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "invalid request" } });
+        return;
+      }
       const { id, method, params } = msg;
       if (id === undefined || id === null) return; // notification
       try {
@@ -257,4 +261,12 @@ export async function serveMcp(p: Paths): Promise<void> {
   await new Promise<void>((r) => rl.on("close", () => r()));
   await queue;
   store.close();
+}
+
+/** Tool arguments as saved in the task record: any credential in them is hidden, as it is in what the tool returns. */
+function scrubArgs(v: unknown, key = ""): unknown {
+  if (typeof v === "string") return key === "command" ? redactCommand(v) : redact(v);
+  if (Array.isArray(v)) return v.map((x) => scrubArgs(x, key));
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, scrubArgs(x, k)]));
+  return v;
 }

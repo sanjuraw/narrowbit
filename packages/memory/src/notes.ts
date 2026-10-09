@@ -251,7 +251,7 @@ export class Memory {
           const e = fromMarkdown(external ? readFileSync(abs, "utf8") : readPlain(abs), { id: basename(ent.name, ".md"), type });
           // A note on disk can hold anything (written by hand, shipped in a repo, saved before scrubbing existed): what leaves
           // here toward a model is scrubbed whatever its origin.
-          if (e) out.push({ ...e, text: scrubNote(e.text), reason: e.reason === undefined ? undefined : scrubNote(e.reason), attempt: e.attempt === undefined ? undefined : scrubNote(e.attempt), result: e.result === undefined ? undefined : scrubNote(e.result), file: abs, external });
+          if (e) out.push({ ...e, text: scrubNote(e.text), reason: e.reason === undefined ? undefined : scrubNote(e.reason), attempt: e.attempt === undefined ? undefined : scrubNote(e.attempt), result: e.result === undefined ? undefined : scrubNote(e.result), ...(e.files ? { files: e.files.map((f) => redact(f)) } : {}), ...(e.fileHashes ? { fileHashes: e.fileHashes.map((f) => redact(f)) } : {}), file: abs, external });
         } catch {
           /* unreadable note: skip */
         }
@@ -274,6 +274,9 @@ export class Memory {
     const clean = (x?: string) => (typeof x === "string" ? scrubNote(x) : x);
     const entry: MemoryEntry = { id: `${e.type.slice(0, 3)}-${shortId()}`, date: now(), status: "active", ...e, text: scrubNote(e.text), reason: clean(e.reason), attempt: clean(e.attempt), result: clean(e.result) };
     if (entry.files?.length && !entry.fileHashes) entry.fileHashes = this.hashFiles(entry.files);
+    // File names are saved and shown too: one shaped like a credential is hidden the same way as in the text.
+    if (entry.files) entry.files = entry.files.map((f) => redact(f));
+    if (entry.fileHashes) entry.fileHashes = entry.fileHashes.map((f) => redact(f));
     entry.file = this.write(entry);
     return entry;
   }
@@ -367,6 +370,6 @@ export function renderMemory(e: MemoryEntry, stale: string[] = []): string {
   if (e.attempt) lines.push(`  attempt: ${e.attempt}`);
   if (e.result) lines.push(`  result: ${e.result}`);
   if (e.reason) lines.push(`  reason: ${e.reason}`);
-  if (e.files?.length) lines.push(`  files: ${e.files.join(", ")}`);
+  if (e.files?.length) lines.push(`  files: ${e.files.map((f) => redact(f)).join(", ")}`);
   return lines.join("\n");
 }

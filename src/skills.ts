@@ -114,7 +114,7 @@ export function getSkill(p: Paths, name: string): Skill | null {
 }
 
 /** Creates or overwrites a skill by name (case-sensitive match on the existing name, if any). */
-export function saveSkill(p: Paths, name: string, description: string, body: string): Skill {
+export function saveSkill(p: Paths, name: string, description: string, body: string, opts: { overwriteFile?: string } = {}): Skill {
   const trimmedName = name.trim();
   if (!trimmedName) throw new Error("a skill needs a name");
   const trimmedBody = body.trim();
@@ -123,6 +123,8 @@ export function saveSkill(p: Paths, name: string, description: string, body: str
   description = description.replace(/^Replaces the built-in "[^"]*" with this project's own version\. ?/, "");
   const existing = listUserSkills(p).find((s) => s.name === trimmedName);
   const file = existing?.file ?? `${slugify(trimmedName)}.md`;
+  // A new name that lands on another skill's file ("Build A" and "Build-A" share build-a.md) must not replace that skill.
+  if (!existing && file !== opts.overwriteFile && existsSync(join(p.skills, file)) && !isHardLinked(join(p.skills, file))) throw new Error(`a skill file ${file} already exists (another skill, or one that can't be read) — choose a different name`);
   const fm = [`name: ${JSON.stringify(trimmedName)}`, description.trim() ? `description: ${JSON.stringify(description.trim())}` : null].filter(Boolean).join("\n");
   if (skillsFolderLinked(p)) throw new Error("the skills folder is a symlink — refusing to write through it");
   if (isLink(join(p.skills, file))) throw new Error(`${file} is a symlink — refusing to overwrite what it points to`);
@@ -150,5 +152,14 @@ export function renameSkill(p: Paths, oldName: string, newName: string): Skill {
   const taken = listUserSkills(p).find((o) => o.file !== s.file && (o.name === trimmed || o.file === newFile));
   if (taken || (s.file !== newFile && existsSync(join(p.skills, newFile)))) throw new Error(`a skill named "${taken?.name ?? trimmed}" already exists — rename or remove it first`);
   if (s.file && s.file !== newFile && existsSync(join(p.skills, s.file))) renameSync(join(p.skills, s.file), join(p.skills, newFile));
-  return saveSkill(p, trimmed, s.description, s.body);
+  return saveSkill(p, trimmed, s.description, s.body, { overwriteFile: newFile });
+}
+
+/** A file with more than one name: writing it would change the other file too, which the writer below refuses with its own message. */
+function isHardLinked(file: string): boolean {
+  try {
+    return lstatSync(file).nlink > 1;
+  } catch {
+    return false;
+  }
 }

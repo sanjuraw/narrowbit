@@ -2,6 +2,7 @@ import { createInterface } from "node:readline";
 import { MEMORY_TYPES, openMemory, renderMemory, type MemoryType } from "./notes.js";
 import { ensureMemoryDirs, memoryPaths, type MemoryPaths } from "./paths.js";
 import { termsOf } from "./terms.js";
+import { redact } from "./redact.js";
 
 const VERSION = "0.1.0";
 
@@ -103,6 +104,10 @@ export async function serveMemoryMcp(root: string): Promise<void> {
         send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
         return;
       }
+      if (!msg || typeof msg !== "object" || Array.isArray(msg)) {
+        send({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "invalid request" } });
+        return;
+      }
       const { id, method, params } = msg;
       if (id === undefined || id === null) return; // notification
       try {
@@ -118,7 +123,7 @@ export async function serveMemoryMcp(root: string): Promise<void> {
         else if (method === "tools/list") result = { tools: MEMORY_TOOLS };
         else if (method === "tools/call") {
           try {
-            result = { content: [{ type: "text", text: callMemoryTool(p, String(params?.name), params?.arguments ?? {}) }] };
+            result = { content: [{ type: "text", text: redact(callMemoryTool(p, String(params?.name), params?.arguments ?? {})) }] };
           } catch (e: any) {
             result = { content: [{ type: "text", text: `error: ${e?.message ?? e}` }], isError: true };
           }

@@ -5858,3 +5858,61 @@ describe("twenty-ninth audit (Codex on 675c71b): hooks during bookkeeping, exit 
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("thirtieth audit (Codex on 6f940dc): ranges, task records, command headers, skill names, protocol input", () => {
+  const mcp = (root, lines) => spawnSync(process.execPath, [BIN, "mcp", "--root", root], { input: lines.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join("\n") + "\n", encoding: "utf8", timeout: 30000 });
+  const call = (id, name, args) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+
+  test("choosing a few lines of a JSON or XML credentials block never shows the value, small or large", async () => {
+    const { fileRangeText } = await dist("query.js");
+    const { root, p } = tinyRepo();
+    try {
+      const cases = [
+        ["small.json", '{ "credentials": {\n"entry":"SMALL_JSON_CANARY"\n}}', 2, "SMALL_JSON_CANARY"],
+        ["small.xml", "<password>\n<value>SMALL_XML_CANARY</value>\n</password>", 2, "SMALL_XML_CANARY"],
+        ["large.json", '{ "credentials": {\n"padding":"' + "a".repeat(200100) + '",\n"entry":"NESTED_JSON_CANARY"\n}}', 3, "NESTED_JSON_CANARY"],
+        ["large.xml", "<password>\n<pad>" + "a".repeat(5100) + "</pad>\n<value>NESTED_XML_CANARY</value>\n</password>", 3, "NESTED_XML_CANARY"],
+      ];
+      for (const [name, text, line, canary] of cases) {
+        writeFileSync(join(root, name), text);
+        assert.ok(!fileRangeText(p, name, line, line).includes(canary), name);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a credential in an nb_run command is hidden in the response, the saved log header and the task record; null input doesn't stop the server", () => {
+    const { root, p } = tinyRepo();
+    const token = "ghp_" + "B".repeat(40);
+    try {
+      const r = mcp(root, [
+        "null", "7",
+        { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+        call(2, "nb_context", { task: "inspect a.txt" }),
+        call(3, "nb_run", { command: "printf '%s\\n' 'password=OPAQUE_MCP_CANARY'" }),
+        call(4, "nb_run", { command: `printf '%s\\n' '${token}'` }),
+        { jsonrpc: "2.0", id: 9, method: "ping" },
+      ]);
+      assert.equal(r.status, 0, r.stderr.slice(0, 300));
+      assert.match(r.stdout, /"id":9,"result":\{\}/, "served after the bad lines");
+      assert.ok(!r.stdout.includes("OPAQUE_MCP_CANARY") && !r.stdout.includes(token), "response");
+      const files = [...readdirSync(p.tasks).map((f) => join(p.tasks, f)), ...readdirSync(p.logs).map((f) => join(p.logs, f))];
+      const all = files.map((f) => readFileSync(f, "utf8")).join("\n");
+      assert.ok(files.length >= 2);
+      assert.ok(!all.includes("OPAQUE_MCP_CANARY") && !all.includes(token), "task records and logs");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("saving a skill under a name that maps to another skill's file is refused, while updating by name and renaming still work", async () => {
+    const { saveSkill, listSkills, renameSkill } = await dist("skills.js");
+    const { root, p } = tinyRepo();
+    try {
+      saveSkill(p, "Build A", "", "FIRST_INSTRUCTIONS");
+      assert.throws(() => saveSkill(p, "Build-A", "", "SECOND_INSTRUCTIONS"), /already exists/);
+      assert.equal(listSkills(p).find((s) => s.name === "Build A")?.body, "FIRST_INSTRUCTIONS");
+      saveSkill(p, "Build A", "", "EDITED");
+      assert.equal(listSkills(p).find((s) => s.name === "Build A")?.body, "EDITED");
+      renameSkill(p, "Build A", "Make B");
+      assert.ok(listSkills(p).some((s) => s.name === "Make B" && s.body === "EDITED"));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});

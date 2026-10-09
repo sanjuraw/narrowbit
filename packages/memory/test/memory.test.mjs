@@ -660,3 +660,50 @@ describe("twenty-ninth audit (Codex on 675c71b): long credential containers", ()
     assert.ok(Date.now() - t0 < 5000, "no blow-up on many unclosed elements");
   });
 });
+
+describe("thirtieth audit (Codex on 6f940dc): metadata, whole-file structures, protocol input", () => {
+  const tmp = () => mkdtempSync(join(tmpdir(), "nbm-30-"));
+
+  test("a credential-shaped file name in a note is hidden when saved, listed, rendered and sent over the memory MCP server", () => {
+    const root = tmp();
+    const token = "ghp_" + "A".repeat(40);
+    try {
+      const p = api.memoryPaths(root);
+      api.callMemoryTool(p, "memory_remember", { type: "fact", text: "safe factual note", files: [`src/${token}.ts`] });
+      const onDisk = readdirSync(p.memory, { recursive: true }).filter((f) => String(f).endsWith(".md")).map((f) => readFileSync(join(p.memory, String(f)), "utf8")).join("\n");
+      assert.ok(!onDisk.includes(token), "not saved");
+      assert.ok(!api.callMemoryTool(p, "memory_list", {}).includes(token), "not listed");
+      const r = spawnSync(process.execPath, ["--input-type=module", "-e", `import { serveMemoryMcp } from ${JSON.stringify(join(PKG, "dist", "index.js"))}; await serveMemoryMcp(${JSON.stringify(root)});`],
+        { input: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "memory_list", arguments: {} } }) + "\n", encoding: "utf8", timeout: 15000 });
+      assert.ok(!r.stdout.includes(token), "not sent");
+      // a note written by hand with the name in its frontmatter is cleaned on the way out too
+      const dir = join(p.memory, "facts"); mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "hand.md"), `---\nid: fac-hand\ntype: fact\nstatus: active\ndate: 2026-01-01\nfiles: ["x/${token}.ts"]\n---\nplain text\n`);
+      assert.ok(!api.callMemoryTool(p, "memory_list", {}).includes(token), "a hand-written note is cleaned on load");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("the line-keeping redactor sees the whole file, so a chosen line range can't lose its parent label; commands hide labelled credentials", () => {
+    const j = '{ "credentials": {\n"entry":"SMALL_JSON_CANARY"\n}}';
+    const x = "<password>\n<value>SMALL_XML_CANARY</value>\n</password>";
+    for (const [t, c] of [[j, "SMALL_JSON_CANARY"], [x, "SMALL_XML_CANARY"]]) {
+      const out = api.redactBlocksKeepingLines(t);
+      assert.ok(!out.includes(c), c);
+      assert.equal(out.split("\n").length, t.split("\n").length, "line numbers stay");
+    }
+    const hidden = api.redactCommand("printf '%s\\n' 'password=OPAQUE_CMD_CANARY'; curl --token OPAQUE_FLAG_CANARY https://x; PW=$HOME run");
+    assert.ok(!/OPAQUE_(CMD|FLAG)_CANARY/.test(hidden), hidden);
+    assert.match(hidden, /PW=\$HOME/, "a reference to a variable is not a secret");
+  });
+
+  test("a null, scalar or array line gets an error reply and the next request is still served", () => {
+    const root = tmp();
+    try {
+      const input = ["null", "7", "[1]", JSON.stringify({ jsonrpc: "2.0", id: 9, method: "ping" })].join("\n") + "\n";
+      const r = spawnSync(process.execPath, ["--input-type=module", "-e", `import { serveMemoryMcp } from ${JSON.stringify(join(PKG, "dist", "index.js"))}; await serveMemoryMcp(${JSON.stringify(root)});`], { input, encoding: "utf8", timeout: 15000 });
+      assert.equal(r.status, 0, r.stderr.slice(0, 300));
+      assert.match(r.stdout, /"id":9,"result":\{\}/);
+      assert.equal((r.stdout.match(/invalid request/g) ?? []).length, 3);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import type { Paths } from "./config.js";
-import { redact, redactBlocksKeepingLines } from "./redact.js";
+import { redact, redactBlocksKeepingLines, redactCommand } from "./redact.js";
 import { estimateTokens, hardenGitCommand, hardenRunnerCommand, isSecretFile, shortId, stripAnsi, writeProjectFile } from "./util.js";
 
 export interface Compressed {
@@ -373,7 +373,7 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
       const logName = `${shortId()}.log`;
       const rawLog = join(p.logs, logName);
       try {
-        writeProjectFile(dirname(p.nb), rawLog, `$ ${redact(command)}\n# exit ${exit}\n${redact(redactBlocksKeepingLines(raw))}`);
+        writeProjectFile(dirname(p.nb), rawLog, `$ ${redactCommand(command)}\n# exit ${exit}\n${redact(redactBlocksKeepingLines(raw))}`);
       } catch {
         // Non-essential: the compressed result below still gets returned to the caller either way. This
         // callback runs from a child process's own 'close' event, outside any promise chain a caller could
@@ -382,7 +382,7 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
       }
       const c = compressOutput(raw, exit);
       const rawLines = raw.split("\n").length;
-      const head = `$ ${redact(command)}  (exit ${exit}${signal ? `, ${signal}` : ""}; ${rawLines} lines → ${c.text.split("\n").length}; raw: ${relative(p.root, rawLog)})`;
+      const head = `$ ${redactCommand(command)}  (exit ${exit}${signal ? `, ${signal}` : ""}; ${rawLines} lines → ${c.text.split("\n").length}; raw: ${relative(p.root, rawLog)})`;
       const rendered = `${head}\n${c.text}`;
       resolveP({
         command,

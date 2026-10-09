@@ -292,5 +292,19 @@ export function findSecrets(original: string): { label: string; certain: boolean
  * with a BEGIN but no END (a cut-off file) is redacted to the end.
  */
 export function redactBlocksKeepingLines(text: string): string {
-  return replaceRanges(text, keyBlockRanges(text), (block) => block.split("\n").map(() => "[REDACTED PRIVATE KEY]").join("\n"));
+  const blocks = replaceRanges(text, keyBlockRanges(text), (block) => block.split("\n").map(() => "[REDACTED PRIVATE KEY]").join("\n"));
+  // Structures that span lines (a JSON "credentials" object, an XML <password> element, a Kubernetes Secret) are judged on the whole
+  // file, so that picking a few lines out of it can't leave a value without the label above it. Line numbers stay the same.
+  return redactStructures(decodeCredentialKeys(blocks));
+}
+
+/**
+ * A shell command as shown or logged: a credential written into it (`password=…`, `--token …`, a header, a token-shaped string)
+ * is hidden. Only the display is changed; the command that runs is the one given.
+ */
+export function redactCommand(command: string): string {
+  const hide = (_m: string, head: string, q: string, value: string) => (value.startsWith("$") ? _m : `${head}${q}[redacted value]`);
+  return redact(command)
+    .replace(new RegExp(`(\\b[\\w.-]*${CRED_NAME}[\\w.-]*=)(['"]?)(?!\\[redacted)([^\\s'"]+)`, "gi"), hide)
+    .replace(new RegExp(`(\\s--?[\\w-]*${CRED_NAME}[\\w-]*\\s+)(['"]?)(?!\\[redacted)([^\\s'"]+)`, "gi"), hide);
 }
