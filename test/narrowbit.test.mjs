@@ -5505,3 +5505,83 @@ describe("twentieth audit, fifth pass (Codex on 30671b0): the words hardening de
     assert.match(last.tail, /\+after/, "the next file's changes still show");
   });
 });
+
+describe("twenty-sixth audit (Codex on c898ccf): connector transports", () => {
+  const listen = (handler) => new Promise((r) => { const srv = createHttp(handler); srv.listen(0, "127.0.0.1", () => r({ srv, base: `http://127.0.0.1:${srv.address().port}` })); });
+  const body = (req) => new Promise((r) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => r(b ? JSON.parse(b) : {})); });
+  const init = (m) => ({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "t", version: "0" } } });
+  const stdioServer = (dir, script) => { const f = join(dir, "server.js"); writeFileSync(f, script); return f; };
+  const HANDSHAKE = `const ok = (m) => JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "s", version: "0" } } });`;
+
+  test("a malformed top-level packet from a stdio connector fails the call instead of crashing the process", async () => {
+    const { callConnectorTool } = await dist("mcpClient.js");
+    const dir = mkdtempSync(join(tmpdir(), "nb-nullmcp-"));
+    const server = stdioServer(dir, `process.stdin.once("data", () => { console.log("null"); console.log("[1]"); console.log("7"); }); setInterval(() => {}, 1000);\n`);
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", `import { callConnectorTool } from ${JSON.stringify(join(dirname(new URL(import.meta.url).pathname), "..", "dist", "mcpClient.js"))};
+try { await callConnectorTool({ name: "n", command: "node", args: [${JSON.stringify(server)}], env: {} }, "x", {}, 1500); } catch (e) { console.log("HANDLED " + e.message); }`], { encoding: "utf8", timeout: 20000 });
+    try {
+      assert.equal(child.status, 0, `no uncaught exception: ${child.stderr.slice(0, 300)}`);
+      assert.match(child.stdout, /HANDLED/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("a multi-byte character split across two stdout chunks arrives intact", async () => {
+    const { callConnectorTool } = await dist("mcpClient.js");
+    const dir = mkdtempSync(join(tmpdir(), "nb-utf8mcp-"));
+    const server = stdioServer(dir, `${HANDSHAKE}
+process.stdin.on("data", (d) => { for (const l of String(d).split("\\n")) { if (!l.trim()) continue; const m = JSON.parse(l);
+  if (m.method === "initialize") process.stdout.write(ok(m) + "\\n");
+  if (m.method === "tools/call") { const b = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: "caf\\u00e9" }] } }) + "\\n"); const cut = b.indexOf(0xc3) + 1; process.stdout.write(b.subarray(0, cut)); setTimeout(() => process.stdout.write(b.subarray(cut)), 100); } } });
+setInterval(() => {}, 1000);\n`);
+    try {
+      const r = await callConnectorTool({ name: "u", command: "node", args: [server], env: {} }, "t", {}, 10000);
+      assert.equal(r.text, "café");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("an HTTP reply that answers a different request id is refused, in every body shape", async () => {
+    const { openHttpSession } = await dist("mcpHttp.js");
+    for (const shape of ["object", "array", "noid"]) {
+      const A = await listen(async (req, res) => {
+        const m = await body(req);
+        res.writeHead(200, { "content-type": "application/json" });
+        if (m.method === "initialize") return res.end(JSON.stringify(init(m)));
+        if (!m.id) return res.end("{}");
+        const wrong = { jsonrpc: "2.0", id: shape === "noid" ? undefined : 999, result: { marker: "WRONG" } };
+        res.end(JSON.stringify(shape === "array" ? [wrong] : wrong));
+      });
+      try {
+        const s = await openHttpSession({ name: "w", command: "", args: [], url: A.base + "/x" }, 5000);
+        await assert.rejects(s.request("tools/list"), /didn't answer this request/, shape);
+      } finally { A.srv.close(); }
+    }
+  });
+
+  test("a configured Authorization header in any casing is used alone; the saved sign-in is not added to it", async () => {
+    const { openHttpSession } = await dist("mcpHttp.js");
+    const home = mkdtempSync(join(tmpdir(), "nb-home-"));
+    const oldHome = process.env.HOME;
+    process.env.HOME = home;
+    const seen = [];
+    const A = await listen(async (req, res) => {
+      const m = await body(req);
+      seen.push(req.headers.authorization);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(init(m)));
+    });
+    try {
+      mkdirSync(join(home, ".narrowbit"), { recursive: true });
+      const url = A.base + "/mcp";
+      writeFileSync(join(home, ".narrowbit", "oauth.json"), JSON.stringify({ conn: { access: "OAUTH_CANARY", resource: url, tokenEndpoint: A.base + "/t", clientId: "c" } }));
+      await openHttpSession({ name: "conn", command: "", args: [], url, headers: { AUTHORIZATION: "Bearer STATIC_CANARY" } }, 5000);
+      assert.ok(seen.length >= 1);
+      for (const a of seen) assert.equal(a, "Bearer STATIC_CANARY", "one credential, the configured one");
+    } finally { A.srv.close(); process.env.HOME = oldHome; rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test("the app page's connector list hides the value after a credential option, in both spellings", () => {
+    const pc = publicConnector({ name: "f", command: "node", args: ["srv", "--api-key", "OPAQUE_ARG_CANARY", "--token=OPAQUE_EQ_CANARY", "-p", "5", "--verbose"], env: {} });
+    assert.doesNotMatch(JSON.stringify(pc), /OPAQUE_(ARG|EQ)_CANARY/);
+    assert.deepEqual(pc.args, ["srv", "--api-key", "[hidden]", "--token=[hidden]", "-p", "5", "--verbose"]);
+  });
+});

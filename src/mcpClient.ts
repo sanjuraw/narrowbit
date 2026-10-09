@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import type { Connector } from "./connectors.js";
 import { MAX_REPLY, openHttpSession } from "./mcpHttp.js";
 
@@ -44,16 +45,18 @@ function withConnector<T>(c: Connector, timeoutMs: number, signal: AbortSignal |
     const timer = setTimeout(() => fail(new Error(`${c.name}: timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
     signal?.addEventListener("abort", () => fail(new Error(`${c.name}: stopped by the user`)), { once: true });
     child.on("error", (e) => fail(new Error(`${c.name}: couldn't start "${c.command}" (${e.message}) — is it installed?`)));
-    child.stderr.on("data", (d) => {
-      stderr = (stderr + String(d)).slice(-2000);
+    const errDec = new StringDecoder("utf8");
+    child.stderr.on("data", (d: Buffer) => {
+      stderr = (stderr + errDec.write(d)).slice(-2000);
     });
     child.on("exit", (code) => {
       if (!settled) fail(new Error(`${c.name}: exited before responding${code ? ` (code ${code})` : ""}${stderr ? `: ${stderr.trim().slice(0, 300)}` : ""}`));
     });
     let buf = "";
     const handlers: ((msg: any) => void)[] = [];
-    child.stdout.on("data", (d) => {
-      buf += String(d);
+    const outDec = new StringDecoder("utf8"); // a chunk can end inside a multi-byte character
+    child.stdout.on("data", (d: Buffer) => {
+      buf += outDec.write(d);
       if (buf.length > MAX_REPLY) return fail(new Error(`${c.name}: a reply is too large (over ${MAX_REPLY / 1024 / 1024} MB) — refused`));
       let nl;
       while ((nl = buf.indexOf("\n")) >= 0) {
@@ -66,7 +69,12 @@ function withConnector<T>(c: Connector, timeoutMs: number, signal: AbortSignal |
         } catch {
           continue;
         }
-        for (const h of handlers) h(msg);
+        if (!msg || typeof msg !== "object" || Array.isArray(msg)) continue; // not a protocol message
+        try {
+          for (const h of handlers) h(msg);
+        } catch (e) {
+          return fail(new Error(`${c.name}: sent a malformed reply (${(e as Error).message})`));
+        }
       }
     });
     const send = (msg: object) => child.stdin.write(JSON.stringify(msg) + "\n");

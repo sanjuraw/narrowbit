@@ -31,7 +31,8 @@ export async function openHttpSession(c: Connector, timeoutMs: number, stop?: Ab
     const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2025-06-18", ...(c.headers ?? {}) };
     if (sessionId) headers["mcp-session-id"] = sessionId;
     const token = await accessToken(c.name, url);
-    if (token && !headers.authorization && !headers.Authorization) headers.authorization = `Bearer ${token}`;
+    // Header names are case-insensitive: a configured Authorization in any casing wins over the saved sign-in.
+    if (token && !Object.keys(headers).some((k) => k.toLowerCase() === "authorization")) headers.authorization = `Bearer ${token}`;
     const left = Math.max(1000, deadline - Date.now());
     // Redirects are followed by hand: a 307/308 to the same host is fine, anything else is refused — the headers (an API
     // key) and the request itself would otherwise go wherever the server points, and fetch only strips Authorization.
@@ -109,7 +110,9 @@ export async function openHttpSession(c: Connector, timeoutMs: number, stop?: Ab
     }
     const text = await readCapped(r, c.name);
     const m = JSON.parse(text);
-    return Array.isArray(m) ? m.find((x: any) => x.id === id) : m;
+    const found = Array.isArray(m) ? m.find((x: any) => x?.id === id) : m;
+    if (!found || typeof found !== "object" || found.id !== id) throw new Error(`${c.name}: the server's reply didn't answer this request`);
+    return found;
   };
 
   const request = async (method: string, params?: unknown): Promise<any> => {

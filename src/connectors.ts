@@ -43,8 +43,25 @@ function save(all: Record<string, Connector>): void {
 }
 
 /** What the app page may see: names only, never the environment values (they are often tokens). */
+const SECRET_OPTION = /^--?[\w-]*(?:key|token|secret|password|passwd|pwd|auth|credential)[\w-]*$/i;
+
+/** Arguments for display: the value after a credential-looking option (`--api-key X` or `--api-key=X`) is hidden. */
+function maskArgs(args: string[]): string[] {
+  let hide = false;
+  return args.map((a) => {
+    if (hide) {
+      hide = false;
+      return "[hidden]";
+    }
+    const eq = a.indexOf("=");
+    if (a.startsWith("-") && eq > 0 && SECRET_OPTION.test(a.slice(0, eq))) return a.slice(0, eq + 1) + "[hidden]";
+    if (SECRET_OPTION.test(a)) hide = true;
+    return a;
+  });
+}
+
 export function publicConnector(c: Connector): { name: string; command: string; args: string[]; envKeys: string[]; url: string | null; headerKeys: string[]; signedIn: boolean } {
-  return { name: c.name, command: c.command, args: c.args, envKeys: [...Object.keys(c.env ?? {})], url: c.url ?? null, headerKeys: Object.keys(c.headers ?? {}), signedIn: !!c.url && isSignedIn(c.name, c.url) };
+  return { name: c.name, command: c.command, args: maskArgs(c.args), envKeys: [...Object.keys(c.env ?? {})], url: c.url ?? null, headerKeys: Object.keys(c.headers ?? {}), signedIn: !!c.url && isSignedIn(c.name, c.url) };
 }
 
 export function listConnectors(): Connector[] {
