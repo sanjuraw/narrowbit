@@ -4,6 +4,7 @@ import { readAttachment } from "../attachments.js";
 import { recordClaudeLimits } from "../limits.js";
 import { isPermanentModelError } from "../errors.js";
 import { extractText, parseStream } from "../streamjson.js";
+import { killWithGrace } from "../util.js";
 
 /**
  * Model adapter for the owned runtime, backed by the `claude` CLI under the user's Claude
@@ -338,9 +339,22 @@ function runTurn(session: LiveSession, sessionId: string, opts: ModelCallOptions
 }
 
 function toResult(raw: string, stderr: string, note: string): ModelCallResult {
+  try {
+    return toResultUnchecked(raw, stderr, note);
+  } catch (e) {
+    // Output that doesn't look like Claude's protocol is an error for this call, not a crash of the process.
+    return { text: "", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: null, turns: 0, isError: true, errorMessage: `claude produced output Narrowbit couldn't read (${(e as Error).message})`, fatal: false };
+  }
+}
+
+function toResultUnchecked(raw: string, stderr: string, note: string): ModelCallResult {
   const s = parseStream(raw);
   // Every call reports the subscription's 5-hour/weekly usage; keep the latest for `narrowbit limits` and the app.
-  recordClaudeLimits(raw);
+  try {
+    recordClaudeLimits(raw);
+  } catch {
+    /* a malformed line must not fail the call */
+  }
   const loggedOut = /"error":"authentication_failed"|Not logged in|Invalid API key/.test(raw + stderr);
   const detail = (stderr.trim() || s.errorText.trim() || note).slice(0, 500);
   // A usage limit or sign-in problem can't be fixed by retrying the same call.
@@ -462,7 +476,7 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
       for (const line of parts) take(line);
     });
     child.stderr.on("data", (d) => (stderr += d));
-    const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? 180_000);
+    const timer = setTimeout(() => killWithGrace(child), opts.timeoutMs ?? 180_000);
     arm();
     child.on("close", () => {
       take(partial);

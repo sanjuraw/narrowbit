@@ -41,6 +41,8 @@ export async function planningReply(
   model: string,
   effort: string,
   claudeBin?: string,
+  /** For providers that keep the conversation in this process's memory: false = that session is gone (the app restarted). */
+  canResume?: (sessionId: string) => boolean,
 ): Promise<PlanningReply> {
   const p = draftsPaths();
   const id = taskId ?? `pl-${randomUUID().slice(0, 8)}`;
@@ -48,12 +50,21 @@ export async function planningReply(
   const continuing = prior.length > 0;
   appendEvent(p, id, { actor: "user", type: "decision", summary: text.slice(0, 300), meta: continuing ? { followUp: text } : { goal: text } });
   const last = [...prior].reverse().find((e) => e.type === "model_call" && typeof e.meta?.sessionId === "string");
-  const sessionId = (last?.meta?.sessionId as string | undefined) ?? randomUUID();
-  const resume = !!last;
+  const savedId = last?.meta?.sessionId as string | undefined;
+  const lost = !!last && !!savedId && !!canResume && !canResume(savedId);
+  const sessionId = lost || !savedId ? randomUUID() : savedId;
+  const resume = !!last && !lost;
+  // The conversation lived only in the old process: start a new one seeded with what the log kept (replies are shortened).
+  const earlier = lost
+    ? prior
+        .flatMap((e) => (e.actor === "user" && e.type === "decision" ? [`You: ${String(e.meta?.goal ?? e.meta?.followUp ?? e.summary)}`] : e.type === "decision" && typeof e.meta?.summary === "string" ? [`Assistant (shortened): ${e.meta.summary}`] : []))
+        .join("\n")
+        .slice(-4000)
+    : "";
   const res = await call({
     cwd: homedir(), // no project folder exists yet; the model is told not to touch files, so cwd is never used for real work
     systemPrompt: resume ? undefined : PLANNING_INSTRUCTIONS,
-    prompt: text,
+    prompt: earlier ? `This continues a planning chat; the app was restarted since, so here is what was said so far:\n${earlier}\n\nTheir new message:\n${text}` : text,
     model,
     effort,
     role: "planning-chat",

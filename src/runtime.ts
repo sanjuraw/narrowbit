@@ -783,7 +783,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const lead: LeadCtx = leadFor(opts.leadModel) ?? { p, taskId, call, model: tiers.escalate, effort, role, preexisting, claudeBin: opts.claudeBin };
   const reviewLead: LeadCtx = leadFor(opts.reviewer) ?? lead;
   let rejected: string | null = null;
-  if (boss && !opts.reviewOnly && !continuing) {
+  if (boss && !opts.reviewOnly && !continuing && !opts.signal?.aborted) {
     log(`[plan] (${tiers.escalate}) planning`);
     plan = await leadPlan(lead, taskText, store);
     if (plan) log(`      → ${plan.steps.length} steps`);
@@ -848,7 +848,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   }
 
   let scoutReport: string | null = null;
-  if (opts.scout && !continuing) {
+  if (opts.scout && !continuing && !opts.signal?.aborted) {
     const sp = opts.scout.provider ?? provider;
     const why = unavailableReason({ provider: sp, tiers: { explore: opts.scout.model, execute: opts.scout.model, escalate: opts.scout.model }, effort }, cfg.agent);
     if (why) log(`[scout] skipped: ${why}`);
@@ -994,7 +994,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     // would fail identically on every retry with the same id — observed once in a 40-task run
     // (cause unconfirmed; regenerating is a cheap, safe guard either way) — so that specific error
     // gets a new random id before the retry instead of repeating the same doomed call.
-    for (let transientRetries = 0; res.isError && !res.fatal && !isPermanentModelError(res.errorMessage) && transientRetries < MAX_TRANSIENT_RETRIES; transientRetries++) {
+    for (let transientRetries = 0; res.isError && !res.fatal && !opts.signal?.aborted && !isPermanentModelError(res.errorMessage) && transientRetries < MAX_TRANSIENT_RETRIES; transientRetries++) {
       appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: `step ${steps}: model call failed (${res.errorMessage ?? "no result"}), retrying (${transientRetries + 1}/${MAX_TRANSIENT_RETRIES})` });
       // A reply that ran away (the same lines over and over, history entry 55) may have been saved into the session, and
       // resuming it would resend the junk every turn: continue in a new session seeded with the progress so far.
@@ -1014,6 +1014,14 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       }
       progress?.reset();
       res = await call(callOpts);
+    }
+    // Stop arrived while the call was running: whatever it returned (even an error) ends the task as stopped, with no retry or fallback.
+    if (opts.signal?.aborted) {
+      outcome = "stopped";
+      summary = "stopped by the user";
+      appendEvent(p, taskId, { actor: "user", type: "blocker", summary });
+      log(`[${steps}] stopped by the user`);
+      break;
     }
     if (attachmentsPending && !res.isError) attachmentsPending = false;
     // The main provider failed for a reason the backup might not share (a usage limit, rate limit, timeout or server

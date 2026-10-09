@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelCallOptions, ModelCallResult } from "./claude-cli.js";
+import { killWithGrace } from "../util.js";
 import { attachmentKind, promptWithFiles, storedButNotPlain } from "../attachments.js";
 
 /**
@@ -97,9 +98,13 @@ export function callCodex(opts: ModelCallOptions): Promise<ModelCallResult> {
     let stderr = "";
     child.stdout.on("data", (d) => chunks.push(d));
     child.stderr.on("data", (d) => (stderr += d));
-    const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? 180_000);
+    const timeoutMs = opts.timeoutMs ?? 180_000;
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; killWithGrace(child); }, timeoutMs);
     child.on("close", () => {
       clearTimeout(timer);
+      // A turn that never reported its end is not a finished answer, whatever was printed before the kill.
+      if (timedOut) return resolve({ text: "", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: null, turns: 0, isError: true, errorMessage: `Codex timed out after ${Math.round(timeoutMs / 1000)}s`, fatal: false });
       const raw = Buffer.concat(chunks).toString("utf8");
       const parsed = parseCodexStream(raw);
       const thread = parsed.sessionId ?? opts.sessionId;

@@ -75,7 +75,7 @@ export async function callOpenAICompat(ep: Endpoint, opts: ModelCallOptions): Pr
 
   let res: Response;
   try {
-    res = await fetch(`${ep.baseUrl}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(opts.timeoutMs ?? 180_000) });
+    res = await fetch(`${ep.baseUrl}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(opts.timeoutMs ?? 180_000) });
   } catch (e: any) {
     if (e?.name === "TimeoutError") return fail(`${label} timed out`, false);
     const code = e?.cause?.code ?? e?.name ?? "network error";

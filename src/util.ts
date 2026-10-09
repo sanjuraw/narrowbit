@@ -1,7 +1,7 @@
 export { now, shortId, estimateTokens } from "narrowbit-memory";
 import { linkInPath, openPlain, readPlain } from "narrowbit-memory";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, closeSync, constants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -322,4 +322,14 @@ export function isHookFile(rel: string, hooksPath?: string): boolean {
     if (dir && r.startsWith(dir + "/")) return true;
   }
   return false;
+}
+
+/** Ends a child process we own: a polite SIGTERM, then SIGKILL if it is still there after the grace period. */
+export function killWithGrace(child: ChildProcess, graceMs = 2000): void {
+  child.kill("SIGTERM");
+  const t = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }, graceMs);
+  t.unref();
+  child.once("close", () => clearTimeout(t));
 }

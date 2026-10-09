@@ -5698,3 +5698,99 @@ clearInterval(t);`;
     } finally { rmSync(base, { recursive: true, force: true }); }
   });
 });
+
+describe("twenty-eighth audit (Codex on 97b0e5d): providers, Stop, planning restarts", () => {
+  const dir = () => realpathSync(mkdtempSync(join(tmpdir(), "nb-prov-")));
+  const bin = (d, name, src) => { const f = join(d, name); writeFileSync(f, `#!/usr/bin/env node\n${src}\n`, { mode: 0o755 }); return f; };
+  const listen = (handler) => new Promise((r) => { const srv = createHttp(handler); srv.listen(0, "127.0.0.1", () => r({ srv, base: `http://127.0.0.1:${srv.address().port}` })); });
+
+  test("an API provider's redirect to another origin is refused, so the conversation is never sent there", async () => {
+    const { callOpenAICompat } = await dist("providers/openai-compat.js");
+    for (const status of [307, 308]) {
+      let got = null;
+      const sink = await listen((req, res) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { got = b; res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ choices: [{ message: { content: "ok" } }], usage: {} })); }); });
+      const src = await listen((req, res) => { req.resume(); res.writeHead(status, { location: sink.base + "/sink" }); res.end(); });
+      try {
+        const r = await callOpenAICompat({ provider: "custom", baseUrl: src.base + "/v1", needsKey: false }, { cwd: tmpdir(), model: "m", role: "execution", systemPrompt: "PRIVATE_SYSTEM_CANARY", prompt: "CONTEXT_CANARY", timeoutMs: 3000 });
+        assert.equal(r.isError, true, String(status));
+        assert.equal(got, null, "the other origin received nothing");
+      } finally { src.srv.closeAllConnections(); sink.srv.closeAllConnections(); src.srv.close(); sink.srv.close(); }
+    }
+  });
+
+  test("after Stop, no retry or planning model call starts, and the task ends as stopped even when the running call failed", async () => {
+    const oldFetch = globalThis.fetch;
+    try {
+      for (const mode of ["retry", "pre-aborted-plan"]) {
+        const { root, p } = tinyRepo();
+        const ctl = new AbortController();
+        if (mode === "pre-aborted-plan") ctl.abort();
+        let calls = 0;
+        globalThis.fetch = async () => {
+          calls++;
+          if (mode === "retry" && calls === 1) ctl.abort();
+          return new Response(JSON.stringify({ error: { message: "temporary fixture failure" } }), { status: 500 });
+        };
+        const r = await runTask(p, "explain a.txt", { provider: "ollama", model: "fixture", boss: mode === "pre-aborted-plan", maxSteps: 3, signal: ctl.signal });
+        assert.equal(r.outcome, "stopped", mode);
+        assert.equal(calls, mode === "retry" ? 1 : 0, `${mode}: model calls after Stop`);
+        rmSync(root, { recursive: true, force: true });
+      }
+    } finally { globalThis.fetch = oldFetch; }
+  });
+
+  test("a provider CLI that ignores SIGTERM is still ended shortly after its deadline, and a timeout is an error even if a message was printed", async () => {
+    const { callCodex } = await dist("providers/codex-cli.js");
+    const { callAntigravity } = await dist("providers/antigravity-cli.js");
+    const { callModel } = await dist("providers/claude-cli.js");
+    const d = dir();
+    const stuck = bin(d, "stuck", `process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);`);
+    const partial = bin(d, "partial", `console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "{\\"action\\":\\"done\\",\\"summary\\":\\"PARTIAL_CANARY\\"}" } })); setInterval(() => {}, 1000);`);
+    const old = { c: process.env.NARROWBIT_CODEX, a: process.env.NARROWBIT_AGY };
+    try {
+      const o = { cwd: d, prompt: "hi", model: "m", role: "execution", timeoutMs: 700 };
+      process.env.NARROWBIT_CODEX = stuck; process.env.NARROWBIT_AGY = stuck;
+      const t0 = Date.now();
+      const rs = await Promise.all([callCodex(o), callAntigravity(o), callModel({ ...o, claudeBin: stuck })]);
+      assert.ok(Date.now() - t0 < 6000, `all three ended in ${Date.now() - t0} ms`);
+      for (const r of rs) assert.equal(r.isError, true);
+      process.env.NARROWBIT_CODEX = partial;
+      const r = await callCodex(o);
+      assert.equal(r.isError, true, "a timed-out turn is not a success");
+      assert.doesNotMatch(r.text, /PARTIAL_CANARY/);
+    } finally { process.env.NARROWBIT_CODEX = old.c; process.env.NARROWBIT_AGY = old.a; if (old.c === undefined) delete process.env.NARROWBIT_CODEX; if (old.a === undefined) delete process.env.NARROWBIT_AGY; rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test("a stray null line from the Claude CLI is an error for the call, not a crash", () => {
+    const d = dir();
+    const fake = bin(d, "fake-claude", `console.log("null"); console.log("7");`);
+    const lib = join(dirname(new URL(import.meta.url).pathname), "..", "dist", "providers", "claude-cli.js");
+    const r = spawnSync(process.execPath, ["--input-type=module", "-e", `import { callModel } from ${JSON.stringify(lib)};
+const r = await callModel({ cwd: ${JSON.stringify(d)}, prompt: "hi", role: "execution", model: "m", claudeBin: ${JSON.stringify(fake)}, timeoutMs: 3000 }); console.log("RESOLVED " + r.isError);`], { encoding: "utf8", timeout: 20000, env: { ...process.env, HOME: d } });
+    try {
+      assert.equal(r.status, 0, r.stderr.slice(0, 300));
+      assert.match(r.stdout, /RESOLVED true/);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test("a planning chat resumed after the app restarted (API provider) is seeded with the earlier messages and the instructions", () => {
+    const d = dir();
+    const lib = (f) => JSON.stringify(join(dirname(new URL(import.meta.url).pathname), "..", "dist", f));
+    const script = (first) => `import { planningReply } from ${lib("planning.js")}; import { callOpenAICompat, hasSession } from ${lib("providers/openai-compat.js")};
+import { readFileSync, writeFileSync } from "node:fs";
+let sent; globalThis.fetch = async (u, o) => { sent = JSON.parse(o.body); return new Response(JSON.stringify({ choices: [{ message: { content: "FIRST_DECISION_CANARY" } }], usage: {} })); };
+const id = ${first ? "undefined" : `readFileSync(${JSON.stringify(join(d, "id"))}, "utf8")`};
+const r = await planningReply(id, ${first ? '"FIRST_REQUIREMENT_CANARY"' : '"What did we decide?"'}, (o) => callOpenAICompat({ provider: "custom", baseUrl: "https://fixture.invalid/v1", needsKey: false }, o), "m", "low", undefined, hasSession);
+${first ? `writeFileSync(${JSON.stringify(join(d, "id"))}, r.taskId);` : ""} console.log(JSON.stringify(sent));`;
+    const run = (first) => spawnSync(process.execPath, ["--input-type=module", "-e", script(first)], { encoding: "utf8", timeout: 20000, env: { ...process.env, HOME: d } });
+    try {
+      const a = run(true); assert.equal(a.status, 0, a.stderr.slice(0, 300));
+      const b = run(false); assert.equal(b.status, 0, b.stderr.slice(0, 300));
+      const sent = JSON.parse(b.stdout.trim().split("\n").pop());
+      const all = JSON.stringify(sent);
+      assert.match(all, /FIRST_REQUIREMENT_CANARY/, "the earlier request is in the new conversation");
+      assert.match(all, /FIRST_DECISION_CANARY/, "and the earlier answer");
+      assert.ok(sent.messages.some((m) => m.role === "system"), "with the planning instructions");
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+});

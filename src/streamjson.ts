@@ -13,10 +13,11 @@ export function parseStream(jsonl: string) {
     } catch {
       continue;
     }
+    if (!ev || typeof ev !== "object") continue; // a stray null / number line is not a protocol event
     if (ev.type === "assistant" && ev.message) {
       const m = ev.message;
-      for (const c of m.content ?? []) {
-        if (c.type !== "tool_use") continue;
+      for (const c of Array.isArray(m.content) ? m.content : []) {
+        if (c?.type !== "tool_use") continue;
         toolCalls[c.name] = (toolCalls[c.name] ?? 0) + 1;
         if (c.name === "Read" && c.input?.file_path) readFiles.add(String(c.input.file_path));
       }
@@ -67,8 +68,9 @@ export function extractText(jsonl: string): string {
     } catch {
       continue;
     }
-    if (ev.type === "assistant" && ev.message?.content) {
-      for (const c of ev.message.content) if (c.type === "text") text += c.text;
+    if (!ev || typeof ev !== "object") continue;
+    if (ev.type === "assistant" && Array.isArray(ev.message?.content)) {
+      for (const c of ev.message.content) if (c?.type === "text" && typeof c.text === "string") text += c.text;
     }
     // A call made with --json-schema answers through a tool call; the validated object is on the result line.
     if (ev.type === "result" && ev.structured_output !== undefined && ev.structured_output !== null) structured = JSON.stringify(ev.structured_output);

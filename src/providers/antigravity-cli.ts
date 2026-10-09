@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ModelCallOptions, ModelCallResult } from "./claude-cli.js";
 import { promptWithFiles } from "../attachments.js";
+import { killWithGrace } from "../util.js";
 
 /**
  * Model adapter backed by Google's Antigravity CLI (`agy`, signed in with a Google account), the same role
@@ -67,9 +68,11 @@ export function callAntigravity(opts: ModelCallOptions): Promise<ModelCallResult
     let stderr = "";
     child.stdout.on("data", (d) => chunks.push(d));
     child.stderr.on("data", (d) => (stderr += d));
-    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; killWithGrace(child); }, timeoutMs);
     child.on("close", () => {
       clearTimeout(timer);
+      if (timedOut) return resolve({ text: "", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: null, turns: 0, isError: true, errorMessage: `Antigravity timed out after ${Math.round(timeoutMs / 1000)}s`, fatal: false });
       const raw = Buffer.concat(chunks).toString("utf8");
       const p = parseAgyStream(raw);
       const authFailed = /Authentication required|Please sign in|authentication failed/i.test(raw + stderr);

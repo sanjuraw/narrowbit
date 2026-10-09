@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { attachmentDir, attachmentKind, saveAttachment } from "./attachments.js";
 import { suggestFiles } from "./mentions.js";
 import { ensureDirs, loadConfig, paths, saveConfig, type AgentConfig, type Paths } from "./config.js";
+import { hasSession } from "./providers/openai-compat.js";
 import { getConnector, listConnectors, publicConnector, removeConnector, saveConnector } from "./connectors.js";
 import { completeSignIn, signOut, startSignIn } from "./oauth.js";
 import { applyIsolated, discardIsolated, readIsolated } from "./isolate.js";
@@ -808,7 +809,7 @@ export function startUi(opts: UiOptions) {
           }
           const unavailable = unavailableReason(sel, ga);
           if (unavailable) return json(res, 400, { error: unavailable });
-          const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.execute, sel.effort);
+          const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.execute, sel.effort, undefined, resolveEndpoint(sel.provider, ga) ? hasSession : undefined);
           if (r.isError) return json(res, 400, { error: r.errorMessage ?? "the model call failed", taskId: r.taskId });
           return json(res, 200, { taskId: r.taskId, reply: r.text });
         }
