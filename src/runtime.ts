@@ -388,10 +388,18 @@ export type Progress = { kind: "model"; text: string; thinkingTokens: number } |
 export function progressFeed(send?: (p: Progress) => void) {
   if (!send) return null;
   const every = 250;
-  const state = { modelText: "", thinking: 0, outCmd: "", outLines: [] as string[], outPartial: "", inKey: false };
+  const state = { modelText: "", thinking: 0, outCmd: "", outLines: [] as string[], outPartial: "", inKey: false, hideDiff: false };
   const timers: Record<string, ReturnType<typeof setTimeout> | undefined> = {};
   const last: Record<string, number> = {};
-  const cleanLine = (l: string, commit: boolean): string => {
+  // Returns null for a line that is not shown at all (the body of a diff of a secrets file).
+  const cleanLine = (l: string, commit: boolean): string | null => {
+    const head = /^diff --git "?a\/(.+?)"? "?b\/(.+?)"?$/.exec(l);
+    if (head) {
+      const secret = isSecretFile(head[1]) || isSecretFile(head[2]);
+      if (commit) state.hideDiff = secret;
+      return secret ? `(changes to ${head[2]} are not shown: it looks like a secrets file)` : redact(l);
+    }
+    if (state.hideDiff) return null;
     if (state.inKey || /-----BEGIN [A-Z ]*PRIVATE KEY/.test(l)) {
       const ended = /-----END [A-Z ]*PRIVATE KEY/.test(l);
       if (commit) state.inKey = !ended;
@@ -404,7 +412,7 @@ export function progressFeed(send?: (p: Progress) => void) {
     timers[kind] = undefined;
     try {
       if (kind === "model") send({ kind, text: redact(state.modelText).slice(-2000), thinkingTokens: state.thinking });   // redact first: the tail of a key has no BEGIN line
-      else send({ kind, command: visible(state.outCmd), tail: [...state.outLines, ...(state.outPartial.trim() ? [cleanLine(state.outPartial, false)] : [])].slice(-12).join("\n") });
+      else send({ kind, command: visible(state.outCmd), tail: [...state.outLines, ...(state.outPartial.trim() ? [cleanLine(state.outPartial, false)].filter((x): x is string => x !== null) : [])].slice(-12).join("\n") });
     } catch {}
   };
   const schedule = (kind: "model" | "output") => {
@@ -431,6 +439,7 @@ export function progressFeed(send?: (p: Progress) => void) {
         state.outLines = [];
         state.outPartial = "";
         state.inKey = false;
+        state.hideDiff = false;
       }
       // Each line is cleaned as it completes, with the private-key state carried from line to line: choosing the last few lines
       // first would drop the BEGIN line and leave a key body that no longer looks like one.
@@ -438,7 +447,9 @@ export function progressFeed(send?: (p: Progress) => void) {
       state.outPartial = pieces.pop() ?? "";
       for (const l of pieces) {
         if (!l.trim()) continue;
-        state.outLines.push(cleanLine(l, true));
+        const shown = cleanLine(l, true);
+        if (shown === null) continue;
+        state.outLines.push(shown);
         if (state.outLines.length > 40) state.outLines.shift();
       }
       if (state.outPartial.length > 4000) state.outPartial = state.outPartial.slice(-4000);

@@ -616,3 +616,30 @@ describe("own audit (2026-10-09): hostile text cannot make redaction slow", () =
     within(3000, () => assert.ok(api.findSecrets("password=abcdefgh\n".repeat(40000)).length >= 40000));
   });
 });
+
+describe("twentieth audit, fifth pass (Codex on 30671b0): JSON escapes and subtrees, nested XML, Kubernetes field order", () => {
+  const C = "OPAQUE_NEW_CANARY";
+  test("a JSON string with an escaped quote, a signed or decimal number, and a whole object or array under a credential key are hidden", () => {
+    for (const input of [`{"password":"abc\\"${C}"}`, `{"password":-123.45}`, `{"password":1e5}`, `{"password":{"value":"${C}"}}`, `{"credentials":["${C}", 1234]}`, `{"Authorization":"Bearer a\\"${C}"}`]) {
+      const out = api.redact(input);
+      assert.ok(!out.includes(C) && !/-123\.45|1e5|1234/.test(out) && !/"abc\\"/.test(out), input);
+      assert.ok(api.findSecrets(input).length > 0, `findSecrets: ${input}`);
+    }
+    const siblings = api.redact(`{"user":"keep","password":{"a":"x"},"retries":3}`);
+    assert.match(siblings, /"user":"keep"/); assert.match(siblings, /"retries":3/);
+    assert.equal(api.redact(`{"password":"abc\\"def"}`), `{"password":"[redacted value]"}`, "the whole string, escape included");
+  });
+
+  test("an XML element named for a credential that holds other elements hides the text inside them", () => {
+    assert.doesNotMatch(api.redact(`<password><value>${C}</value></password>`), /OPAQUE/);
+    assert.match(api.redact(`<config><name>keep</name><password><value>x1</value></password></config>`), /<name>keep<\/name>/);
+  });
+
+  test("a Kubernetes Secret's data is hidden whichever order the object's fields are written in, in lists too, and neighbours are untouched", () => {
+    for (const input of [`items:\n  - data:\n      db: ${C}\n    kind: Secret`, `items:\n  - name: x\n    data:\n      db: ${C}\n    kind: Secret`, `data:\n  db: ${C}\nkind: Secret`, `items:\n  - kind: Secret\n    data:\n      db: ${C}\n  - data:\n      b: ${C}\n    kind: Secret`]) {
+      assert.doesNotMatch(api.redact(input), /OPAQUE/, input.replace(/\n/g, "|"));
+      assert.ok(api.findSecrets(input).length > 0, `findSecrets: ${input.replace(/\n/g, "|")}`);
+    }
+    assert.match(api.redact(`items:\n  - data:\n      db: ${C}\n    kind: Secret\n  - kind: ConfigMap\n    data:\n      pub: keepme`), /pub: keepme/);
+  });
+});

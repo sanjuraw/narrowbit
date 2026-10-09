@@ -238,7 +238,7 @@ export function allowedAsCheck(command: string, checks: readonly string[], warni
     // Expansions are refused as the shell would perform them: an unquoted glob, variable or `~`, a `$` or backtick inside double quotes.
     const noSingle = part.replace(/'[^']*'/g, "''");
     for (const dq of noSingle.match(/"[^"]*"/g) ?? []) if (/[$`\\]/.test(dq)) return false;
-    if (/[*?\[\]{}$\\]/.test(noSingle.replace(/"[^"]*"/g, '""'))) return false;
+    if (/[*?\[\]{}()$\\]/.test(noSingle.replace(/"[^"]*"/g, '""'))) return false;
     if (/(^|[ \t])~/.test(noSingle.replace(/"[^"]*"/g, '""'))) return false;
     const words = shellWords(part);
     if (!words || !words.length) return false;
@@ -246,8 +246,13 @@ export function allowedAsCheck(command: string, checks: readonly string[], warni
     // The program must be written plainly. Hardening of what runs (git, npx) is done on the spelling it sees, so a quoted `"git"`
     // would be admitted here and then run unhardened.
     if (!part.startsWith(prog + " ") && !part.startsWith(prog + "\t") && part !== prog) return false;
-    if (prog === "git") return !filter && !!GIT[args[0]] && GIT[args[0]](args.slice(1), root);
+    // Hardening (git's program hooks off, npx not downloading) is applied to the spelling it finds, so the words it depends on
+    // must be written plainly: `git 'diff'` or `npx 'vitest'` would validate as the same command and then run unhardened.
+    const plainWords = (n: number) => part === words.slice(0, n).join(" ") || part.startsWith(words.slice(0, n).join(" ") + " ") || part.startsWith(words.slice(0, n).join(" ") + "\t");
+    if (prog === "git") return !filter && !!GIT[args[0]] && plainWords(2) && GIT[args[0]](args.slice(1), root);
     if (READERS[prog]) return READERS[prog](args, root, filter);
+    if (!filter && (prog === "npx" || prog === "bunx") && !plainWords(2)) return false;
+    if (!filter && prog === "pnpm" && args[0] === "exec" && !plainWords(3)) return false;
     return !filter && runnerOk(words, root);
   };
   if (!configured && !check(head, false)) return false;

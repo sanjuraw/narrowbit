@@ -30,7 +30,12 @@ symlinkSync(join(outside, "secret.txt"), join(root, "alias2"));
 writeFileSync(join(root, "alias space"), "x");
 symlinkSync(outside, join(root, "alias folder"));
 const git = (...a) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root, stdio: "ignore" });
-git("init", "-q", "-b", "main"); git("add", "-A"); git("add", "-f", ".env"); git("commit", "-qm", "init");
+// A hostile repository config: programs git would run by itself. Any of them running is a finding (a marker file appears).
+const monitor = join(base, "monitor.sh"), driver = join(base, "driver.sh");
+writeFileSync(monitor, `#!/bin/sh\ntouch ${join(outside, "fsmonitor-ran")}\nprintf '\\0'\n`, { mode: 0o755 });
+writeFileSync(driver, `#!/bin/sh\ntouch ${join(outside, "diff-driver-ran")}\n`, { mode: 0o755 });
+git("init", "-q", "-b", "main");
+git("config", "core.fsmonitor", monitor); git("config", "diff.external", driver); git("add", "-A"); git("add", "-f", ".env"); git("commit", "-qm", "init");
 writeFileSync(join(root, "a.txt"), "alpha\nbeta\nhello\nmore\n");
 
 const PROG = {
@@ -47,7 +52,7 @@ const PROG = {
 const OPS = ["a.txt", "sub/b.txt", "sub", ".", "..", "../outside", ".env", ".e'nv'", '.e"nv"', "./.env", "sub/../.env", "alias", "alias/secret.txt", "alias2", "'alias space'", "'alias folder/secret.txt'", '"alias folder/secret.txt"', "/etc/hosts", "~/x", "~", "HEAD", "HEAD~1", "HEAD:.env", "HEAD:a.txt", ":.env", "--", "-", "a.txt:1", "'a b'", "''", '""', "nofile", "*", "*.txt", "$HOME", "$(true)", "`true`", "x\\ y", "{a,b}", "a.txt#c", "!x", "'x", '"x', "a.txt b", "a.txt b", "a.txt\tb", "a.txt\rb", "a.txt\fb", "a.txt\vb", "a.txt\u0085b", "a.txt​b", "%1", "=x", "FOO=bar", "a=b", "(x)", "[x]", "./sub/", "sub//b.txt", "SUB/b.txt", ".ENV", "alias/../a.txt", "alias/patterns"];
 const SEPS = [" ", "  ", "\t", " "];
 const gen = () => {
-  const names = Object.keys(PROG);
+  const names = [...Object.keys(PROG), "git", "git", "git", "git", "npx", "npx", "pnpm"];   // git and npx are where spelling matters most
   const one = () => {
     const prog = pick(names); const [flags] = PROG[prog];
     const parts = [prog]; const nf = Math.floor(rnd() * 4), no = Math.floor(rnd() * 3);
@@ -55,6 +60,8 @@ const gen = () => {
     for (let i = 0; i < no; i++) parts.push(pick(OPS));
     for (let i = parts.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); if (rnd() < 0.3) [parts[i], parts[j]] = [parts[j], parts[i]]; }
     if (rnd() < 0.1) parts[0] = `${rnd() < 0.5 ? "'" : '"'}${parts[0]}${rnd() < 0.5 ? "'" : '"'}`;
+    if (rnd() < 0.12 && typeof parts[1] === "string") { const q = pick(["'", '"']); parts[1] = q + parts[1] + q; }   // a quoted subcommand or tool name
+    if (rnd() < 0.06 && typeof parts[1] === "string" && parts[1]) parts[1] = parts[1].slice(0, 1) + '""' + parts[1].slice(1);   // adjacent empty quotes inside it
     if (rnd() < 0.05) parts.splice(1, 0, pick(["''", '""', "\\", " ", "#"]));
     return parts.join(rnd() < 0.9 ? " " : pick(SEPS));
   };

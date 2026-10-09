@@ -16,8 +16,8 @@ const PATTERNS: [RegExp, string][] = [
   [/(?<=^[ \t]{0,160}(?:(?:export|ENV|ARG)[ \t]{1,32}|-[ \t]{1,32})?["']?[\w.-]{0,64}(?:token|api[_-]?key|access[_-]?key|auth)[\w.-]{0,64}["']?[ \t]{0,32}[:=][ \t]{0,32})(?<!tokens["']?[ \t]{0,32}[:=][ \t]{0,32})(?![|>][-+0-9]*[ \t]{0,32}(?:#.*)?$)(?!\[(?:redacted|REDACTED)|\*\*\*|(?:string|number|boolean|any|unknown|never|void|null|undefined|true|false|object|bigint|symbol|required|optional)\b|\d{1,5}(?:\s|$|,|;)|(?:this|self|process|req|args|opts|options|config|env|params|props|state|ctx|os|input|data)\.|[\w.$]+[ \t]{0,32}(?:<[^>\r\n]*>)?[ \t]{0,32}\()["']?[^\s#"',;{}()\[\]<>][^\r\n#,;(){}\[\]]{2,}/gim, "[redacted value]"],
   // A JSON value whose key names a credential, anywhere on the line: a password/secret/private-key field is hidden whatever its
   // type or length (a number too), a token/API-key field when it is a string of 3+ characters.
-  [/(?<="[\w.-]{0,64}(?:secret|passw(?:or)?d|pwd|private[_-]?key|credentials?)[\w.-]{0,64}"[ \t]{0,32}:[ \t]{0,32}")(?!\[(?:redacted|REDACTED))[^"\r\n]+(?=")/gi, "[redacted value]"],
-  [/(?<="[\w.-]{0,64}(?:secret|passw(?:or)?d|pwd|private[_-]?key|credentials?)[\w.-]{0,64}"[ \t]{0,32}:[ \t]{0,32})\d+(?=[ \t]{0,32}[,}\]\r\n]|[ \t]{0,32}$)/gi, "[redacted value]"],
+  [/(?<="[\w.-]{0,64}(?:secret|passw(?:or)?d|pwd|private[_-]?key|credentials?)[\w.-]{0,64}"[ \t]{0,32}:[ \t]{0,32}")(?!\[(?:redacted|REDACTED))(?:[^"\\\r\n]|\\.)+(?=")/gi, "[redacted value]"],
+  [/(?<="[\w.-]{0,64}(?:secret|passw(?:or)?d|pwd|private[_-]?key|credentials?)[\w.-]{0,64}"[ \t]{0,32}:[ \t]{0,32})-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?=[ \t]{0,32}[,}\]\r\n]|[ \t]{0,32}$)/gi, "[redacted value]"],
   // <password>value</password> and friends.
   [/(?<=<[\w.:-]{0,64}(?:secret|passw(?:or)?d|pwd|private[_-]?key|credentials?|token|api[_-]?key|access[_-]?key)[\w.:-]{0,64}(?:\s[^>]{0,300})?>)\s*(?!\[redacted)[^<\s][^<]*?(?=\s{0,32}<\/)/gi, "[redacted value]"],
   // Connection strings (`Server=db;User ID=u;Password=x;`), the Dockerfile forms `ENV PASSWORD x` and `ENV A=1 PASSWORD=x`.
@@ -27,8 +27,8 @@ const PATTERNS: [RegExp, string][] = [
   // HTTP header lines that carry a credential.
   [/(?<=^[ \t]{0,160}(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token|x-csrf-token)[ \t]{0,32}:[ \t]{0,32})(?!\[(?:redacted|REDACTED))(?=\S)[^\r\n]+/gim, "[redacted value]"],
   // The same names as JSON keys.
-  [/(?<="(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token)"[ \t]{0,32}:[ \t]{0,32}")(?!\[(?:redacted|REDACTED))[^"\r\n]+(?=")/gi, "[redacted value]"],
-  [/(?<="[\w.-]{0,64}(?:token|api[_-]?key|access[_-]?key)[\w.-]{0,64}"[ \t]{0,32}:[ \t]{0,32}")(?!\[(?:redacted|REDACTED))[^"\r\n]{3,}(?=")/gi, "[redacted value]"],
+  [/(?<="(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|x-auth-token)"[ \t]{0,32}:[ \t]{0,32}")(?!\[(?:redacted|REDACTED))(?:[^"\\\r\n]|\\.)+(?=")/gi, "[redacted value]"],
+  [/(?<="[\w.-]{0,64}(?:token|api[_-]?key|access[_-]?key)[\w.-]{0,64}"[ \t]{0,32}:[ \t]{0,32}")(?!\[(?:redacted|REDACTED))(?:[^"\\\r\n]|\\.){3,}(?=")/gi, "[redacted value]"],
   [/(?<=^[ \t]{0,160}(?:export[ \t]{1,32})?(?:[A-Z][A-Z0-9_]*)?(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_?KEY|CREDENTIALS?|ACCESS_?KEY)[A-Z0-9_]*[ \t]{0,32}=[ \t]{0,32})(?<!TOKENS[ \t]{0,32}=[ \t]{0,32})(?!\[(?:redacted|REDACTED)|\*\*\*|(?:true|false|null|none)\b|\d{1,5}(?:\s|$))["']?[^\s#"'][^\r\n#]{3,}/gm, "[redacted value]"],
   [/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED AWS KEY]"],
   [/\bsk-(?:ant-|proj-|live_|test_)?[A-Za-z0-9_-]{20,}\b/g, "[REDACTED KEY]"],
@@ -159,10 +159,15 @@ function redactKubeSecrets(lines: string[]): void {
     if (!m) continue;
     const col = m[1].length; // the column this object's keys start at; a sibling list item or a parent key sits to its left
     const inObject = (l: string) => l.trim() === "" || (!/^---\s*$/.test(l) && indentOf(l) >= col);
+    // A list item's own first line starts at col - 2 with "- ": when the item's first key came before `kind`, that line belongs to it.
+    const startsItem = (l: string) => col >= 2 && new RegExp(`^[ \\t]{${col - 2}}-[ \\t]`).test(l);
     let start = i, end = i;
-    while (start > 0 && inObject(lines[start - 1])) start--;
+    while (start > 0 && (inObject(lines[start - 1]) || startsItem(lines[start - 1]))) {
+      start--;
+      if (startsItem(lines[start])) break;
+    }
     while (end + 1 < lines.length && inObject(lines[end + 1])) end++;
-    const dataRe = new RegExp(`^[ \\t]{${col}}(?:data|stringData):[ \\t]*$`);
+    const dataRe = new RegExp(`^(?:[ \\t]{${col}}|[ \\t]{${Math.max(col - 2, 0)}}-[ \\t])(?:data|stringData):[ \\t]*$`);
     for (let k = start; k <= end; k++) {
       if (!dataRe.test(lines[k])) continue;
       let e = k + 1;
@@ -174,9 +179,40 @@ function redactKubeSecrets(lines: string[]): void {
   }
 }
 
+/** A JSON key that names a credential and holds an object or array: every string and number leaf inside it is the secret. Strings are scanned with their escapes. */
+function redactJsonSubtrees(text: string): string {
+  if (!text.includes("{") && !text.includes("[")) return text;
+  const re = new RegExp(`"[\\w.-]{0,64}${CRED_NAME}[\\w.-]{0,64}"[ \\t\\r\\n]{0,32}:[ \\t\\r\\n]{0,32}([{\\[])`, "gi");
+  let out = "", last = 0, m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const open = m.index + m[0].length - 1;
+    let depth = 0, i = open, inStr = false;
+    const limit = Math.min(text.length, open + 200_000);
+    for (; i < limit; i++) {
+      const c = text[i];
+      if (inStr) { if (c === "\\") i++; else if (c === '"') inStr = false; }
+      else if (c === '"') inStr = true;
+      else if (c === "{" || c === "[") depth++;
+      else if (c === "}" || c === "]") { depth--; if (depth === 0) break; }
+    }
+    const end = Math.min(i + 1, text.length);
+    const body = text.slice(open, end).replace(/"(?:[^"\\\r\n]|\\.)*"(?=\s*[,}\]])|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?=\s*[,}\]])/g, (x) => (x.startsWith('"') ? '"[redacted value]"' : "[redacted value]"));
+    out += text.slice(last, open) + body;
+    last = end;
+    re.lastIndex = end;
+  }
+  return out + text.slice(last);
+}
+
+/** An XML element named for a credential that holds other elements: the text inside them is the secret. */
+function redactXmlSubtrees(text: string): string {
+  if (!text.includes("<")) return text;
+  return text.replace(new RegExp(`<([\\w.:-]{0,64}${CRED_NAME}[\\w.:-]{0,64})(?:\\s[^>]{0,300})?>([\\s\\S]{0,5000}?)<\\/\\1>`, "gi"), (m, _name: string, inner: string) => (inner.includes("<") ? m.replace(inner, inner.replace(/>([^<\s][^<]*)</g, ">[redacted value]<")) : m));
+}
+
 /** Credential-bearing structures that span lines. Line count is preserved (so findSecrets can point at the same lines). */
 function redactStructures(text: string): string {
-  let out = text.replace(new RegExp(`(^[ \\t]*[\\w."-]*${CRED_NAME}[\\w."-]*[ \\t]*=[ \\t]*)("""|\'\'\')([\\s\\S]*?)\\2`, "gim"), (_m, head: string, q: string, body: string) => head + q + body.split("\n").map(() => "[redacted value]").join("\n") + q);
+  let out = redactXmlSubtrees(redactJsonSubtrees(text)).replace(new RegExp(`(^[ \\t]*[\\w."-]*${CRED_NAME}[\\w."-]*[ \\t]*=[ \\t]*)("""|\'\'\')([\\s\\S]*?)\\2`, "gim"), (_m, head: string, q: string, body: string) => head + q + body.split("\n").map(() => "[redacted value]").join("\n") + q);
   out = out.replace(new RegExp(`(variable\\s{1,32}"[\\w.-]{0,64}${CRED_NAME}[\\w.-]{0,64}"\\s{0,32}\\{[^}]{0,3000}?\\bdefault\\s{0,32}=\\s{0,32}")([^"\\r\\n]+)(")`, "gi"), "$1[redacted value]$3");
   if (!/(kind:[ \t]*Secret\b|(^|\n)[ \t]*(?:-[ \t]+)?[\w."-]*(?:secret|passw|pwd|private|credential|token|api|access)[\w."-]*[ \t]*:)/i.test(out)) return out;
   const lines = out.split("\n");

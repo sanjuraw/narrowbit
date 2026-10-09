@@ -5456,3 +5456,52 @@ describe("own audit (2026-10-09): the task parser on pasted logs", () => {
     assert.deepEqual(parseTask("fix `renderTab` in src/ui/tab.ts:12 please").locations, [{ path: "src/ui/tab.ts", line: 12 }], "normal tasks parse as before");
   });
 });
+
+describe("twentieth audit, fifth pass (Codex on 30671b0): the words hardening depends on, and live output", () => {
+  test("a quoted git subcommand or npx tool is not free-run, and a diff of a secrets file is hidden whatever the command's spelling", async () => {
+    const { allowedAsCheck } = await dist("approvals.js");
+    const { runCommand } = await dist("compress.js");
+    const { root, p } = tinyRepo();
+    const git = (...a) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root });
+    try {
+      for (const bad of ["git 'diff'", 'git "status"', 'git d""iff', "git 'log'", "npx 'vitest' run", "npx v\"\"itest", "pnpm exec 'tsc' --noEmit"]) assert.equal(allowedAsCheck(bad, ["npm test"], undefined, root), false, bad);
+      for (const good of ["git diff", "git status", "npx vitest run", "pnpm exec tsc --noEmit"]) assert.equal(allowedAsCheck(good, ["npm test"], undefined, root), true, good);
+      writeFileSync(join(root, ".env"), "old\n"); git("add", "-f", ".env"); git("commit", "-qm", "env");
+      writeFileSync(join(root, ".env"), "OPAQUE_DIFF_CANARY\n"); writeFileSync(join(root, "a.txt"), "hello\nchanged\n");
+      for (const cmd of ["git diff", "git 'diff'", 'git d""iff', "sh -c 'git diff'"]) {
+        const r = await runCommand(p, cmd, {});
+        assert.doesNotMatch(r.rendered, /OPAQUE_DIFF_CANARY/, cmd);
+        const logs = readdirSync(join(p.nb, "logs")).map((f) => readFileSync(join(p.nb, "logs", f), "utf8")).join("\n");
+        assert.doesNotMatch(logs, /OPAQUE_DIFF_CANARY/, `${cmd}: raw log`);
+      }
+      // git is told to leave the repository's file-system monitor alone through the environment, for every spelling
+      const marker = join(root, "..", `monitor-ran-${process.pid}`);
+      const hook = join(root, "..", `monitor-${process.pid}.sh`);
+      writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nprintf '\\0'\n`, { mode: 0o755 });
+      execFileSync("git", ["config", "core.fsmonitor", hook], { cwd: root });
+      execFileSync("git", ["status"], { cwd: root, stdio: "ignore" });
+      assert.equal(existsSync(marker), true, "control: plain git runs the monitor");
+      rmSync(marker);
+      await runCommand(p, "git 'status'", {});
+      await runCommand(p, "sh -c 'git status'", {});
+      assert.equal(existsSync(marker), false, "the monitor did not run");
+      rmSync(hook, { force: true });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("live progress hides the diff of a secrets file, carrying the state from line to line", async () => {
+    const { progressFeed } = await dist("runtime.js");
+    const seen = [];
+    const feed = progressFeed((x) => seen.push(x));
+    const diff = ["diff --git a/.env b/.env", "--- a/.env", "+++ b/.env", "@@ -1 +1 @@", "-old", "+OPAQUE_DIFF_CANARY", "diff --git a/sample b/sample", "--- a/sample", "+++ b/sample", "@@ -1 +1 @@", "-before", "+after"];
+    feed.output("git diff", diff.slice(0, 3).join("\n") + "\n");
+    feed.output("git diff", diff.slice(3, 7).join("\n") + "\n");
+    feed.output("git diff", diff.slice(7).join("\n") + "\n");
+    await new Promise((r) => setTimeout(r, 600));
+    feed.stop();
+    const last = seen.at(-1);
+    assert.doesNotMatch(JSON.stringify(seen), /OPAQUE_DIFF_CANARY/);
+    assert.match(last.tail, /are not shown: it looks like a secrets file/);
+    assert.match(last.tail, /\+after/, "the next file's changes still show");
+  });
+});

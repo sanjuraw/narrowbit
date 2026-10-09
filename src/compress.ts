@@ -339,7 +339,10 @@ export interface RunResult {
  * which sent the model chasing a failure its change did not cause; history entry 63).
  */
 export function commandEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, CI: "1", FORCE_COLOR: "0" };
+  // Every git process a command starts (directly, or from inside a script) runs with the repository's file-system monitor off,
+  // whatever the command's spelling: git reads these from the environment, ahead of the repository's own config.
+  const n = Number(process.env.GIT_CONFIG_COUNT) || 0;
+  return { ...process.env, CI: "1", FORCE_COLOR: "0", GIT_CONFIG_COUNT: String(n + 1), [`GIT_CONFIG_KEY_${n}`]: "core.fsmonitor", [`GIT_CONFIG_VALUE_${n}`]: "false" };
 }
 
 export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number; cwd?: string; signal?: AbortSignal; onOutput?: (text: string) => void } = {}): Promise<RunResult> {
@@ -364,7 +367,8 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
       opts.signal?.removeEventListener("abort", stop);
       process.removeListener("exit", killOnExit);
       const rawAll = Buffer.concat(chunks).toString("utf8");
-      const raw = /^\s*git\s+(?:-c\s+\S+\s+)*(?:diff|log|show|stash)\b/.test(command) ? hideSecretDiffs(rawAll) : rawAll;
+      // Whatever the spelling of the command, a diff of a secrets file is not shown (a script that calls git diff counts too).
+      const raw = hideSecretDiffs(rawAll);
       const exit = code ?? (signal ? 124 : 1);
       const logName = `${shortId()}.log`;
       const rawLog = join(p.logs, logName);

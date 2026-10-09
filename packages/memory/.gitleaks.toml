@@ -15,4 +15,5 @@ regexes = [
   '''\$\{C\}''',
   '''BEGIN RSA PRIVATE KEY-----\\n" \}\);''',
   '''BEGIN RSA PRIVATE KEY-----\\n"\.repeat''',
+  '''BEGIN RSA PRIVATE KEY-----\\nBODY\\n-----END''',
 ]
