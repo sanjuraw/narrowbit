@@ -166,7 +166,7 @@ export function pushBranch(root: string): { ok: boolean; message: string } {
   const info = remoteInfo(root);
   if (!info.hasRemote) return { ok: false, message: "no-remote" };
   const args = info.upstream ? ["push"] : ["push", "-u", "origin", branch];
-  const r = spawnSync("git", gitArgs(root, args), {
+  const r = spawnSync("git", gitArgs(root, args, { hooks: true }), {
     cwd: root, encoding: "utf8", timeout: 90_000,
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "", GCM_INTERACTIVE: "never" },
   });

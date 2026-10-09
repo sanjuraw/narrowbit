@@ -187,8 +187,9 @@ function redactJsonSubtrees(text: string): string {
   while ((m = re.exec(text))) {
     const open = m.index + m[0].length - 1;
     let depth = 0, i = open, inStr = false;
-    const limit = Math.min(text.length, open + 200_000);
-    for (; i < limit; i++) {
+    // No length limit: one pass over the text in all (matching resumes after the container), and a container that never
+    // closes is hidden to the end of the text rather than left readable.
+    for (; i < text.length; i++) {
       const c = text[i];
       if (inStr) { if (c === "\\") i++; else if (c === '"') inStr = false; }
       else if (c === '"') inStr = true;
@@ -196,7 +197,13 @@ function redactJsonSubtrees(text: string): string {
       else if (c === "}" || c === "]") { depth--; if (depth === 0) break; }
     }
     const end = Math.min(i + 1, text.length);
-    const body = text.slice(open, end).replace(/"(?:[^"\\\r\n]|\\.)*"(?=\s*[,}\]])|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?=\s*[,}\]])/g, (x) => (x.startsWith('"') ? '"[redacted value]"' : "[redacted value]"));
+    // A container that never closes (depth still open at the end) is cut off mid-way: every string that is not a key goes, closed or not.
+    const closed = depth === 0;
+    const hide = (x: string) => (x.startsWith('"') ? '"[redacted value]"' : "[redacted value]");
+    const chunk = text.slice(open, end);
+    const body = closed
+      ? chunk.replace(/"(?:[^"\\\r\n]|\\.)*"(?=\s*[,}\]])|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?=\s*[,}\]])/g, hide)
+      : chunk.replace(/"(?:[^"\\\r\n]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g, (x, at: number) => (/^\s*:/.test(chunk.slice(at + x.length, at + x.length + 40)) ? x : hide(x)));
     out += text.slice(last, open) + body;
     last = end;
     re.lastIndex = end;
@@ -204,10 +211,23 @@ function redactJsonSubtrees(text: string): string {
   return out + text.slice(last);
 }
 
-/** An XML element named for a credential that holds other elements: the text inside them is the secret. */
+/** An XML element named for a credential that holds other elements: the text inside them is the secret, however long the element is. One pass; an element that never closes is hidden to the end of the text. */
 function redactXmlSubtrees(text: string): string {
   if (!text.includes("<")) return text;
-  return text.replace(new RegExp(`<([\\w.:-]{0,64}${CRED_NAME}[\\w.:-]{0,64})(?:\\s[^>]{0,300})?>([\\s\\S]{0,5000}?)<\\/\\1>`, "gi"), (m, _name: string, inner: string) => (inner.includes("<") ? m.replace(inner, inner.replace(/>([^<\s][^<]*)</g, ">[redacted value]<")) : m));
+  const open = new RegExp(`<([\\w.:-]{0,64}${CRED_NAME}[\\w.:-]{0,64})(?:\\s[^>]{0,300})?>`, "gi");
+  let out = "", last = 0, m: RegExpExecArray | null;
+  while ((m = open.exec(text))) {
+    const from = m.index + m[0].length;
+    const closer = new RegExp(`</${m[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}>`, "gi");
+    closer.lastIndex = from;
+    const found = closer.exec(text);
+    const to = found ? found.index : text.length;
+    const inner = text.slice(from, to);
+    out += text.slice(last, from) + (inner.includes("<") ? inner.replace(/>([^<\s][^<]*)</g, ">[redacted value]<") : inner);
+    last = to;
+    open.lastIndex = to;
+  }
+  return out + text.slice(last);
 }
 
 /** Credential-bearing structures that span lines. Line count is preserved (so findSecrets can point at the same lines). */

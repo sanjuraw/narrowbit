@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { findSecrets } from "./redact.js";
-import { sh, sourceText } from "./util.js";
+import { isSecretFile, sh, sourceText } from "./util.js";
 import { INSTRUCTION_FILES, scanText } from "./guard.js";
 
 /**
@@ -41,7 +41,7 @@ export function auditRepo(root: string, opts: { files?: string[]; history?: bool
   const files = (opts.files ?? tracked).filter((f) => !f.startsWith(".narrowbit/") && !f.startsWith("node_modules/"));
 
   for (const f of files) {
-    if (SECRET_FILE.test(f)) findings.push({ severity: "high", check: "secret file", file: f, detail: `${f} looks like a credentials file and is ${opts.files ? "about to be committed" : "tracked by git"}. Remove it from git, add it to .gitignore, and rotate anything it held.` });
+    if (SECRET_FILE.test(f) || isSecretFile(f)) findings.push({ severity: "high", check: "secret file", file: f, detail: `${f} looks like a credentials file and is ${opts.files ? "about to be committed" : "tracked by git"}. Remove it from git, add it to .gitignore, and rotate anything it held.` });
     const text = textOf(root, f);
     if (text === null) continue;
     const seen = new Set<string>();

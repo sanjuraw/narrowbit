@@ -643,3 +643,20 @@ describe("twentieth audit, fifth pass (Codex on 30671b0): JSON escapes and subtr
     assert.match(api.redact(`items:\n  - data:\n      db: ${C}\n    kind: Secret\n  - kind: ConfigMap\n    data:\n      pub: keepme`), /pub: keepme/);
   });
 });
+
+describe("twenty-ninth audit (Codex on 675c71b): long credential containers", () => {
+  test("a JSON credentials object or an XML password element stays hidden however long it is, and one that never closes is hidden to the end", () => {
+    const J = `{ "credentials": {\n"padding":"${"a".repeat(250000)}",\n"entry":"NESTED_JSON_CANARY"\n}}`;
+    const X = `<password>\n<pad>${"a".repeat(9000)}</pad>\n<value>NESTED_XML_CANARY</value>\n</password>`;
+    const open = `{ "credentials": {\n"padding":"${"a".repeat(250000)}",\n"entry":"OPEN_JSON_CANARY"\n`;
+    const openX = `<password>\n<pad>x</pad>\n<value>OPEN_XML_CANARY</value>\n`;
+    for (const [text, canary] of [[J, "NESTED_JSON_CANARY"], [X, "NESTED_XML_CANARY"], [open, "OPEN_JSON_CANARY"], [openX, "OPEN_XML_CANARY"]]) {
+      assert.ok(!api.redact(text).includes(canary), canary);
+      assert.ok(api.findSecrets(text).length > 0, `${canary} is also reported by the detector`);
+      assert.equal(api.redact(text).split("\n").length, text.split("\n").length, "line count kept");
+    }
+    const t0 = Date.now();
+    api.redact(`<password>` .repeat(2000) + "x".repeat(200000));
+    assert.ok(Date.now() - t0 < 5000, "no blow-up on many unclosed elements");
+  });
+});

@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { NarrowbitConfig, Paths } from "./config.js";
 import { runCommand, type RunResult } from "./compress.js";
 import { isTestPath } from "./files.js";
@@ -76,8 +76,10 @@ export async function verify(
       // but not installed in the active environment, say). That is a missing tool, not failing code:
       // counting it as a failure made every verify red on tests that passed, and repeated failed
       // checks feed the runtime's escalation to the most expensive model. Report it as not run.
-      if (run.exit === 127) {
-        const tool = cmd.trim().split(/\s+/)[0];
+      // Only when the shell itself says so: a check that ran and exited 127 on its own (a script, an inner tool) failed.
+      const tool = cmd.trim().split(/\s+/)[0];
+      const notFound = new RegExp(`(^|[\\s:])${tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: (command )?not found|command not found: ${tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "m").test(logText(p.root, run.rawLog));
+      if (run.exit === 127 && notFound) {
         return { name, ok: true, skipped: true, exit: 127, summary: `skipped — \`${tool}\` isn't installed here, so this check did not run (it did not pass either)`, run };
       }
       return { name, ok: run.exit === 0, exit: run.exit, summary: run.compressed.summary, run };
@@ -110,4 +112,13 @@ export async function verify(
 
 export function verifyRecord(v: VerifyResult): NonNullable<TaskRecord["verify"]> {
   return { at: now(), ok: v.ok, steps: v.steps.map(({ name, ok, exit, summary }) => ({ name, ok, exit, summary })), unexpected: v.unexpected };
+}
+
+/** The saved output of a command, for looking at what the shell said. */
+function logText(root: string, rawLog: string): string {
+  try {
+    return readFileSync(resolve(root, rawLog), "utf8");
+  } catch {
+    return "";
+  }
 }

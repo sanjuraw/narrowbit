@@ -59,12 +59,14 @@ function existsSyncOrLink(p: string): boolean {
  * through Narrowbit's own git calls this way. Clean/smudge filters can't be switched off without breaking real tools
  * (git-lfs, git-crypt), so those are handled by asking before opening a repo that defines them (trust.ts).
  */
-export function gitArgs(root: string, args: string[]): string[] {
+export function gitArgs(root: string, args: string[], opts: { hooks?: boolean } = {}): string[] {
   const rest = args[0] === "diff" ? ["diff", "--no-ext-diff", "--no-textconv", ...args.slice(1)] : args;
-  return ["-c", `safe.directory=${root}`, "-c", "core.fsmonitor=false", ...rest];
+  // Repository hooks (post-index-change runs on a plain `git status` that refreshes the index; others on add, checkout, commit)
+  // are programs the repository carries. Narrowbit's own bookkeeping never runs them; only a commit or push the user asked for does.
+  return ["-c", `safe.directory=${root}`, "-c", "core.fsmonitor=false", ...(opts.hooks ? [] : ["-c", "core.hooksPath=/dev/null"]), ...rest];
 }
 
-export function sh(cmd: string, args: string[], cwd: string, input?: string): { code: number; stdout: string; stderr: string } {
+export function sh(cmd: string, args: string[], cwd: string, input?: string, opts: { hooks?: boolean } = {}): { code: number; stdout: string; stderr: string } {
   // Git refuses to touch a repository it doesn't own (a real safety feature — protects against another
   // user planting a malicious repo you'd cd into) — but on a shared Mac, or a project folder that existed
   // before Narrowbit ever touched it, "doesn't own" often just means a different macOS account created the
@@ -73,7 +75,7 @@ export function sh(cmd: string, args: string[], cwd: string, input?: string): { 
   // banner, no clue anything is wrong, the whole git-aware half of the UI just vanishes. Narrowbit is only
   // ever asked to operate on a folder the user explicitly pointed it at, so it's reasonable to trust that
   // one folder for its own commands, scoped to this single invocation — not a persistent config change.
-  const realArgs = cmd === "git" ? gitArgs(cwd, args) : args;
+  const realArgs = cmd === "git" ? gitArgs(cwd, args, opts) : args;
   const r = spawnSync(cmd, realArgs, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, input });
   return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
@@ -296,7 +298,10 @@ export function isSecretFile(relPath: string): boolean {
 export function hardenGitCommand(command: string): string {
   return command
     .replace(/^(\s*)git(\s+)/, (_m, lead, sp) => `${lead}git -c core.fsmonitor=false${sp}`)
-    .replace(/^(\s*git -c core\.fsmonitor=false\s+(?:diff|log|show))(?=\s|$)/, "$1 --no-ext-diff --no-textconv");
+    .replace(/^(\s*git -c core\.fsmonitor=false\s+(?:diff|log|show))(?=\s|$)/, "$1 --no-ext-diff --no-textconv")
+    // A command that only reads (status refreshes the index, which can run the repository's post-index-change hook) runs without hooks;
+    // commit, push, checkout and the like keep them, as they would in a terminal.
+    .replace(/^(\s*git -c core\.fsmonitor=false)(\s+(?:status|diff|log|show|branch|rev-parse|ls-files|blame|grep|describe|shortlog|rev-list|ls-tree|cat-file|diff-tree|diff-index)(?:\s|$))/, "$1 -c core.hooksPath=/dev/null$2");
 }
 
 /**

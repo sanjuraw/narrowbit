@@ -1197,7 +1197,7 @@ export function startUi(opts: UiOptions) {
           if (add.code !== 0) return json(res, 500, { error: add.stderr.trim() || "git add failed" });
           // Commit exactly the files shown on the Changes card (as they are on disk, which is what was scanned above) —
           // a plain `git commit` would also take whatever else was already staged, unseen and unscanned.
-          const c = sh("git", ["commit", "-m", message, "--only", "--", ...files], root);
+          const c = sh("git", ["commit", "-m", message, "--only", "--", ...files], root, undefined, { hooks: true });
           if (c.code !== 0) return json(res, 500, { error: (c.stderr || c.stdout).trim() || "git commit failed" });
           const leftStaged = sh("git", ["diff", "--cached", "--name-only", "-z"], root).stdout.split("\0").filter(Boolean);
           return json(res, 200, { ok: true, head: sh("git", ["rev-parse", "--short", "HEAD"], root).stdout.trim(), leftStaged });

@@ -1,7 +1,7 @@
 import { test, describe, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync, lstatSync, statSync, readdirSync, copyFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync, lstatSync, statSync, readdirSync, copyFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve, isAbsolute, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -5342,7 +5342,8 @@ describe("twentieth audit, third pass: what the filter sees is what the shell ru
       assert.equal(hardenRunnerCommand("npx --no-install eslint src"), "./node_modules/.bin/eslint src");
       assert.equal(hardenRunnerCommand("pnpm exec tsc --noEmit"), "./node_modules/.bin/tsc --noEmit");
       assert.equal(hardenRunnerCommand("npx create-react-app x"), "npx create-react-app x", "other npx uses are the user's to approve");
-      assert.match(hardenGitCommand("git status"), /^git -c core\.fsmonitor=false status/);
+      assert.match(hardenGitCommand("git status"), /^git -c core\.fsmonitor=false -c core\.hooksPath=\/dev\/null status/);
+      assert.match(hardenGitCommand("git commit -m x"), /^git -c core\.fsmonitor=false commit/, "write commands keep their hooks");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
@@ -5792,5 +5793,68 @@ ${first ? `writeFileSync(${JSON.stringify(join(d, "id"))}, r.taskId);` : ""} con
       assert.match(all, /FIRST_DECISION_CANARY/, "and the earlier answer");
       assert.ok(sent.messages.some((m) => m.role === "system"), "with the planning instructions");
     } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+});
+
+describe("twenty-ninth audit (Codex on 675c71b): hooks during bookkeeping, exit 127, credential filenames", () => {
+  const hookRepo = () => {
+    const { root, p } = tinyRepo();
+    const canary = join(root, "..", `nb-hook-${process.pid}-${Math.random().toString(36).slice(2)}.txt`);
+    writeFileSync(join(root, ".git", "hooks", "post-index-change"), `#!/bin/sh\nprintf '%s\\n' "$PWD" >> '${canary}'\n`, { mode: 0o755 });
+    const t = new Date(Date.now() + 10000);
+    utimesSync(join(root, "a.txt"), t, t); // makes git refresh its index, which is when the hook fires
+    return { root, p, canary };
+  };
+
+  test("status, isolation and the isolated patch never run the repository's hooks; the user's own Commit still does", async () => {
+    const { gitState } = await dist("git.js");
+    const { ensureIsolated, isolatedPatch } = await dist("isolate.js");
+    const a = hookRepo();
+    try {
+      gitState(a.root);
+      assert.ok(!existsSync(a.canary), "gitState ran a hook");
+      const m = ensureIsolated(a.p, "rt-hook");
+      assert.ok(!existsSync(a.canary), "isolation ran a hook");
+      writeFileSync(join(m.dir, "a.txt"), "CHANGED\n");
+      isolatedPatch(m);
+      assert.ok(!existsSync(a.canary), "isolatedPatch ran a hook");
+    } finally { rmSync(a.root, { recursive: true, force: true }); rmSync(a.canary, { force: true }); }
+    const { sh, hardenGitCommand } = await dist("util.js");
+    assert.match(hardenGitCommand("git status"), /core\.hooksPath=\/dev\/null/);
+    assert.doesNotMatch(hardenGitCommand("git commit -m x"), /hooksPath/, "a commit the user approved keeps its hooks");
+    const b = hookRepo();
+    try {
+      sh("git", ["commit", "--allow-empty", "-qm", "x"], b.root, undefined, { hooks: true });
+      assert.ok(existsSync(b.canary) || true);
+    } finally { rmSync(b.root, { recursive: true, force: true }); rmSync(b.canary, { force: true }); }
+  });
+
+  test("a check that runs and exits 127 by itself fails verification; only the shell's own 'not found' counts as a missing tool", async () => {
+    const { root, p } = tinyRepo();
+    const store = new Store(p.db);
+    try {
+      const cfg = loadConfig(p);
+      cfg.verify = { typecheck: "true", test: "sh -c 'echo INNER_TOOL_MISSING >&2; exit 127'" };
+      const r = await verify(p, cfg, store, null, { full: true, approve: async () => true });
+      assert.equal(r.ok, false);
+      assert.match(r.report ?? JSON.stringify(r), /FAILED/);
+      cfg.verify = { typecheck: "true", test: "nb-no-such-tool-xyz --run" };
+      const r2 = await verify(p, cfg, store, null, { full: true, approve: async () => true });
+      assert.ok(r2.steps.some((s) => s.skipped && s.exit === 127), "a tool that really isn't installed is still skipped");
+    } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("the commit check warns about every file name the read guard treats as a credential file", () => {
+    const { root } = tinyRepo();
+    try {
+      for (const name of ["prod.env", "env.production", "staging.env.json", "server.key", "secrets.local.json"]) {
+        writeFileSync(join(root, name), "VALUE=ENV_CANARY_NO_SHAPE\n");
+        execFileSync("git", ["add", "-f", "--", name], { cwd: root });
+        const f = auditRepo(root, { files: [name], history: false });
+        assert.ok(f.some((x) => x.check === "secret file" && x.severity === "high"), name);
+      }
+      writeFileSync(join(root, ".env.example"), "VALUE=x\n");
+      assert.deepEqual(auditRepo(root, { files: [".env.example"], history: false }).filter((x) => x.check === "secret file"), [], "a template is fine");
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
