@@ -16,7 +16,7 @@ Project memory for coding agents. It remembers the things that aren't in the cod
 Needs Node 22.13 or newer. Not on npm yet; use it from a clone:
 
 ```bash
-git clone <this repository> narrowbit-memory
+git clone https://github.com/sanjuraw/narrowbit-memory.git
 cd narrowbit-memory
 npm install
 npm run build
