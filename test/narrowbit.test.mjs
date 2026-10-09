@@ -5916,3 +5916,38 @@ describe("thirtieth audit (Codex on 6f940dc): ranges, task records, command head
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("thirty-first audit (Codex on b19cac5): runtime ledger, CLI records", () => {
+  test("a labelled password in a command the model runs stays out of the event log, the progress log, the hand-over digest and the task record", async () => {
+    const { digestWithMemory, readEvents } = await dist("memory.js");
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([JSON.stringify({ action: "run", command: "printf '%s\\n' 'password=OPAQUE_COMMAND_CANARY'" }), JSON.stringify({ action: "done", summary: "finished" })]);
+    try {
+      const logs = [];
+      const r = await runTask(p, "inspect a.txt", { claudeBin: fake.bin, boss: false, persistent: false, maxSteps: 3, approve: async () => true, log: (s) => logs.push(s) });
+      const disk = readFileSync(join(p.runtime, r.taskId, "events.jsonl"), "utf8");
+      const all = [disk, JSON.stringify(readEvents(p, r.taskId)), digestWithMemory(p, r.taskId, 3000), logs.join("\n")];
+      for (const t of all) assert.ok(!t.includes("OPAQUE_COMMAND_CANARY"), t.slice(0, 200));
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("`narrowbit run` stores the command in the task record with a credential hidden, and a record written by any producer is cleaned on save", async () => {
+    const { Tasks } = await dist("tasks.js");
+    const { root, p } = tinyRepo();
+    const token = "ghp_" + "B".repeat(40);
+    try {
+      const mcp = spawnSync(process.execPath, [BIN, "mcp", "--root", root], { input: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "nb_context", arguments: { task: "inspect a.txt" } } }) + "\n", encoding: "utf8", timeout: 30000 });
+      assert.equal(mcp.status, 0);
+      const cli = spawnSync(process.execPath, [BIN, "run", "--root", root, "--", `printf '%s\\n' '${token}'`], { encoding: "utf8", timeout: 30000 });
+      assert.equal(cli.status, 0, cli.stderr.slice(0, 200));
+      const tasks = new Tasks(p);
+      const id = tasks.current();
+      const t = tasks.load(id);
+      t.runs.push({ at: "x", command: `echo ${token}`, exit: 0, rawLog: "l", rawTokens: 1, compressedTokens: 1, kind: "k" });
+      t.events.push({ at: "x", tool: "t", args: { password: "OPAQUE_ARG_CANARY" }, tokens: 1 });
+      tasks.save(t);
+      const text = readFileSync(join(p.tasks, id + ".json"), "utf8");
+      assert.ok(!text.includes(token) && !text.includes("OPAQUE_ARG_CANARY"), "the stored record");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});

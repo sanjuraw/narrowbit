@@ -303,8 +303,25 @@ export function redactBlocksKeepingLines(text: string): string {
  * is hidden. Only the display is changed; the command that runs is the one given.
  */
 export function redactCommand(command: string): string {
-  const hide = (_m: string, head: string, q: string, value: string) => (value.startsWith("$") ? _m : `${head}${q}[redacted value]`);
+  // The operand is a whole quoted string, or one bare word; a reference to a variable ($HOME) is not a secret.
+  const operand = `(?!['"]?\\[redacted)(?:'([^']*)'|"((?:[^"\\\\]|\\\\.)*)"|([^\\s'"]+))`;
+  const hide = (m: string, head: string, sq?: string, dq?: string, bare?: string) =>
+    bare !== undefined ? (bare.startsWith("$") ? m : `${head}[redacted value]`) : (sq ?? dq ?? "").startsWith("$") && !/\s/.test(sq ?? dq ?? "") ? m : `${head}${sq !== undefined ? `'[redacted value]'` : `"[redacted value]"`}`;
   return redact(command)
-    .replace(new RegExp(`(\\b[\\w.-]*${CRED_NAME}[\\w.-]*=)(['"]?)(?!\\[redacted)([^\\s'"]+)`, "gi"), hide)
-    .replace(new RegExp(`(\\s--?[\\w-]*${CRED_NAME}[\\w-]*\\s+)(['"]?)(?!\\[redacted)([^\\s'"]+)`, "gi"), hide);
+    .replace(new RegExp(`(\\b[\\w.-]*${CRED_NAME}[\\w.-]*=)${operand}`, "gi"), hide)
+    .replace(new RegExp(`(\\s--?[\\w-]*${CRED_NAME}[\\w-]*\\s+)${operand}`, "gi"), hide);
+}
+
+/**
+ * Any value as saved or shown: every string is cleaned, and a property named for a credential (password, token, …) is hidden whole,
+ * whatever it holds, because without its name an opaque value can't be told from any other. A `command` string gets the command rules.
+ */
+export function redactValue(v: unknown, key = "", depth = 0): unknown {
+  if (depth > 8) return "[nested too deeply: removed]";
+  const named = new RegExp(CRED_NAME, "i").test(key);
+  if (typeof v === "string") return named && v ? "[redacted value]" : redactCommand(v);
+  if (typeof v === "number" || typeof v === "boolean") return v; // counts such as "tokens: 120" are not secrets
+  if (v === null || typeof v !== "object") return v;
+  if (Array.isArray(v)) return v.map((x) => redactValue(x, key, depth + 1));
+  return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [redact(k), redactValue(x, k, depth + 1)]));
 }

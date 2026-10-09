@@ -707,3 +707,46 @@ describe("thirtieth audit (Codex on 6f940dc): metadata, whole-file structures, p
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("thirty-first audit (Codex on b19cac5): event metadata, ledger roles, damaged plans, quoted operands", () => {
+  const tmp = () => mkdtempSync(join(tmpdir(), "nbm-31-"));
+
+  test("a metadata property named for a credential is hidden whole, saved and read; counts are left alone", () => {
+    const root = tmp();
+    try {
+      const p = api.memoryPaths(root);
+      api.appendEvent(p, "rt-meta", { actor: "model", type: "decision", summary: "safe", meta: { password: "OPAQUE_META_CANARY", nested: { api_key: ["OPAQUE_ARR_CANARY"] }, tokens: 120, command: "printf x password=OPAQUE_CMD_CANARY" } });
+      const disk = readFileSync(join(p.runtime, "rt-meta", "events.jsonl"), "utf8");
+      const read = JSON.stringify(api.readEvents(p, "rt-meta"));
+      for (const text of [disk, read]) assert.ok(!/OPAQUE_(META|ARR|CMD)_CANARY/.test(text), text);
+      assert.match(read, /"tokens":120/);
+      // an old log with the raw value is cleaned on the way in
+      writeFileSync(join(p.runtime, "rt-meta", "events.jsonl"), JSON.stringify({ id: "x", taskId: "rt-meta", at: "2026-01-01", actor: "model", type: "decision", summary: "s", meta: { password: "OPAQUE_OLD_CANARY" } }) + "\n");
+      assert.ok(!JSON.stringify(api.readEvents(p, "rt-meta")).includes("OPAQUE_OLD_CANARY"));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a usage role such as __proto__ or constructor never reaches a shared object, and a damaged plan step doesn't stop the digest", () => {
+    const root = tmp();
+    try {
+      const p = api.memoryPaths(root);
+      for (const role of ["__proto__", "constructor", "toString"]) api.appendEvent(p, "rt-proto", { actor: "model", type: "model_call", summary: "ordinary", tokens: { model: "fake", role, inputTokens: 1, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 1, costUsd: 0 } });
+      const state = api.fold("rt-proto", api.readEvents(p, "rt-proto"));
+      assert.equal(Object.hasOwn(Object.prototype, "calls"), false);
+      assert.equal(({}).calls, undefined);
+      assert.equal(state.ledgerByRole["__proto__"].calls, 1, "kept as an ordinary entry");
+      api.appendEvent(p, "rt-plan", { actor: "model", type: "plan", summary: "plan", meta: { steps: [null, 7, { text: "real", status: "done" }, { status: "x" }] } });
+      const digest = api.digestWithMemory(p, "rt-plan", 1000);
+      assert.match(digest, /real/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a quoted credential operand is hidden whole, with spaces, tabs and either quote", () => {
+    const hidden = (c) => api.redactCommand(c);
+    assert.ok(!/SECOND|LAST/.test(hidden("printf '%s\\n' --password 'FIRST_WORD SECOND_WORD LAST_WORD'")));
+    assert.ok(!/SECOND|LAST/.test(hidden('run --token "FIRST_WORD\tSECOND_WORD" --other ok')));
+    assert.ok(!/SECOND|LAST/.test(hidden("run password='FIRST_WORD SECOND_WORD' next")));
+    assert.match(hidden("run --token \"$HOME/x\" --other ok"), /\$HOME/);
+    assert.match(hidden("run --password 'FIRST SECOND' --other ok"), /--other ok/, "what follows is kept");
+  });
+});

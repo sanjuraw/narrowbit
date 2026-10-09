@@ -1,4 +1,4 @@
-import { redact } from "./redact.js";
+import { redact, redactCommand, redactValue } from "./redact.js";
 import { closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import type { MemoryPaths } from "./paths.js";
@@ -64,14 +64,12 @@ export function ensureTaskDir(p: MemoryPaths, taskId: string): string {
   return dir;
 }
 
-/** Every string inside event metadata, however deeply nested, passes through redact(); other values are kept as they are. */
-function scrubMeta(v: unknown, depth = 0): unknown {
-  if (typeof v === "string") return redact(v);
-  if (v === null || typeof v !== "object") return v;
-  // Too deep to check is too deep to keep: a subtree beyond the limit is dropped, never passed through unchecked.
-  if (depth > 8) return "[metadata nested too deeply: removed]";
-  if (Array.isArray(v)) return v.map((x) => scrubMeta(x, depth + 1));
-  return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [redact(k), scrubMeta(x, depth + 1)]));
+/**
+ * Event metadata: every string is cleaned (commands with the command rules), and a property named for a credential is hidden whole.
+ * Too deep to check is too deep to keep: a subtree beyond the limit is dropped, never passed through unchecked.
+ */
+function scrubMeta(v: unknown): unknown {
+  return redactValue(v);
 }
 
 function endsMidLine(file: string): boolean {
@@ -96,7 +94,7 @@ export function appendEvent(p: MemoryPaths, taskId: string, e: Omit<Event, "id" 
   ensureTaskDir(p, taskId);
   // Summaries carry model text and shell commands, either of which can contain a secret; so can any string in the metadata
   // (a model's note, a tool name, an error), which later reaches a hand-over prompt.
-  const full: Event = { actor: e.actor, type: e.type, summary: redact(e.summary), evidenceRef: e.evidenceRef, tokens: e.tokens, meta: scrubMeta(e.meta) as Event["meta"], id: e.id ?? shortId(), taskId, at: e.at ?? now() };
+  const full: Event = { actor: e.actor, type: e.type, summary: redactCommand(e.summary), evidenceRef: e.evidenceRef, tokens: e.tokens, meta: scrubMeta(e.meta) as Event["meta"], id: e.id ?? shortId(), taskId, at: e.at ?? now() };
   const file = eventsFile(p, taskId);
   // After an interrupted write the last line has no newline: start this one on a line of its own, or the two would fuse.
   appendNoFollow(file, (endsMidLine(file) ? "\n" : "") + JSON.stringify(full) + "\n");
@@ -138,7 +136,7 @@ export function readEvents(p: MemoryPaths, taskId: string): Event[] {
     }
     if (!ev || typeof ev !== "object" || typeof ev.summary !== "string") continue;
     // A log written before metadata was scrubbed (or edited by hand) is cleaned on the way in, too.
-    out.push({ ...ev, summary: redact(ev.summary), meta: scrubMeta(ev.meta) as Event["meta"] });
+    out.push({ ...ev, summary: redactCommand(ev.summary), meta: scrubMeta(ev.meta) as Event["meta"] });
   }
   return out;
 }
@@ -169,13 +167,16 @@ export interface FoldedState {
  * This is what makes the projection in context.ts testable and reproducible.
  */
 export function fold(taskId: string, events: Event[], recentLimit = 8): FoldedState {
-  const state: FoldedState = { taskId, goal: null, plan: [], lastVerify: null, blocker: null, filesTouched: [], filesRead: [], notes: [], answers: [], remembered: [], recent: [], ledgerByRole: {} };
+  const state: FoldedState = { taskId, goal: null, plan: [], lastVerify: null, blocker: null, filesTouched: [], filesRead: [], notes: [], answers: [], remembered: [], recent: [], ledgerByRole: Object.create(null) };
   const touched = new Set<string>();
   const read = new Set<string>();
   const recent: Event[] = [];
   for (const e of events) {
     if (e.type === "decision" && typeof e.meta?.goal === "string") state.goal = e.meta.goal;
-    if (e.type === "plan" && Array.isArray(e.meta?.steps)) state.plan = e.meta.steps as PlanStep[];
+    if (e.type === "plan" && Array.isArray(e.meta?.steps)) {
+      // A damaged history (a null step, a step without text) is skipped, not trusted.
+      state.plan = (e.meta.steps as unknown[]).flatMap((s): PlanStep[] => (s && typeof s === "object" && typeof (s as PlanStep).text === "string" ? [{ ...(s as PlanStep), status: String((s as PlanStep).status ?? "pending") as PlanStep["status"] }] : []));
+    }
     if (e.type === "verify") state.lastVerify = { ok: !!e.meta?.ok, summary: e.summary };
     if (e.type === "blocker") state.blocker = e.summary;
     if (e.type === "decision" && e.meta?.resolvesBlocker) state.blocker = null;
@@ -184,13 +185,15 @@ export function fold(taskId: string, events: Event[], recentLimit = 8): FoldedSt
     if (e.type === "tool_call" && typeof e.meta?.note === "string" && e.meta.note.trim()) state.notes.push(e.meta.note.trim().slice(0, 240));
     if (e.type === "decision" && e.actor === "model" && e.summary.startsWith("done: ")) state.answers.push(e.summary.slice(6, 506));
     if (e.type === "decision" && typeof e.meta?.memoryId === "string") state.remembered.push({ id: e.meta.memoryId, type: String(e.meta.memoryType ?? "note"), text: e.summary.replace(/^remembered \[[^\]]*\] \([^)]*\):\s*/, "") });
-    if (e.tokens) {
+    if (e.tokens && typeof e.tokens === "object" && typeof e.tokens.role === "string") {
+      const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? x : 0);
+      // A role is only ever a key of a dictionary without a prototype, so "__proto__" or "constructor" can't reach a shared object.
       const bucket = (state.ledgerByRole[e.tokens.role] ??= { inputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 });
-      bucket.inputTokens += e.tokens.inputTokens;
-      bucket.cacheCreationTokens += e.tokens.cacheCreationTokens;
-      bucket.cacheReadTokens += e.tokens.cacheReadTokens;
-      bucket.outputTokens += e.tokens.outputTokens;
-      bucket.costUsd += e.tokens.costUsd;
+      bucket.inputTokens += num(e.tokens.inputTokens);
+      bucket.cacheCreationTokens += num(e.tokens.cacheCreationTokens);
+      bucket.cacheReadTokens += num(e.tokens.cacheReadTokens);
+      bucket.outputTokens += num(e.tokens.outputTokens);
+      bucket.costUsd += num(e.tokens.costUsd);
       bucket.calls += 1;
     }
     if (e.type !== "model_call") {

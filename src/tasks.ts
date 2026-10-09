@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { writeProjectFile, stateText } from "./util.js";
+import { redactCommand, redactValue } from "./redact.js";
 import { dirname, join } from "node:path";
 import type { Paths } from "./config.js";
 
@@ -85,7 +86,9 @@ export class Tasks {
   save(t: TaskRecord) {
     const f = this.path(t.id);
     if (isLink(this.p.nb) || isLink(this.p.tasks) || isLink(f)) throw new Error("the tasks folder or file is a symlink — refusing to write through it");
-    writeProjectFile(dirname(this.p.nb), f, JSON.stringify(t, null, 2) + "\n");
+    // Whoever produced the record, a credential in a command or a tool argument is hidden before it reaches the disk.
+    const safe = { ...t, ...(Array.isArray(t.runs) ? { runs: t.runs.map((r) => ({ ...r, command: redactCommand(r.command) })) } : {}), ...(Array.isArray(t.events) ? { events: t.events.map((e) => (e.args ? { ...e, args: redactValue(e.args) as typeof e.args } : e)) } : {}) };
+    writeProjectFile(dirname(this.p.nb), f, JSON.stringify(safe, null, 2) + "\n");
   }
 
   load(id: string): TaskRecord | null {

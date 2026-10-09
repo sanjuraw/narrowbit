@@ -32,6 +32,7 @@ import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
 import { fmtNum, launcherPage, now, sh, visible, writeProjectFile, stateText } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
+import { redactCommand } from "./redact.js";
 import { covered, editsSince, type Grant } from "./approvals.js";
 import { trustConfig, trustRepo, untrustedForUnattended, untrustedReason } from "./trust.js";
 
@@ -423,7 +424,7 @@ export async function main(argv: string[]): Promise<number> {
       const id = tasks.current();
       if (id)
         tasks.update(id, (t) =>
-          t.runs.push({ at: now(), command, exit: r.exit, rawLog: r.rawLog, rawTokens: r.rawTokens, compressedTokens: r.compressedTokens, kind: r.compressed.kind }),
+          t.runs.push({ at: now(), command: redactCommand(command), exit: r.exit, rawLog: r.rawLog, rawTokens: r.rawTokens, compressedTokens: r.compressedTokens, kind: r.compressed.kind }),
         );
       out(r.rendered);
       process.stderr.write(`narrowbit: ~${fmtNum(r.rawTokens)} → ~${fmtNum(r.compressedTokens)} tokens est.\n`);

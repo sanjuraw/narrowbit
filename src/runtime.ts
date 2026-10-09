@@ -19,7 +19,7 @@ import { callCodex } from "./providers/codex-cli.js";
 import { callAntigravity } from "./providers/antigravity-cli.js";
 import { COMPACT_AT, contextWindowFor, DEFAULT_TIERS, resolveEndpoint, resolveSelection, unavailableReason, type ModelTiers, type ProviderName } from "./providers/models.js";
 import { callOpenAICompat, hasSession } from "./providers/openai-compat.js";
-import { redact } from "./redact.js";
+import { redact, redactCommand } from "./redact.js";
 import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
 import { termsOf } from "./terms.js";
@@ -699,7 +699,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // `compactThreshold` keeps the old fixed-size meaning (tests, benchmarks, tuning for cost rather than fit).
   const compactThreshold = opts.compactThreshold;
   // What is printed or streamed as progress passes the same filter as what is stored.
-  const log = opts.log ? (m: string) => opts.log!(redact(m)) : () => {};
+  const log = opts.log ? (m: string) => opts.log!(redactCommand(m)) : () => {};
   // Zero-cost when no connectors are configured (listConnectors() is a sync file read, no
   // subprocess spawned); otherwise one discovery call per connector at task start, not per turn —
   // matches SYSTEM_INSTRUCTIONS being sent once per session, not resent every step.
@@ -1224,7 +1224,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       batchResults.push(`${tag}${resultText}`);
       lastResultHead = resultMeta(decision, resultText);
       recentActions.push(`${decision.action}${decision.path ? " " + decision.path : ""}${checkFailedLabel(decision, resultText)}`);
-      batchLabels.push(`${decision.action}${decision.path ? ` ${decision.path}` : decision.server ? ` ${decision.server}.${decision.tool}` : decision.command ? ` ${decision.command.slice(0, 60)}` : decision.query ? ` "${decision.query.slice(0, 40)}"` : decision.pattern ? ` "${decision.pattern.slice(0, 40)}"` : ""}`);
+      batchLabels.push(`${decision.action}${decision.path ? ` ${decision.path}` : decision.server ? ` ${decision.server}.${decision.tool}` : decision.command ? ` ${redactCommand(decision.command).slice(0, 60)}` : decision.query ? ` "${decision.query.slice(0, 40)}"` : decision.pattern ? ` "${decision.pattern.slice(0, 40)}"` : ""}`);
       // executeAction returns "edited <path>" only when the file was actually written; a refused
       // edit (old text not found / not unique) doesn't count as progress for the done gate.
       const editRefused = decision.action === "edit" && !resultText.startsWith("edited ");

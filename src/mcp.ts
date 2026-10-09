@@ -1,4 +1,4 @@
-import { redact, redactCommand } from "./redact.js";
+import { redact, redactCommand, redactValue } from "./redact.js";
 import { createInterface } from "node:readline";
 import { loadConfig, type Paths } from "./config.js";
 import { runCommand } from "./compress.js";
@@ -122,7 +122,7 @@ export async function serveMcp(p: Paths): Promise<void> {
   const log = (tool: string, args: Record<string, unknown>, text: string) => {
     const id = tasks.current();
     if (!id) return;
-    tasks.update(id, (t) => t.events.push({ at: now(), tool, args: scrubArgs(args) as Record<string, unknown>, tokens: estimateTokens(text) }));
+    tasks.update(id, (t) => t.events.push({ at: now(), tool, args: redactValue(args) as Record<string, unknown>, tokens: estimateTokens(text) }));
   };
 
   const call = async (name: string, a: any): Promise<string> => {
@@ -261,12 +261,4 @@ export async function serveMcp(p: Paths): Promise<void> {
   await new Promise<void>((r) => rl.on("close", () => r()));
   await queue;
   store.close();
-}
-
-/** Tool arguments as saved in the task record: any credential in them is hidden, as it is in what the tool returns. */
-function scrubArgs(v: unknown, key = ""): unknown {
-  if (typeof v === "string") return key === "command" ? redactCommand(v) : redact(v);
-  if (Array.isArray(v)) return v.map((x) => scrubArgs(x, key));
-  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, scrubArgs(x, k)]));
-  return v;
 }
