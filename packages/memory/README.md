@@ -2,6 +2,8 @@
 
 # narrowbit-memory
 
+Part of [Narrowbit](https://narrowbit.dev) · [more about memory](https://narrowbit.dev/#memory) · early 0.1 preview
+
 Project memory for coding agents. It remembers the things that aren't in the code — a decision and its reason, a constraint, a convention, an approach that already failed — as plain Markdown notes in the project, and gives them back when an agent asks.
 
 - **Local, no model calls.** Nothing is sent anywhere and nothing is summarised by an AI; notes are stored exactly as saved (known secret patterns scrubbed first, best effort) and found by plain keyword and file matching.

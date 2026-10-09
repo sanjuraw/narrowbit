@@ -2,6 +2,8 @@
 
 # Narrowbit
 
+**Website: [narrowbit.dev](https://narrowbit.dev)** · early 0.1 preview
+
 A local, context-managed **coding agent** for your Mac. It plans, reads, edits, runs commands and verifies, keeping a durable local log of everything it does, so a model only ever sees the small slice of context it needs for the next step.
 
 Goal metric: **correct coding work per unit of AI usage**, not just fewer tokens.
