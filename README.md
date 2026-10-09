@@ -23,7 +23,7 @@ macOS. The installer checks what you have, asks before installing anything missi
 git clone https://github.com/sanjuraw/narrowbit.git ~/Narrowbit && ~/Narrowbit/scripts/install.sh
 ```
 
-Run `scripts/install.sh --check` first to only see what's missing. It can't sign in for you: to use Claude run `claude auth login` (or `codex login`, or add a free API key); the app's "get a model ready" card and `narrowbit doctor` show what's left. If the repo is private you need GitHub access (`gh auth login`).
+Run `scripts/install.sh --check` first to only see what's missing. It can't sign in for you: to use Claude run `claude auth login` (or `codex login`, or add a free API key); the app's "get a model ready" card and `narrowbit doctor` show what's left.
 
 Manual install: Node ≥ 22.13, then `npm install && npm run build && npm link && scripts/build-mac-app.sh --install`.
 
