@@ -320,7 +320,9 @@ export function redactValue(v: unknown, key = "", depth = 0): unknown {
   if (depth > 8) return "[nested too deeply: removed]";
   const named = new RegExp(CRED_NAME, "i").test(key);
   if (typeof v === "string") return named && v ? "[redacted value]" : redactCommand(v);
-  if (typeof v === "number" || typeof v === "boolean") return v; // counts such as "tokens: 120" are not secrets
+  // A number under a credential name is a secret too (a PIN, a numeric password); the exception is a count: "tokens", "inputTokens", "maxTokens".
+  if (typeof v === "number") return named && !/tokens$/i.test(key) ? "[redacted value]" : v;
+  if (typeof v === "boolean") return v;
   if (v === null || typeof v !== "object") return v;
   if (Array.isArray(v)) return v.map((x) => redactValue(x, key, depth + 1));
   return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [redact(k), redactValue(x, k, depth + 1)]));

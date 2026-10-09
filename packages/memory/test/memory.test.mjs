@@ -749,4 +749,21 @@ describe("thirty-first audit (Codex on b19cac5): event metadata, ledger roles, d
     assert.match(hidden("run --token \"$HOME/x\" --other ok"), /\$HOME/);
     assert.match(hidden("run --password 'FIRST SECOND' --other ok"), /--other ok/, "what follows is kept");
   });
+
+  test("a number under a credential name is hidden (a PIN, a numeric password); usage counts stay", () => {
+    const root = tmp();
+    try {
+      const p = api.memoryPaths(root);
+      api.appendEvent(p, "rt-numeric", { actor: "model", type: "decision", summary: "safe", meta: { password: 1234, api_key: [987654], nested: { secret: 55 }, tokens: 120, inputTokens: 7, maxTokens: 900, count: 3 } });
+      const disk = readFileSync(join(p.runtime, "rt-numeric", "events.jsonl"), "utf8");
+      const read = JSON.stringify(api.readEvents(p, "rt-numeric"));
+      for (const t of [disk, read]) {
+        assert.ok(!/1234|987654|:55/.test(t), t);
+        assert.match(t, /"tokens":120/);
+        assert.match(t, /"inputTokens":7/);
+        assert.match(t, /"maxTokens":900/);
+        assert.match(t, /"count":3/);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 });

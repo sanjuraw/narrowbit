@@ -4,23 +4,36 @@
 
 Project memory for coding agents. It remembers the things that aren't in the code — a decision and its reason, a constraint, a convention, an approach that already failed — as plain Markdown notes in the project, and gives them back when an agent asks.
 
-- **Local, no model calls.** Nothing is sent anywhere and nothing is summarised by an AI; notes are stored exactly as saved (with secrets scrubbed first) and found by plain keyword and file matching.
+- **Local, no model calls.** Nothing is sent anywhere and nothing is summarised by an AI; notes are stored exactly as saved (known secret patterns scrubbed first, best effort) and found by plain keyword and file matching.
 - **Notes know when they may be out of date.** A note about `src/pay.ts` stores a fingerprint of that file; if the file has changed since, recall says so instead of presenting the note as current.
 - **It's just files.** `<project>/.narrowbit/memory/` — one `.md` per note, grouped by type; open it as an Obsidian vault, edit by hand, commit nothing (the folder is kept out of git).
 - **Works with any agent that speaks MCP**, and ships as a library too.
 
-## Use it with an agent (MCP)
+## Install
 
-Run it from the project folder (or pass `--root`):
+Needs Node 22.13 or newer. Not on npm yet; use it from a clone:
 
 ```bash
-node packages/memory/bin/narrowbit-memory.js serve
+git clone <this repository> narrowbit-memory
+cd narrowbit-memory
+npm install
+npm run build
+```
+
+The server is then `bin/narrowbit-memory.js` in that folder (inside the Narrowbit repository the same file is `packages/memory/bin/narrowbit-memory.js`; the commands below use the standalone path, so adjust it there).
+
+## Use it with an agent (MCP)
+
+Run it from the project folder you want remembered (or pass `--root`), giving the absolute path to the file:
+
+```bash
+node /path/to/narrowbit-memory/bin/narrowbit-memory.js serve
 ```
 
 Claude Code:
 
 ```bash
-claude mcp add narrowbit-memory -- node /path/to/narrowbit/packages/memory/bin/narrowbit-memory.js serve
+claude mcp add narrowbit-memory -- node /path/to/narrowbit-memory/bin/narrowbit-memory.js serve
 ```
 
 Codex (`~/.codex/config.toml`):
@@ -28,7 +41,7 @@ Codex (`~/.codex/config.toml`):
 ```toml
 [mcp_servers.narrowbit-memory]
 command = "node"
-args = ["/path/to/narrowbit/packages/memory/bin/narrowbit-memory.js", "serve"]
+args = ["/path/to/narrowbit-memory/bin/narrowbit-memory.js", "serve"]
 ```
 
 Tools: `memory_recall` (by topic and/or files), `memory_remember`, `memory_list`, `memory_resolve`.
