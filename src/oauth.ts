@@ -50,7 +50,12 @@ export const isSignedIn = (name: string, url?: string): boolean => {
   const s = load()[name];
   return !!s?.access && sameResource(s.resource, url);
 };
+/** Bumped by every sign-out: sign-ins and refreshes that were already under way compare it afterwards, so they can't bring back what was removed. */
+const generation = new Map<string, number>();
+const gen = (name: string) => generation.get(name) ?? 0;
 export function signOut(name: string): void {
+  generation.set(name, gen(name) + 1);
+  for (const [k, v] of pending) if (v.name === name) pending.delete(k);
   const all = load();
   delete all[name];
   save(all);
@@ -98,8 +103,14 @@ interface AsMeta {
  */
 function hostKind(host: string): "link-local" | "local" | "public" {
   const h = host.replace(/^\[|\]$/g, "").toLowerCase();
+  // An IPv4 address written as IPv6 (::ffff:127.0.0.1, which URL normalises to ::ffff:7f00:1) is judged by the IPv4 inside it.
+  const mapped = /^(?:0{0,4}:){2,5}(?:ffff:)?(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/.exec(h);
+  if (mapped) {
+    const v4 = mapped[1] ?? [parseInt(mapped[2], 16) >> 8, parseInt(mapped[2], 16) & 255, parseInt(mapped[3], 16) >> 8, parseInt(mapped[3], 16) & 255].join(".");
+    return hostKind(v4);
+  }
   if (/^169\.254\./.test(h) || /^fe[89ab][0-9a-f]:/.test(h)) return "link-local";
-  if (h === "localhost" || h.endsWith(".localhost") || h === "::1" || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h) || /^f[cd][0-9a-f]{2}:/.test(h) || h === "0.0.0.0") return "local";
+  if (h === "localhost" || h.endsWith(".localhost") || h === "::1" || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h) || /^f[cd][0-9a-f]{2}:/.test(h) || /^0\./.test(h)) return "local";
   return "public";
 }
 
@@ -158,6 +169,7 @@ interface Pending {
   tokenEndpoint: string;
   redirectUri: string;
   at: number;
+  gen: number;
 }
 const pending = new Map<string, Pending>();
 
@@ -165,6 +177,7 @@ const b64url = (b: Buffer) => b.toString("base64url");
 
 /** Step 1: returns the URL to open in the user's browser. */
 export async function startSignIn(name: string, mcpUrl: string, redirectUri: string): Promise<string> {
+  const startedAt = gen(name);
   const meta = await discover(mcpUrl);
   if (!meta.registration_endpoint) throw new Error("this server requires a pre-registered app (no dynamic registration); use an API token as an Authorization header instead");
   const reg = await getJson(meta.registration_endpoint, {
@@ -176,7 +189,7 @@ export async function startSignIn(name: string, mcpUrl: string, redirectUri: str
   const verifier = b64url(randomBytes(32));
   const state = b64url(randomBytes(16));
   for (const [k, v] of pending) if (Date.now() - v.at > 10 * 60_000) pending.delete(k);
-  pending.set(state, { name, url: mcpUrl, verifier, clientId: String(reg.client_id), tokenEndpoint: meta.token_endpoint, redirectUri, at: Date.now() });
+  pending.set(state, { name, url: mcpUrl, verifier, clientId: String(reg.client_id), tokenEndpoint: meta.token_endpoint, redirectUri, at: Date.now(), gen: startedAt });
   const q = new URLSearchParams({
     response_type: "code",
     client_id: String(reg.client_id),
@@ -194,7 +207,9 @@ export async function completeSignIn(state: string, code: string): Promise<strin
   const p = pending.get(state);
   if (!p) throw new Error("this sign-in link is unknown or expired — start again from Connectors");
   pending.delete(state);
+  if (Date.now() - p.at > 10 * 60_000 || p.gen !== gen(p.name)) throw new Error("this sign-in link is unknown or expired — start again from Connectors");
   const tok = await tokenRequest(p.tokenEndpoint, { grant_type: "authorization_code", code, redirect_uri: p.redirectUri, client_id: p.clientId, code_verifier: p.verifier, resource: p.url });
+  if (p.gen !== gen(p.name)) throw new Error("this sign-in was cancelled — start again from Connectors");
   const all = load();
   all[p.name] = { resource: p.url, clientId: p.clientId, tokenEndpoint: p.tokenEndpoint, access: tok.access_token, refresh: tok.refresh_token, expiresAt: tok.expires_in ? Date.now() + Number(tok.expires_in) * 1000 : 0 };
   save(all);
@@ -208,17 +223,34 @@ async function tokenRequest(endpoint: string, form: Record<string, string>): Pro
   return j;
 }
 
+const refreshing = new Map<string, Promise<string | null>>();
+
 /** A usable access token for this connector, refreshed when it has (nearly) expired. Null = not signed in. */
 export async function accessToken(name: string, url: string, forceRefresh = false): Promise<string | null> {
-  const all = load();
-  const s = all[name];
+  const s = load()[name];
   if (!s?.access || !sameResource(s.resource, url)) return null;
   const stale = forceRefresh || (s.expiresAt && Date.now() > s.expiresAt - 30_000);
   if (!stale) return s.access;
   if (!s.refresh) return forceRefresh ? null : s.access;
+  // One refresh per credential at a time: two at once would spend the same refresh token twice.
+  const key = `${name}\n${s.refresh}`;
+  let p = refreshing.get(key);
+  if (!p) {
+    p = refresh(name, s).finally(() => refreshing.delete(key));
+    refreshing.set(key, p);
+  }
+  return p;
+}
+
+async function refresh(name: string, s: Stored): Promise<string | null> {
+  const startedAt = gen(name);
   try {
-    const tok = await tokenRequest(s.tokenEndpoint, { grant_type: "refresh_token", refresh_token: s.refresh, client_id: s.clientId });
-    all[name] = { ...s, access: tok.access_token, refresh: tok.refresh_token ?? s.refresh, expiresAt: tok.expires_in ? Date.now() + Number(tok.expires_in) * 1000 : 0 };
+    const tok = await tokenRequest(s.tokenEndpoint, { grant_type: "refresh_token", refresh_token: s.refresh!, client_id: s.clientId });
+    // Re-read the store: other connectors may have saved while this waited, and a sign-out must stay a sign-out.
+    const all = load();
+    const now = all[name];
+    if (gen(name) !== startedAt || !now || now.refresh !== s.refresh || now.access !== s.access) return null;
+    all[name] = { ...now, access: tok.access_token, refresh: tok.refresh_token ?? s.refresh, expiresAt: tok.expires_in ? Date.now() + Number(tok.expires_in) * 1000 : 0 };
     save(all);
     return all[name].access;
   } catch {

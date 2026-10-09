@@ -187,7 +187,14 @@ export function acknowledgeUpdateNotes(): void {
   rmSync(NOTES_FILE, { force: true });
 }
 
-export async function applyUpdate(): Promise<UpdateNotes> {
+let applying: Promise<UpdateNotes> | null = null;
+/** One update at a time: a second request while one runs gets the same result. */
+export function applyUpdate(): Promise<UpdateNotes> {
+  applying ??= applyUpdateNow().finally(() => (applying = null));
+  return applying;
+}
+
+async function applyUpdateNow(): Promise<UpdateNotes> {
   const info = await checkUpdate(true);
   if (!info.supported) throw new Error(info.reason ?? "updates aren't available for this copy");
   if (!info.canApply) throw new Error(info.behind === 0 ? "Already up to date." : (info.reason ?? "can't update this copy safely"));
@@ -201,6 +208,13 @@ export async function applyUpdate(): Promise<UpdateNotes> {
   // dependencies that go with it, then a build. Each step is checked, and if one fails the message says so instead of "rolled back".
   const rollback = async (why: string): Promise<never> => {
     const problems: string[] = [];
+    // Edits made to the installed copy while the update was building are kept in a git stash, not thrown away.
+    let kept = "";
+    if (git(["status", "--porcelain", "--untracked-files=no", "--", ".", ":(exclude)package-lock.json"]).out.length > 0) {
+      const stashed = git(["stash", "push", "--quiet", "-m", "narrowbit: changes found when an update was rolled back", "--", ".", ":(exclude)package-lock.json"]);
+      if (stashed.code !== 0) throw new Error(`${why} — and the installed copy has changes made meanwhile that couldn't be saved, so it was left as it is. Look at "git status" in ${INSTALL_ROOT}.`);
+      kept = " Changes made to the installed copy meanwhile are saved in git stash.";
+    }
     const reset = git(["reset", "--hard", oldHead]);
     if (reset.code !== 0 || git(["rev-parse", "HEAD"]).out !== oldHead) problems.push("restoring the previous code failed");
     else {
@@ -211,8 +225,8 @@ export async function applyUpdate(): Promise<UpdateNotes> {
       const rebuilt = await exec("npm", ["run", "build"], 180_000);
       if (rebuilt.code !== 0) problems.push("rebuilding the previous version failed");
     }
-    if (problems.length) throw new Error(`${why} — and going back did not work (${problems.join("; ")}). Run "npm install && npm run build" in ${INSTALL_ROOT}, or reinstall Narrowbit.`);
-    throw new Error(`${why} — rolled back to the previous version.`);
+    if (problems.length) throw new Error(`${why} — and going back did not work (${problems.join("; ")}). Run "npm install && npm run build" in ${INSTALL_ROOT}, or reinstall Narrowbit.${kept}`);
+    throw new Error(`${why} — rolled back to the previous version.${kept}`);
   };
   if (changedDeps || !existsSync(join(INSTALL_ROOT, "node_modules"))) {
     const inst = await exec("npm", ["install", "--no-audit", "--no-fund"], 300_000);

@@ -1,7 +1,7 @@
 import { test, describe, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync, lstatSync, statSync, readdirSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync, lstatSync, statSync, readdirSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve, isAbsolute, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -5583,5 +5583,118 @@ setInterval(() => {}, 1000);\n`);
     const pc = publicConnector({ name: "f", command: "node", args: ["srv", "--api-key", "OPAQUE_ARG_CANARY", "--token=OPAQUE_EQ_CANARY", "-p", "5", "--verbose"], env: {} });
     assert.doesNotMatch(JSON.stringify(pc), /OPAQUE_(ARG|EQ)_CANARY/);
     assert.deepEqual(pc.args, ["srv", "--api-key", "[hidden]", "--token=[hidden]", "-p", "5", "--verbose"]);
+  });
+});
+
+describe("twenty-seventh audit (Codex on 098e2fa): sign-in lifecycle, endpoint spellings, update rollback", () => {
+  const resource = "https://fixture.invalid/mcp";
+  const reply = (o) => new Response(JSON.stringify(o), { headers: { "content-type": "application/json" } });
+  const rec = (access, refresh) => ({ resource, clientId: "client", tokenEndpoint: "https://auth.fixture.invalid/token", access, refresh, expiresAt: 1 });
+  async function withHome(fn) {
+    const home = mkdtempSync(join(tmpdir(), "nb-oauthhome-"));
+    const oldHome = process.env.HOME, oldFetch = globalThis.fetch;
+    process.env.HOME = home;
+    mkdirSync(join(home, ".narrowbit"), { recursive: true });
+    const store = join(home, ".narrowbit", "oauth.json");
+    try { await fn({ seed: (o) => writeFileSync(store, JSON.stringify(o)), read: () => JSON.parse(readFileSync(store, "utf8")) }); }
+    finally { process.env.HOME = oldHome; globalThis.fetch = oldFetch; rmSync(home, { recursive: true, force: true }); }
+  }
+  const discovery = (calls) => async (u, o) => {
+    u = String(u); calls.push({ url: u, body: String(o?.body ?? "") });
+    if (u.includes("oauth-protected-resource")) return reply({});
+    if (u.includes("oauth-authorization-server")) return reply({ authorization_endpoint: "https://issuer.fixture.invalid/authorize", token_endpoint: "https://issuer.fixture.invalid/token", registration_endpoint: "https://issuer.fixture.invalid/register" });
+    if (u.endsWith("/register")) return reply({ client_id: "client" });
+    if (u.endsWith("/token")) return reply({ access_token: "NEW", expires_in: 3600 });
+    throw new Error("unexpected " + u);
+  };
+
+  test("a refresh that finishes after sign-out does not bring the sign-in back, nor undo another connector's save", async () => {
+    const oauth = await dist("oauth.js");
+    await withHome(async ({ seed, read }) => {
+      seed({ alpha: rec("OLD_A", "REF_A"), beta: rec("OLD_B", "REF_B") });
+      let release;
+      globalThis.fetch = () => new Promise((r) => (release = r));
+      const p = oauth.accessToken("alpha", resource);
+      oauth.signOut("alpha"); oauth.signOut("beta");
+      release(reply({ access_token: "REFRESHED", refresh_token: "ROTATED", expires_in: 3600 }));
+      assert.equal(await p, null);
+      assert.deepEqual(read(), {}, "still signed out");
+      seed({ alpha: rec("OLD_A", "REF_A"), beta: rec("OLD_B", "REF_B") });
+      const waiting = {};
+      globalThis.fetch = (u, o) => new Promise((r) => (waiting[new URLSearchParams(o.body).get("refresh_token")] = r));
+      const ra = oauth.accessToken("alpha", resource), rb = oauth.accessToken("beta", resource);
+      waiting.REF_A(reply({ access_token: "NEW_A", refresh_token: "ROT_A", expires_in: 3600 }));
+      await ra;
+      waiting.REF_B(reply({ access_token: "NEW_B", refresh_token: "ROT_B", expires_in: 3600 }));
+      await rb;
+      assert.equal(read().alpha.refresh, "ROT_A", "alpha's new token survived beta's refresh");
+      assert.equal(read().beta.refresh, "ROT_B");
+    });
+  });
+
+  test("a sign-in cancelled with sign-out, or older than ten minutes, cannot be completed", async () => {
+    const oauth = await dist("oauth.js");
+    await withHome(async ({ read }) => {
+      const calls = [];
+      globalThis.fetch = discovery(calls);
+      const stateOf = (u) => new URL(u).searchParams.get("state");
+      const s1 = stateOf(await oauth.startSignIn("cancelled", resource, "http://127.0.0.1:1/cb"));
+      oauth.signOut("cancelled");
+      await assert.rejects(oauth.completeSignIn(s1, "CODE"));
+      const s2 = stateOf(await oauth.startSignIn("expired", resource, "http://127.0.0.1:1/cb"));
+      const now = Date.now; Date.now = () => now() + 11 * 60_000;
+      try { await assert.rejects(oauth.completeSignIn(s2, "CODE")); } finally { Date.now = now; }
+      assert.ok(!calls.some((c) => c.url.endsWith("/token")), "no token request was made");
+      assert.deepEqual(read?.() ?? {}, {});
+    });
+  });
+
+  test("IPv4 addresses written as IPv6 are judged by the address inside them", async () => {
+    const oauth = await dist("oauth.js");
+    for (const host of ["[::ffff:127.0.0.1]", "[::ffff:7f00:1]", "[::ffff:169.254.169.254]", "[::ffff:10.0.0.5]"]) {
+      await withHome(async () => {
+        const calls = [];
+        globalThis.fetch = async (u, o) => {
+          u = String(u); calls.push(u);
+          if (u.includes("oauth-protected-resource")) return reply({});
+          if (u.includes("oauth-authorization-server")) return reply({ authorization_endpoint: "https://issuer.fixture.invalid/authorize", token_endpoint: `https://${host}/token`, registration_endpoint: `https://${host}/register` });
+          return reply({ client_id: "x" });
+        };
+        await assert.rejects(oauth.startSignIn("m", resource, "http://127.0.0.1:1/cb"), /not a safe address/, host);
+        assert.ok(!calls.some((c) => c.includes("ffff") || c.includes("7f00")), "nothing was sent there");
+      });
+    }
+  });
+
+  test("a failed update build keeps edits made to the installed copy meanwhile (in a git stash)", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "nb-upd-")));
+    const env = { ...process.env, HOME: join(base, "home"), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "A", GIT_AUTHOR_EMAIL: "a@example.invalid", GIT_COMMITTER_NAME: "A", GIT_COMMITTER_EMAIL: "a@example.invalid" };
+    mkdirSync(env.HOME);
+    const git = (cwd, ...a) => execFileSync("git", a, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    try {
+      const origin = join(base, "o.git"), pub = join(base, "pub"), inst = join(base, "inst");
+      git(base, "init", "-q", "--bare", "--initial-branch=main", origin);
+      git(base, "clone", "-q", origin, pub);
+      writeFileSync(join(pub, "package.json"), JSON.stringify({ name: "f", version: "1.0.0", type: "module", scripts: { build: "node build.cjs" } }));
+      writeFileSync(join(pub, "package-lock.json"), "{}\n");
+      writeFileSync(join(pub, "build.cjs"), "process.exit(0);\n");
+      writeFileSync(join(pub, "user.txt"), "ORIGINAL\n");
+      git(pub, "add", "."); git(pub, "commit", "-qm", "initial"); git(pub, "push", "-q", "origin", "main");
+      git(base, "clone", "-q", origin, inst);
+      writeFileSync(join(pub, "build.cjs"), `const fs=require("node:fs");fs.writeFileSync("build-started","y");const t=setInterval(()=>{if(fs.existsSync("release-build")){clearInterval(t);process.exit(1);}},10);setTimeout(()=>process.exit(1),10000);\n`);
+      git(pub, "add", "build.cjs"); git(pub, "commit", "-qm", "bad build"); git(pub, "push", "-q", "origin", "main");
+      mkdirSync(join(inst, "dist")); mkdirSync(join(inst, "node_modules"));
+      symlinkSync(join(dirname(new URL(import.meta.url).pathname), "..", "packages", "memory"), join(inst, "node_modules", "narrowbit-memory"));
+      for (const f of ["update.js", "util.js"]) copyFileSync(join(dirname(new URL(import.meta.url).pathname), "..", "dist", f), join(inst, "dist", f));
+      const script = `import { existsSync, writeFileSync } from "node:fs";
+const { applyUpdate } = await import(${JSON.stringify(join(inst, "dist", "update.js"))});
+const t = setInterval(() => { if (existsSync(${JSON.stringify(join(inst, "build-started"))})) { clearInterval(t); writeFileSync(${JSON.stringify(join(inst, "user.txt"))}, "USER_EDIT\\n"); writeFileSync(${JSON.stringify(join(inst, "release-build"))}, "y"); } }, 10);
+try { await applyUpdate(); } catch (e) { console.log("ERR " + e.message); }
+clearInterval(t);`;
+      const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], { env, encoding: "utf8", timeout: 60000 });
+      assert.match(r.stdout, /rolled back/, r.stdout + r.stderr);
+      assert.match(r.stdout, /git stash/);
+      assert.match(git(inst, "stash", "show", "-p", "stash@{0}"), /USER_EDIT/, "the edit is recoverable");
+    } finally { rmSync(base, { recursive: true, force: true }); }
   });
 });
