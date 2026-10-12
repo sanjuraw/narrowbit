@@ -1,7 +1,6 @@
 name: CI
-# Private repo: Actions minutes are limited (2,000 a month) and macOS minutes count 10x, so the tests run on
-# Linux, a newer push cancels a run still in progress, and docs-only changes don't run anything.
-# The macOS run stays available by hand (Actions tab → CI → Run workflow → macos: true).
+# Tests run on Linux (cheap and fast), a newer push cancels a run still in progress, and docs-only changes don't run
+# anything. The macOS run stays available by hand (Actions tab → CI → Run workflow → macos: true).
 on:
   push:
     branches: [main]
