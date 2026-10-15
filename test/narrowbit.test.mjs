@@ -5951,3 +5951,48 @@ describe("thirty-first audit (Codex on b19cac5): runtime ledger, CLI records", (
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("installer: a command that npm linked somewhere off PATH is reported, not hidden", () => {
+  const INSTALL = join(dirname(new URL(import.meta.url).pathname), "..", "scripts", "install.sh");
+  const repoRoot = join(dirname(new URL(import.meta.url).pathname), "..");
+
+  function run({ onPath, other }) {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "nb-inst-")));
+    const copy = join(base, "Narrowbit");
+    const prefix = join(base, "prefix");
+    const fakeBin = join(base, "fakebin");
+    const otherBin = join(base, "otherbin");
+    for (const d of [prefix + "/bin", fakeBin, otherBin]) mkdirSync(d, { recursive: true });
+    execFileSync("git", ["clone", "-q", "--no-local", repoRoot, copy]);
+    // A stand-in npm: install and build do nothing, `link` puts the command in the (fake) global prefix, `prefix -g` reports it.
+    writeFileSync(join(fakeBin, "npm"), `#!/bin/sh
+case "$1 $2" in
+  "prefix -g") echo ${JSON.stringify(prefix)};;
+  "link "*|"link") ln -sf ${JSON.stringify(join(copy, "bin", "narrowbit.js"))} ${JSON.stringify(prefix + "/bin/narrowbit")};;
+esac
+exit 0
+`, { mode: 0o755 });
+    if (other) writeFileSync(join(otherBin, "narrowbit"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    // the machine's own PATH minus any folder that already holds a narrowbit command (this one may have a real install)
+    const clean = (process.env.PATH ?? "").split(":").filter((d) => d && !existsSync(join(d, "narrowbit"))).join(":");
+    const path = [fakeBin, other ? otherBin : "", onPath ? prefix + "/bin" : "", clean].filter(Boolean).join(":");
+    const r = spawnSync("bash", [INSTALL, "--yes", "--dir", copy, "--skip-app"], { encoding: "utf8", timeout: 120000, env: { ...process.env, PATH: path, HOME: base } });
+    rmSync(base, { recursive: true, force: true });
+    return { out: r.stdout + r.stderr, status: r.status, prefix };
+  }
+
+  test("not on PATH: it says where npm put it and how to add it; on PATH: it confirms; another narrowbit first: it warns", () => {
+    const off = run({ onPath: false });
+    assert.equal(off.status, 0, off.out.slice(-400));
+    assert.match(off.out, /narrowbit command is not on your PATH/);
+    assert.ok(off.out.includes(off.prefix + "/bin"), "names the folder npm used");
+    assert.match(off.out, /export PATH=/);
+    assert.match(off.out, /node ".*bin\/narrowbit\.js" ui/, "gives a working way to start it meanwhile");
+    const on = run({ onPath: true });
+    assert.match(on.out, /narrowbit command: /);
+    assert.doesNotMatch(on.out, /not on your PATH/);
+    const shadowed = run({ onPath: true, other: true });
+    assert.equal(shadowed.status, 0);
+    assert.match(shadowed.out, /another narrowbit is first on your PATH/);
+  });
+});

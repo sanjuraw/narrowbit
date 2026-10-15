@@ -13,7 +13,7 @@ set -euo pipefail
 
 REPO_URL="${NARROWBIT_REPO:-https://github.com/sanjuraw/narrowbit.git}"
 DIR="$HOME/Narrowbit"
-CHECK=0 YES=0 LINK=1 APP=1
+CHECK=0 YES=0 LINK=1 APP=1 ON_PATH=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) CHECK=1 ;;
@@ -102,6 +102,25 @@ npm run build
 if [ "$LINK" = 1 ]; then
   say "Putting the narrowbit command on your PATH"
   npm link || { echo "  npm link needs write access to npm's global folder. Set an npm prefix in your home folder instead (npm config set prefix ~/.npm-global, then put ~/.npm-global/bin on your PATH). Avoid sudo: npm link runs this project's build scripts as root" >&2; exit 1; }
+  # npm link can succeed and still leave the command somewhere the shell doesn't look (an npm that belongs to another tool,
+  # a prefix whose bin folder isn't on PATH). Say so, instead of finishing with a command that isn't there.
+  real() { node -e 'try{console.log(require("fs").realpathSync(process.argv[1]))}catch{}' "$1"; }
+  FOUND="$(command -v narrowbit 2>/dev/null || true)"
+  NPM_BIN="$(npm prefix -g 2>/dev/null)/bin"
+  if [ -z "$FOUND" ]; then
+    ON_PATH=0
+    bad "the narrowbit command is not on your PATH"
+    echo "  npm put it in: $NPM_BIN"
+    echo "  Add that folder to your PATH, then open a new terminal:"
+    echo "      echo 'export PATH=\"$NPM_BIN:\$PATH\"' >> ~/.zshrc"
+    echo "  Until then you can run it as: node \"$DIR/bin/narrowbit.js\" <command>   (the app doesn't need it)"
+  elif [ "$(real "$FOUND")" != "$(real "$DIR/bin/narrowbit.js")" ]; then
+    ON_PATH=0
+    bad "another narrowbit is first on your PATH: $FOUND"
+    echo "  It is not the copy just installed in $DIR. Put $NPM_BIN earlier on your PATH, or remove the other one."
+  else
+    ok "narrowbit command: $FOUND"
+  fi
 fi
 
 if [ "$APP" = 1 ]; then
@@ -112,6 +131,7 @@ fi
 say "Done. What's ready to use:"
 node bin/narrowbit.js doctor || true
 echo
-echo "  Open the app: open ~/Applications/Narrowbit.app   (or run: narrowbit ui)"
+if [ "$ON_PATH" = 1 ]; then RUN_UI="narrowbit ui"; else RUN_UI="node \"$DIR/bin/narrowbit.js\" ui"; fi
+echo "  Open the app: open ~/Applications/Narrowbit.app   (it is in your own Applications folder; or run: $RUN_UI)"
 echo "  Nothing above ready? Sign in to Claude with:  claude auth login   — the app's setup card will guide you too."
 echo "  Updates: the app shows an 'Update available' banner when GitHub has something new."
