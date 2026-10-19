@@ -758,7 +758,7 @@ describe("thirty-first audit (Codex on b19cac5): event metadata, ledger roles, d
       const disk = readFileSync(join(p.runtime, "rt-numeric", "events.jsonl"), "utf8");
       const read = JSON.stringify(api.readEvents(p, "rt-numeric"));
       for (const t of [disk, read]) {
-        assert.ok(!/1234|987654|:55/.test(t), t);
+        assert.ok(!/1234|987654|"secret":55/.test(t), t); // (a bare ":55" also matches a clock time like 20:27:55)
         assert.match(t, /"tokens":120/);
         assert.match(t, /"inputTokens":7/);
         assert.match(t, /"maxTokens":900/);

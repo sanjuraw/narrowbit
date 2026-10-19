@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync, lstatSync, readlinkSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { connect } from "node:net";
 import { homedir } from "node:os";
 import { dirname, basename, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -145,6 +146,21 @@ function tokenMatches(given: unknown, token: string): boolean {
   const a = Buffer.from(given);
   const b = Buffer.from(token);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** Ports dev servers commonly use: Next/CRA/Express, Vite preview, Vite, Astro, Flask, http.server, Jupyter-like, static servers. */
+const PREVIEW_PORTS = [3000, 3001, 4173, 4200, 4321, 5000, 5173, 5174, 8000, 8080, 8888];
+
+function probeLoopbackPorts(ports: number[]): Promise<number[]> {
+  const one = (port: number) =>
+    new Promise<number | null>((resolve) => {
+      const sock = connect({ host: "127.0.0.1", port });
+      const done = (ok: boolean) => { sock.destroy(); resolve(ok ? port : null); };
+      sock.setTimeout(250, () => done(false));
+      sock.once("connect", () => done(true));
+      sock.once("error", () => done(false));
+    });
+  return Promise.all(ports.map(one)).then((r) => r.filter((x): x is number => x !== null));
 }
 
 const SEC_HEADERS = { "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "no-referrer" };
@@ -629,7 +645,7 @@ export function startUi(opts: UiOptions) {
       const port = (server.address() as { port: number }).port;
       if (req.headers.host !== `127.0.0.1:${port}` && req.headers.host !== `localhost:${port}`) return json(res, 403, { error: "bad host" });
       if (req.method === "GET" && url.pathname === "/") {
-        res.writeHead(200, { ...SEC_HEADERS, "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" });
+        res.writeHead(200, { ...SEC_HEADERS, "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-src http://localhost:* http://127.0.0.1:*" });
         return res.end(uiPage());
       }
       if (req.method === "GET" && url.pathname === "/oauth/callback") {
@@ -876,6 +892,13 @@ export function startUi(opts: UiOptions) {
             return json(res, 400, { error: r.message });
           }
           return json(res, 200, { message: r.message, state: state() });
+        }
+        case "/api/preview/probe": {
+          // Which common dev-server ports on this machine are answering (loopback only, a quarter-second each): the preview
+          // pane offers them as one-click choices. The app never starts anything for this; you (or the agent, with your approval) do.
+          const own = (server.address() as { port?: number } | null)?.port;
+          const found = await probeLoopbackPorts(PREVIEW_PORTS.filter((n) => n !== own));
+          return json(res, 200, { ports: found });
         }
         case "/api/pr": {
           // The current branch's pull request and its checks (asks GitHub through the gh CLI; changes nothing).

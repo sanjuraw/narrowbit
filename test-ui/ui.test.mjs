@@ -1714,6 +1714,57 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { execFileSync("git", ["remote", "remove", "origin"], { cwd: repo }); }
   });
 
+  test("the Preview pane frames only localhost apps (never this app's own address), sandboxed and without a referrer", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const reply = (j) => ({ ok: true, status: 200, json: async () => j, text: async () => JSON.stringify(j) });
+    const page = await openPage(app.url, { route: (u) => (u.endsWith("/api/preview/probe") ? reply({ ports: [3000, 5173] }) : null) });
+    try {
+      await page.until(() => page.visible(page.$("prevBtn")), "the Preview button for an open project");
+      assert.ok(!page.$("app").classList.contains("prev-open"));
+      page.$("prevBtn").click();
+      assert.ok(page.$("app").classList.contains("prev-open"));
+      const chips = await page.until(() => { const c = [...page.$("prevPorts").querySelectorAll("button")]; return c.length === 2 && c; }, "the running dev servers");
+      assert.deepEqual(chips.map((c) => c.textContent), ["localhost:3000", "localhost:5173"]);
+      chips[1].click();
+      const frame = page.$("prevPane").querySelector("iframe");
+      assert.equal(frame.getAttribute("src"), "http://localhost:5173/");
+      assert.equal(frame.getAttribute("referrerpolicy"), "no-referrer");
+      const sb = frame.getAttribute("sandbox");
+      assert.ok(sb.includes("allow-scripts") && !/allow-top-navigation|allow-popups/.test(sb), sb);
+      // addresses that are not a local app are refused and leave the frame as it was
+      const own = new URL(app.base).port;
+      for (const bad of ["https://example.com", "http://evil.test:3000", "localhost", `localhost:${own}`, "http://user:pw@localhost:3000", "192.168.1.5:3000", "file:///etc/passwd"]) {
+        page.$("prevUrl").value = bad; page.$("prevGo").click();
+        assert.equal(page.$("prevPane").querySelector("iframe").getAttribute("src"), "http://localhost:5173/", `refused: ${bad}`);
+      }
+      page.$("prevUrl").value = "3000"; page.$("prevGo").click();
+      assert.equal(page.$("prevPane").querySelector("iframe").getAttribute("src"), "http://localhost:3000/", "a bare port number works");
+      page.$("prevClose").click();
+      assert.ok(!page.$("app").classList.contains("prev-open"));
+      await new Promise((r) => setTimeout(r, 300));
+    } finally { page.close(); }
+  });
+
+  test("the preview probe lists only listening dev-server ports on this machine, needs the app token, and the page's policy frames nothing but localhost", async () => {
+    const { createServer } = await import("node:net");
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const noToken = await fetch(`${app.base}/api/preview/probe`, { method: "POST", body: "{}", headers: { "content-type": "application/json" } });
+    assert.equal(noToken.status, 401, "the probe is not open to other pages");
+    const listener = createServer((s) => s.end());
+    const port = await new Promise((res) => listener.once("error", () => res(null)).listen(4321, "127.0.0.1", () => res(4321)));
+    try {
+      const before = await fetch(`${app.base}/api/preview/probe`, { method: "POST", headers: H, body: "{}" }).then((r) => r.json());
+      if (port) assert.ok(before.ports.includes(4321), "a listening dev-server port is found");
+      assert.ok(before.ports.every((n) => [3000, 3001, 4173, 4200, 4321, 5000, 5173, 5174, 8000, 8080, 8888].includes(n)), "only the usual ports are ever probed");
+      assert.ok(!before.ports.includes(Number(new URL(app.base).port)), "never this app's own port");
+    } finally { listener.close(); }
+    const page = await fetch(app.url);
+    const csp = page.headers.get("content-security-policy");
+    assert.match(csp, /frame-src http:\/\/localhost:\* http:\/\/127\.0\.0\.1:\*(;|$)/);
+    assert.doesNotMatch(csp, /frame-src[^;]*(https?:\/\/\*|\*\.|example)/);
+  });
+
   test("an approval answer that did not go through gives the buttons back, says so, and sends again on the next click", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });

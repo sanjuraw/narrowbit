@@ -185,6 +185,10 @@ Requires Node ≥ 22.13 (for `node:sqlite`). Runtime dependency: `typescript` on
 
 ## More things it can do
 
+- **Notifications.** The Mac app and, in a browser, a background tab tell you when a task needs your OK or has finished.
+- **Side tasks.** When the agent finishes it can list up to three separate problems it noticed but left alone (dead code, a missing test); each is a button that starts a new task with that text.
+- **Pull requests.** For a GitHub project (it uses the `gh` CLI you are signed in with), open a pull request from the app (two clicks), see whether its checks are running, passed or failing, and turn failing checks into a task.
+- **Preview.** A pane beside the chat that shows your running app (a `localhost` dev server only), with the usual dev-server ports offered as one-click choices. It is sandboxed, gets no referrer, and never shows this app's own address.
 - **Ask you a question** mid-task instead of guessing, and answer plain questions without touching your files.
 - **A suggested next prompt.** When a task ends, the empty box shows a likely follow-up as ghost text (for example "Review your changes for mistakes before I commit them", or "Continue where you left off" if it ran out of steps); Tab fills it in. It comes from simple rules on how the task ended, so it costs no model call, and a plain answer to a question suggests nothing.
 - **Isolated runs** (`--isolate`, or the Isolate toggle): the agent works in a separate git worktree; you press **Apply** (or run `narrowbit apply <task>`) to bring the changes into your folder, or **Discard**.

@@ -73,6 +73,14 @@ button.primary kbd { color: inherit; border-color: currentColor; opacity: .75; }
 kbd { font: 11px var(--mono); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--muted); }
 
 .app { display: grid; grid-template-columns: 264px minmax(0, 1fr); height: 100vh; }
+.app.prev-open { grid-template-columns: 264px minmax(0, 1fr) minmax(320px, 42%); }
+.prev-pane { display: none; flex-direction: column; min-width: 0; border-left: 1px solid var(--line); background: var(--bg); }
+.app.prev-open .prev-pane { display: flex; }
+.prev-bar { display: flex; gap: 6px; align-items: center; padding: 8px; border-bottom: 1px solid var(--line); }
+.prev-bar input { flex: 1; min-width: 0; padding: 4px 8px; }
+.prev-ports { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px; font-size: 12px; color: var(--muted); }
+.prev-frame { flex: 1; width: 100%; border: 0; background: #fff; }
+.prev-empty { padding: 16px; color: var(--muted); font-size: 13px; }
 
 /* ---------- sidebar ---------- */
 aside { background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
@@ -479,6 +487,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <button class="pill warn hidden" id="pushPill" title="Push your commits to the remote"></button>
       <button class="pill hidden" id="prPill"></button>
       <button class="pill warn hidden" id="prFixPill" title="Start a task to fix the failing checks">Fix failing checks</button>
+      <button class="pill hidden" id="prevBtn" title="Show your running app beside the chat">Preview</button>
       <button class="pill hidden" id="publishPill" title="Create a GitHub repository for this project">Publish to GitHub</button>
       <button class="ghost" id="themeBtn" aria-label="Theme"></button>
     </div>
@@ -539,6 +548,18 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <div class="hint" id="hint">Enter to send · Shift+Enter for a new line</div>
     </div>
   </main>
+
+  <aside class="prev-pane" id="prevPane" aria-label="Preview">
+    <div class="prev-bar">
+      <input id="prevUrl" type="text" placeholder="localhost:3000" aria-label="Address of your running app" spellcheck="false">
+      <button class="ghost" id="prevGo" title="Show this address">Go</button>
+      <button class="ghost" id="prevReload" title="Reload">↻</button>
+      <button class="ghost" id="prevOpen" title="Open in your browser">↗</button>
+      <button class="ghost" id="prevClose" aria-label="Close preview" title="Close preview">✕</button>
+    </div>
+    <div class="prev-ports" id="prevPorts"></div>
+    <div class="prev-empty" id="prevEmpty">Start your app's dev server (ask Narrowbit to, or run it yourself), then pick its address above. Only <code>localhost</code> addresses are shown here.</div>
+  </aside>
 </div>
 
 <div class="scrim hidden" id="scrim"></div>
@@ -823,6 +844,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     // A local-only project (created via "Choose a folder", never touched GitHub) has no remote at all —
     // offer to publish one instead of just hiding both pills with no way forward.
     show($("publishPill"), !!(S && S.root && S.git && S.git.isRepo && r && !r.hasRemote));
+    show($("prevBtn"), !!(S && S.root));
     var key = S && S.root && r && r.repoName ? S.root + "|" + (S.git && S.git.branch) + "|" + r.ahead : "";
     if (key !== prKey) { prKey = key; loadPr(); }
     if (!S || !S.root || !r || !r.hasRemote || !r.ahead) { show(b, false); return; }
@@ -838,6 +860,52 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     api("/api/push", {}).then(function (r) { b.disabled = false; apply(r.state); banner("", null); flash($("savedMsg"), r.message); showToast(r.message); })
       .catch(function (e) { b.disabled = false; renderPush(); banner("bad", e.message); });
   };
+  // Preview: your running app beside the chat, so a UI change can be checked by looking. Only localhost addresses are
+  // framed (the server's page policy allows nothing else), never this app's own address, and the frame is sandboxed
+  // without the right to navigate this page; it is sent no referrer, so the app's access token stays out of its requests.
+  var prevFrame = null;
+  function previewTarget(text) {
+    var t = String(text || "").trim();
+    if (/^\d{2,5}$/.test(t)) t = "localhost:" + t;
+    if (!/^[a-z]+:\/\//i.test(t)) t = "http://" + t;
+    var u; try { u = new URL(t); } catch (e) { return null; }
+    if (u.protocol !== "http:" || (u.hostname !== "localhost" && u.hostname !== "127.0.0.1")) return null;
+    if (u.username || u.password || !u.port || u.port === location.port) return null;
+    return u.href;
+  }
+  function showPreview(text) {
+    var href = previewTarget(text);
+    if (!href) { banner("warn", "Preview shows only your own running app: use an address like localhost:3000 (not this app's own address)."); return; }
+    banner("", null);
+    $("prevUrl").value = href.replace(/^http:\/\//, "").replace(/\/$/, "");
+    if (prevFrame) prevFrame.remove();
+    prevFrame = document.createElement("iframe");
+    prevFrame.className = "prev-frame";
+    prevFrame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
+    prevFrame.setAttribute("referrerpolicy", "no-referrer");
+    prevFrame.setAttribute("title", "Preview of your running app");
+    prevFrame.src = href;
+    $("prevPane").appendChild(prevFrame);
+    show($("prevEmpty"), false);
+    try { localStorage.setItem("nb.preview", href); } catch (e) { /* private mode */ }
+  }
+  function openPreview() {
+    $("app").classList.add("prev-open");
+    api("/api/preview/probe", {}).then(function (r) {
+      var box = $("prevPorts"); box.textContent = "";
+      if (!r.ports.length) { box.textContent = "No dev server found on the usual ports."; return; }
+      box.appendChild(el("span", { text: "Running now:" }));
+      r.ports.forEach(function (n) { box.appendChild(el("button", { cls: "side-chip", onclick: function () { showPreview(String(n)); } }, "localhost:" + n)); });
+    }).catch(function () { /* the pane still takes a typed address */ });
+    var last = null; try { last = localStorage.getItem("nb.preview"); } catch (e) { /* none */ }
+    if (last && !prevFrame) $("prevUrl").value = last.replace(/^http:\/\//, "").replace(/\/$/, "");
+  }
+  $("prevBtn").onclick = function () { if ($("app").classList.contains("prev-open")) { $("app").classList.remove("prev-open"); } else openPreview(); };
+  $("prevClose").onclick = function () { $("app").classList.remove("prev-open"); };
+  $("prevGo").onclick = function () { showPreview($("prevUrl").value); };
+  $("prevUrl").onkeydown = function (e) { if (e.key === "Enter") showPreview($("prevUrl").value); };
+  $("prevReload").onclick = function () { if (prevFrame) { var u = prevFrame.src; prevFrame.src = "about:blank"; prevFrame.src = u; } };
+  $("prevOpen").onclick = function () { var u = previewTarget($("prevUrl").value); if (u) openLink(u); };
   // The current branch's pull request: open one (two clicks, like Push), see its checks at a glance, and turn failing
   // checks into a task. Asked of GitHub when the project, branch or unpushed count changes, and on a click.
   var prInfo = null, prArm = null, prKey = null;
