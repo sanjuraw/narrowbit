@@ -684,6 +684,14 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   var T = new URLSearchParams(location.search).get("t") || "";
   var native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.narrowbit;
   var BT = String.fromCharCode(96); // a backtick; a literal one would end this TS template
+  // "Needs your OK" and "finished" notices. The Mac app shows them itself; in a browser they use the web Notification API,
+  // only while this tab is in the background, after you allowed it (asked once, when you start your first task).
+  function notify(type, text) {
+    if (native) { native.postMessage({ type: type, text: text }); return; }
+    var N = window.Notification;
+    if (!N || N.permission !== "granted" || !document.hidden) return;
+    try { new N(type === "attention" ? "Narrowbit needs your OK" : "Narrowbit finished", { body: String(text || "").slice(0, 200) }); } catch (e) { /* notifications blocked */ }
+  }
   var S = null;             // last /api/state
   var draft = null;         // provider being edited in the drawer
   var modelLists = {};      // provider -> /api/models
@@ -1596,6 +1604,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (!text || $("sendBtn").disabled) return;
     if (view) view.suggestion = null;
     if (S && !S.root) { sendDraft(text); return; }
+    if (!native && window.Notification && window.Notification.permission === "default") { try { window.Notification.requestPermission(); } catch (e) { /* not supported */ } }
     banner("", null);
     var cont = view && view.taskId ? view.taskId : null;
     // The server logs the task's first event before this request returns, so the view must already
@@ -2112,7 +2121,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     view.approvals[ev.id] = a;
     add(box, true);
     if (document.activeElement === input) input.blur();
-    if (native) native.postMessage({ type: "attention", text: ev.command });
+    notify("attention", ev.command);
   }
   function onQuestion(ev) {
     if (!view || view.approvals[ev.id]) return;
@@ -2139,7 +2148,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     add(box, true);
     if (document.activeElement === input) input.blur();
     free.focus();
-    if (native) native.postMessage({ type: "attention", text: ev.question });
+    notify("attention", ev.question);
   }
   function onQuestionResolved(ev) {
     var q = view && view.approvals[ev.id]; if (!q) return;
@@ -2190,7 +2199,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (ev.type === "progress") { if (mine) onProgress(ev); return; }
       if (ev.type === "approval" || ev.type === "question") {
         if (ev.task) { run.waiting[ev.task] = true; renderSessions(); }
-        if (!mine && native) native.postMessage({ type: "attention", text: ev.type === "approval" ? ev.command : ev.question });
+        if (!mine) notify("attention", ev.type === "approval" ? ev.command : ev.question);
       }
       if ((ev.type === "approval_resolved" || ev.type === "question_resolved") && ev.task) { delete run.waiting[ev.task]; renderSessions(); }
       if (ev.type === "approval" && mine) onApproval(ev);
@@ -2205,8 +2214,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
           view.suggestion = ev.suggestion || null; renderComposer();
           view.working = null; placeWorking();
           loadChanges();
-          if (native) native.postMessage({ type: "finished", text: ev.outcome + ": " + ev.summary });
-        } else if (native && !(view && view.taskId === ev.taskId)) native.postMessage({ type: "finished", text: ev.outcome + ": " + ev.summary });
+          notify("finished", ev.outcome + ": " + ev.summary);
+        } else if (!(view && view.taskId === ev.taskId)) notify("finished", ev.outcome + ": " + ev.summary);
         renderComposer(); load(); loadLimits();
       } else if (ev.type === "failed") {
         if (ev.task) { delete run.tasks[ev.task]; delete run.waiting[ev.task]; }

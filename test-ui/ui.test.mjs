@@ -1634,6 +1634,32 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { page.close(); }
   });
 
+  test("in a browser, a background tab gets a notification when a task needs an OK or finishes; a visible tab or no permission gets none", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const page = await openPage(app.url);
+    try {
+      await page.until(() => page.w.__nb && page.w.__nb.view(), "the page's conversation view");
+      const shown = [];
+      let hidden = true;
+      page.w.Notification = class { constructor(title, opts) { shown.push([title, opts.body]); } };
+      page.w.Notification.permission = "granted";
+      Object.defineProperty(page.w.document, "hidden", { configurable: true, get: () => hidden });
+      const nb = page.w.__nb;
+      const v = nb.view(); v.taskId = "rt-note"; v.pendingNew = false;
+      nb.stream({ type: "approval", id: "n1", task: "rt-note", command: "npm test" });
+      nb.stream({ type: "approval", id: "n2", task: "rt-other", command: "npm run build" });
+      nb.stream({ type: "finished", taskId: "rt-other", steps: 3, outcome: "done", summary: "fixed it" });
+      assert.deepEqual(shown, [["Narrowbit needs your OK", "npm test"], ["Narrowbit needs your OK", "npm run build"], ["Narrowbit finished", "done: fixed it"]]);
+      hidden = false;
+      nb.stream({ type: "approval", id: "n3", task: "rt-note", command: "ls" });
+      hidden = true; page.w.Notification.permission = "denied";
+      nb.stream({ type: "approval", id: "n4", task: "rt-note", command: "pwd" });
+      assert.equal(shown.length, 3, "nothing while the tab is in front, or without permission");
+      await new Promise((r) => setTimeout(r, 500)); // let the page's own reload after "finished" complete before closing it
+    } finally { page.close(); }
+  });
+
   test("an approval answer that did not go through gives the buttons back, says so, and sends again on the next click", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
