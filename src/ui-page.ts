@@ -489,6 +489,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <button class="pill warn hidden" id="prFixPill" title="Start a task to fix the failing checks">Fix failing checks</button>
       <button class="pill hidden" id="prevBtn" title="Show your running app beside the chat">Preview</button>
       <button class="pill hidden" id="publishPill" title="Create a GitHub repository for this project">Publish to GitHub</button>
+      <button class="ghost hidden" id="winBtn" aria-label="Open in a new window" title="Open this project in a new window, to work on two tasks side by side">⧉</button>
       <button class="ghost" id="themeBtn" aria-label="Theme"></button>
     </div>
     <div class="scroll" id="scroll">
@@ -705,6 +706,11 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 (function () {
   "use strict";
   var T = new URLSearchParams(location.search).get("t") || "";
+  // This window's own id (kept across reloads of it, not shared with other windows or tabs): the server keeps one open
+  // project per window, so two windows can show two conversations side by side.
+  var qs = new URLSearchParams(location.search), wantProject = qs.get("project"), fresh = qs.has("fresh");
+  var W = ""; try { W = fresh ? "" : (sessionStorage.getItem("nb.win") || ""); } catch (e) { /* storage blocked */ }
+  if (!W) { W = Array.prototype.map.call(crypto.getRandomValues(new Uint8Array(12)), function (b) { return (b % 36).toString(36); }).join(""); try { sessionStorage.setItem("nb.win", W); } catch (e) { /* storage blocked */ } }
   var native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.narrowbit;
   var BT = String.fromCharCode(96); // a backtick; a literal one would end this TS template
   // "Needs your OK" and "finished" notices. The Mac app shows them itself; in a browser they use the web Notification API,
@@ -760,7 +766,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function api(path, body) {
     return fetch(path, {
       method: body ? "POST" : "GET",
-      headers: { "x-narrowbit-token": T, "content-type": "application/json" },
+      headers: { "x-narrowbit-token": T, "x-narrowbit-window": W, "content-type": "application/json" },
       body: body ? JSON.stringify(body) : undefined
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) {
@@ -845,6 +851,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     // offer to publish one instead of just hiding both pills with no way forward.
     show($("publishPill"), !!(S && S.root && S.git && S.git.isRepo && r && !r.hasRemote));
     show($("prevBtn"), !!(S && S.root));
+    show($("winBtn"), !!(S && S.root));
     var key = S && S.root && r && r.repoName ? S.root + "|" + (S.git && S.git.branch) + "|" + r.ahead : "";
     if (key !== prKey) { prKey = key; loadPr(); }
     if (!S || !S.root || !r || !r.hasRemote || !r.ahead) { show(b, false); return; }
@@ -909,6 +916,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   // The current branch's pull request: open one (two clicks, like Push), see its checks at a glance, and turn failing
   // checks into a task. Asked of GitHub when the project, branch or unpushed count changes, and on a click.
   var prInfo = null, prArm = null, prKey = null;
+  // A second window on the same project: each window keeps its own conversation and project, so two tasks can be watched side by side.
+  $("winBtn").onclick = function () {
+    if (!S || !S.root) return;
+    if (native) { native.postMessage({ type: "newWindow", project: S.root }); return; }
+    window.open("/?t=" + encodeURIComponent(T) + "&fresh=1&project=" + encodeURIComponent(S.root), "_blank", "noopener");
+  };
+  window.narrowbitNewWindow = function () { $("winBtn").onclick(); };   // the Mac app's Window > New Window
   function openLink(u) { if (native) native.postMessage({ type: "openUrl", url: u }); else window.open(u, "_blank", "noopener"); }
   function failing(p) { return p.checks.filter(function (c) { return c.state === "fail"; }); }
   function loadPr() {
@@ -2295,7 +2309,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   // ---------- run stream ----------
   function connect() {
     if (!S || !S.root) return;
-    es = new EventSource("/api/stream?t=" + encodeURIComponent(T));
+    es = new EventSource("/api/stream?t=" + encodeURIComponent(T) + "&w=" + encodeURIComponent(W));
     es.onmessage = function (msg) { handleStream(JSON.parse(msg.data)); };
   }
   // The server said which run this window's new conversation is; replay what arrived while that was unknown.
@@ -2714,7 +2728,10 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   loadUpdate(false);
   setInterval(function () { loadUpdate(true); }, 3 * 60 * 60 * 1000);
 
-  load();
+  // A window opened with "Open in new window" names the project it should show; strip that from the address so a reload
+  // of this window (which keeps its own project) doesn't switch back to it later.
+  if (wantProject || fresh) { try { history.replaceState(null, "", "/?t=" + encodeURIComponent(T)); } catch (e) { /* not essential */ } }
+  load().then(function () { if (wantProject && S && S.root !== wantProject) openRepo(wantProject); });
 })();
 </script>
 </body>

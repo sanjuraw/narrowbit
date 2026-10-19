@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     private var serverInput: Pipe?
     private var stderrText = ""
     private var loaded = false
+    private var serverURL: URL?
+    /// Further windows ("Open in new window"): each shows the same server with its own open project and conversation.
+    private var extraWindows: [NSWindow] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
@@ -86,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 if line.hasPrefix("narrowbit ui: "), let url = URL(string: String(line.dropFirst("narrowbit ui: ".count))) {
                     DispatchQueue.main.async {
                         self?.loaded = true
+                        self?.serverURL = url
                         self?.web.load(URLRequest(url: url))
                     }
                 }
@@ -138,6 +142,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         switch type {
+        case "newWindow":
+            openNewWindow(project: body["project"] as? String)
         case "pickFolder":
             let panel = NSOpenPanel()
             panel.canChooseDirectories = true
@@ -145,7 +151,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             panel.allowsMultipleSelection = false
             panel.prompt = "Open"
             panel.message = "Choose a repository for Narrowbit to work in"
-            panel.beginSheetModal(for: window) { [weak self] resp in
+            let host: NSWindow = message.webView?.window ?? window
+            panel.beginSheetModal(for: host) { [weak self] resp in
                 guard resp == .OK, let path = panel.url?.path,
                       let data = try? JSONEncoder().encode(path), let arg = String(data: data, encoding: .utf8) else { return }
                 self?.web.evaluateJavaScript("window.narrowbitFolderPicked(\(arg))")
@@ -180,6 +187,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         default:
             break
         }
+    }
+
+    /// A further window on the same server: it gets its own id (so its own open project and conversation) and opens the given project.
+    private func openNewWindow(project: String?) {
+        guard loaded, let base = serverURL, var parts = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return }
+        var items = parts.queryItems ?? []
+        items.append(URLQueryItem(name: "fresh", value: "1"))
+        if let project, !project.isEmpty { items.append(URLQueryItem(name: "project", value: project)) }
+        parts.queryItems = items
+        guard let url = parts.url else { return }
+        let config = WKWebViewConfiguration()
+        config.userContentController.add(self, name: "narrowbit")
+        let view = WKWebView(frame: .zero, configuration: config)
+        view.navigationDelegate = self
+        view.setValue(false, forKey: "drawsBackground")
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 780),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered, defer: false)
+        w.title = "Narrowbit"
+        w.minSize = NSSize(width: 720, height: 520)
+        w.contentView = view
+        w.isReleasedWhenClosed = false
+        // Cascade from the frontmost window so the new one doesn't sit exactly on top of it.
+        if let front = NSApp.keyWindow ?? NSApp.mainWindow {
+            w.setFrameTopLeftPoint(NSPoint(x: front.frame.minX + 28, y: front.frame.maxY - 28))
+        } else { w.center() }
+        w.makeKeyAndOrderFront(nil)
+        extraWindows.append(w)
+        view.load(URLRequest(url: url))
     }
 
     /// Only the local server is shown in the window; any other link opens in the default browser.
@@ -220,6 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let view = NSMenu(title: "View")
         view.addItem(item("Reload", #selector(reload), "r"))
         let win = NSMenu(title: "Window")
+        win.addItem(item("New Window", #selector(newWindowFromMenu), "n"))
         win.addItem(item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"))
         win.addItem(item("Close", #selector(NSWindow.performClose(_:)), "w"))
         for (title, menu) in [("Narrowbit", app), ("Edit", edit), ("View", view), ("Window", win)] {
@@ -237,6 +275,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     @objc private func checkForUpdates() {
         if loaded { web.evaluateJavaScript("window.narrowbitShowAbout && window.narrowbitShowAbout(true)") }
+    }
+
+    @objc private func newWindowFromMenu() {
+        // The page knows which project is open; ask it to open another window on it.
+        let target: WKWebView = (NSApp.keyWindow?.contentView as? WKWebView) ?? web
+        if loaded { target.evaluateJavaScript("window.narrowbitNewWindow && window.narrowbitNewWindow()") }
     }
 
     @objc private func reload() {

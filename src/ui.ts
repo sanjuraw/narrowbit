@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync, lstatSync, readlinkSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { dirname, basename, join, relative, resolve } from "node:path";
@@ -76,6 +77,8 @@ type StreamEvent = (
 interface Run {
   /** Identifies this run on the event stream (several can be live at once). */
   id: string;
+  /** The window (app window or browser tab) that started it; "" for the shared default window. */
+  win: string;
   root: string;
   events: StreamEvent[];
   controller: AbortController;
@@ -309,25 +312,46 @@ export interface UiOptions {
 
 export function startUi(opts: UiOptions) {
   const token = randomBytes(24).toString("hex");
-  let root: string | null = opts.root && existsSync(opts.root) ? repoRootOf(opts.root) : (loadRecent()[0] ?? null);
+  const initialRoot: string | null = opts.root && existsSync(opts.root) ? repoRootOf(opts.root) : (loadRecent()[0] ?? null);
   // Don't silently reopen (and run git in) a repo whose filter programs were never trusted; it opens from the
   // folder picker instead, which asks first.
-  if (root && untrustedReason(root)) root = null;
+  const startRoot = initialRoot && untrustedReason(initialRoot) ? null : initialRoot;
   // A folder opened by cwd/CLI at launch (not through /api/repo) wasn't otherwise recorded — record it now,
   // so leaving it later (Start without a folder, or "New task" going rootless) still finds it in recents.
-  if (root) saveRecent(root);
+  if (startRoot) saveRecent(startRoot);
+  // Each window (an app window or a browser tab) has its own open project, so two windows can show two conversations side by side.
+  // A request names its window in the x-narrowbit-window header (or ?w= on the event stream); one without it, such as an older
+  // page, uses the shared default window. A new window opens on the project most recently opened in any window.
+  interface Win { id: string; root: string | null }
+  const als = new AsyncLocalStorage<Win>();
+  const defaultWin: Win = { id: "", root: startRoot };
+  const windows = new Map<string, Win>();
+  let lastRoot: string | null = startRoot;
+  const win = (): Win => als.getStore() ?? defaultWin;
+  /** The open project where the code has already checked there is one (the old narrowing of a plain variable, which a per-window value can't give). */
+  const cur = (): string => win().root as string;
+  const winFor = (id: string | null): Win => {
+    if (!id || !/^[\w-]{6,40}$/.test(id)) return defaultWin;
+    let w = windows.get(id);
+    if (!w) {
+      if (windows.size >= 64) windows.delete(windows.keys().next().value as string); // a long-running server doesn't grow without bound
+      w = { id, root: lastRoot }; // a folder that has since vanished is reported by state() as missing, as for the first window
+      windows.set(id, w);
+    }
+    return w;
+  };
   // Several conversations can run at once (like the Claude app): one Run per live task, each with its own approvals,
   // questions and stop. Two runs in the same folder would edit the same files, so a second one there is isolated.
   const runs = new Map<string, Run>();
   const runningRuns = () => [...runs.values()].filter((r) => r.running);
   const runOfTask = (id: string | null | undefined) => (id ? runningRuns().find((r) => r.taskId === id) ?? null : null);
-  const rootBusy = (r: string | null = root) => !!r && runningRuns().some((x) => x.root === r);
+  const rootBusy = (r: string | null = win().root) => !!r && runningRuns().some((x) => x.root === r);
   const MAX_RUNS = 4;
   const clients = new Set<ServerResponse>();
   const modelCache = new Map<string, { at: number; list: ModelList }>();
 
   const preexisting = (taskId?: string | null) =>
-    (root ? untrackedAtStart(paths(root), taskId ?? runningRuns().find((r) => r.root === root)?.taskId ?? null) : null) ?? (runOfTask(taskId)?.untrackedBefore ?? runningRuns().find((r) => r.root === root)?.untrackedBefore ?? new Set<string>());
+    (win().root ? untrackedAtStart(paths(cur()), taskId ?? runningRuns().find((r) => r.root === cur())?.taskId ?? null) : null) ?? (runOfTask(taskId)?.untrackedBefore ?? runningRuns().find((r) => r.root === cur())?.untrackedBefore ?? new Set<string>());
   const broadcast = (e: StreamEvent) => {
     const frame = `data: ${JSON.stringify(e)}\n\n`;
     for (const c of clients) c.write(frame);
@@ -401,16 +425,16 @@ export function startUi(opts: UiOptions) {
       formatReadiness(r),
       "",
     ];
-    if (root) {
-      const cfg = loadConfig(paths(root));
+    if (win().root) {
+      const cfg = loadConfig(paths(cur()));
       const sel = resolveSelection(effAgent(cfg));
       lines.push(`provider: ${sel.provider}  models: ${PHASES.map((ph) => sel.tiers[ph] || "?").join(" / ")}  effort: ${sel.effort}  lead mode: ${effAgent(cfg)?.boss ?? false}`);
-      lines.push(`connectors: ${listConnectors().map((c) => c.name).join(", ") || "none"}   skills: ${listSkills(paths(root)).length}`);
-      const problems = taskHistory(paths(root), 10).filter((t) => t.outcome === "error" || t.outcome === "blocked").slice(0, 5);
+      lines.push(`connectors: ${listConnectors().map((c) => c.name).join(", ") || "none"}   skills: ${listSkills(paths(cur())).length}`);
+      const problems = taskHistory(paths(cur()), 10).filter((t) => t.outcome === "error" || t.outcome === "blocked").slice(0, 5);
       lines.push("", "recent problems:");
       if (!problems.length) lines.push("  none");
       for (const t of problems) {
-        const last = [...readEvents(paths(root), t.id)].reverse().find((e) => e.type === "decision" && typeof e.meta?.outcome === "string");
+        const last = [...readEvents(paths(cur()), t.id)].reverse().find((e) => e.type === "decision" && typeof e.meta?.outcome === "string");
         lines.push(`  ${t.at.slice(0, 16)}  ${t.outcome}: ${String(last?.meta?.summary ?? "").slice(0, 200)}`);
       }
     } else lines.push("no folder open");
@@ -432,8 +456,8 @@ export function startUi(opts: UiOptions) {
     // path), Narrowbit is a long-running server that remembers the project as a path string across app
     // restarts — so a rename breaks that string with no way to notice except checking. Report it plainly
     // instead of letting every git/file call downstream fail with a raw, confusing error.
-    const missingRoot = root && !existsSync(root) ? root : null;
-    if (!root || missingRoot) {
+    const missingRoot = win().root && !existsSync(cur()) ? cur() : null;
+    if (!win().root || missingRoot) {
       // No repository yet: settings are per-repo so nothing can be saved, but the provider/model
       // lists must still render or the picker looks empty on a fresh profile.
       const ga = globalAgent();
@@ -441,18 +465,18 @@ export function startUi(opts: UiOptions) {
       try { selection = resolveSelection(ga); } catch { selection = resolveSelection(undefined); }
       return { root: null, missingRoot, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? false, reviewOnly: !!ga?.reviewOnly, planApproval: !!ga?.planApproval, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: mergedHistory(null) };
     }
-    const p = paths(root);
+    const p = paths(cur());
     const initialized = existsSync(p.db);
     // A folder another account owns (a shared Mac) can be opened but not written: Narrowbit keeps its notes in
     // <folder>/.narrowbit, so say so up front instead of failing on the first task with a raw EACCES.
     let writable = true;
     try {
-      accessSync(initialized ? p.nb : root, fsConstants.W_OK);
+      accessSync(initialized ? p.nb : cur(), fsConstants.W_OK);
     } catch {
       writable = false;
     }
-    const owner = writable ? "" : sh("stat", ["-f", "%Su", root], root).stdout.trim();
-    const g = gitState(root);
+    const owner = writable ? "" : sh("stat", ["-f", "%Su", cur()], cur()).stdout.trim();
+    const g = gitState(cur());
     const cfg = loadConfig(p);
     let selection;
     let selectionError: string | null = null;
@@ -464,14 +488,14 @@ export function startUi(opts: UiOptions) {
     }
     const providers = buildProviders(effAgent(cfg));
     return {
-      root,
+      root: win().root,
       version: readVersion(),
-      name: basename(root),
+      name: basename(cur()),
       recent: loadRecent(),
       initialized,
       writable,
       owner,
-      remote: g.isRepo ? remoteInfo(root) : { hasRemote: false, upstream: null, ahead: 0 },
+      remote: g.isRepo ? remoteInfo(cur()) : { hasRemote: false, upstream: null, ahead: 0 },
       git: { isRepo: g.isRepo, branch: g.branch, head: g.head?.slice(0, 7) ?? null, changed: [...new Set([...g.dirty, ...g.staged])], untracked: g.untracked.filter((f) => !f.startsWith(".narrowbit/")) },
       verify: cfg.verify,
       selection,
@@ -480,14 +504,15 @@ export function startUi(opts: UiOptions) {
       phases: PHASES,
       efforts: EFFORT_LEVELS,
       running: rootBusy(),
-      runningTask: runningRuns().find((r) => r.root === root)?.taskId ?? null,
+      // Only a task this window started: a second window on the same project must not adopt the first one's conversation.
+      runningTask: runningRuns().find((r) => r.root === win().root && r.win === win().id)?.taskId ?? null,
       runningTasks: runningRuns().map((r) => r.taskId).filter(Boolean),
       lead: effAgent(cfg)?.boss ?? false,
       fallback: effAgent(cfg)?.fallback ?? "",
       scout: effAgent(cfg)?.scout ?? "",
       reviewOnly: !!effAgent(cfg)?.reviewOnly,
       planApproval: !!effAgent(cfg)?.planApproval,
-      history: [...(initialized ? taskHistory(p, 40, { project: basename(root), root }) : []), ...mergedHistory(root)]
+      history: [...(initialized ? taskHistory(p, 40, { project: basename(cur()), root: cur() }) : []), ...mergedHistory(cur())]
         .sort((a, b) => b.last.localeCompare(a.last))
         .slice(0, 40),
       skills: listSkills(p),
@@ -499,19 +524,19 @@ export function startUi(opts: UiOptions) {
   // commands: "ask" every time (default), "checks" (the project's checks and read-only commands run unasked), "all" (nothing asks).
   const startRun = (task: string, maxSteps: number, commands: "ask" | "checks" | "all", continueTask: string | null, isolate = false, attachments: string[] = []): { status: number; body: unknown } => {
     const askBeforeCommands = commands !== "all";
-    if (!root) return { status: 400, body: { error: "open a repository first" } };
+    if (!win().root) return { status: 400, body: { error: "open a repository first" } };
     if (continueTask && runOfTask(continueTask)) return { status: 409, body: { error: "this conversation is already working — wait for it, or stop it" } };
     if (runningRuns().length >= MAX_RUNS) return { status: 409, body: { error: `${MAX_RUNS} tasks are already running — wait for one to finish or stop one` } };
     // A second task in a folder that already has one running works in a separate copy, so the two can't edit the same files.
-    const sharesFolder = rootBusy(root);
+    const sharesFolder = rootBusy(win().root);
     if (sharesFolder) isolate = true;
-    const p = paths(root);
+    const p = paths(cur());
     if (!existsSync(p.db)) return { status: 400, body: { error: "set up Narrowbit in this repository first" } };
     // Trust was decided when the folder was opened; the folder can change after that (a pull, an extracted archive), so a
     // task asks again before it reads settings, notes or earlier task logs from it.
-    const stale = untrustedReason(root);
-    if (stale) return { status: 409, body: { error: "untrusted", message: stale.message, risks: stale.risks, path: root } };
-    const g = gitState(root);
+    const stale = untrustedReason(cur());
+    if (stale) return { status: 409, body: { error: "untrusted", message: stale.message, risks: stale.risks, path: win().root } };
+    const g = gitState(cur());
     const cfg = loadConfig(p);
     const sel = resolveSelection(effAgent(cfg));
     const unavailable = unavailableReason(sel, effAgent(cfg));
@@ -522,7 +547,8 @@ export function startUi(opts: UiOptions) {
     const planApproval = !!effAgent(cfg)?.planApproval;
     const thisRun: Run = {
       id: randomBytes(4).toString("hex"),
-      root,
+      win: win().id,
+      root: cur(),
       taskId: continueTask,
       events: [],
       controller: new AbortController(),
@@ -639,7 +665,7 @@ export function startUi(opts: UiOptions) {
     return true;
   };
 
-  const server = createServer(async (req, res) => {
+  const handler = async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
       const port = (server.address() as { port: number }).port;
@@ -688,16 +714,16 @@ export function startUi(opts: UiOptions) {
       if (route === "GET /api/update") return json(res, 200, { ...(await checkUpdate(url.searchParams.has("refresh"))), justUpdated: pendingUpdateNotes() });
 
       if (route === "GET /api/github") {
-        if (!root) return json(res, 400, { error: "no repository open" });
-        return json(res, 200, githubIdentity(root));
+        if (!win().root) return json(res, 400, { error: "no repository open" });
+        return json(res, 200, githubIdentity(cur()));
       }
       if (route === "GET /api/diagnostics") return json(res, 200, { text: await diagnostics() });
 
       if (route === "GET /api/readiness") return json(res, 200, await checkReadiness(url.searchParams.has("refresh")));
 
       if (route === "GET /api/files") {
-        if (!root || !existsSync(paths(root).db)) return json(res, 200, { files: [] });
-        return json(res, 200, { files: suggestFiles(paths(root), url.searchParams.get("q") ?? "", 20) });
+        if (!win().root || !existsSync(paths(cur()).db)) return json(res, 200, { files: [] });
+        return json(res, 200, { files: suggestFiles(paths(cur()), url.searchParams.get("q") ?? "", 20) });
       }
 
       if (route === "GET /api/limits") {
@@ -710,7 +736,7 @@ export function startUi(opts: UiOptions) {
       if (route === "GET /api/models") {
         const prov = url.searchParams.get("provider") ?? "";
         if (!isProvider(prov)) return json(res, 400, { error: `unknown provider "${prov}"` });
-        const agent = root ? effAgent(loadConfig(paths(root))) : globalAgent();
+        const agent = win().root ? effAgent(loadConfig(paths(cur()))) : globalAgent();
         const cacheKey = `${prov} ${resolveEndpoint(prov, agent)?.baseUrl ?? ""} ${keySource(prov, PROVIDER_INFO[prov].keyEnv) ?? ""}`;
         const hit = modelCache.get(cacheKey);
         if (hit && Date.now() - hit.at < 5 * 60_000 && hit.list.models.length && !url.searchParams.has("refresh")) return json(res, 200, hit.list);
@@ -720,21 +746,21 @@ export function startUi(opts: UiOptions) {
       }
 
       if (route === "GET /api/diff") {
-        if (!root) return json(res, 400, { error: "no repository open" });
+        if (!win().root) return json(res, 400, { error: "no repository open" });
         const taskId = url.searchParams.get("task");
-        const iso = taskId && /^rt-[\w-]+$/.test(taskId) ? readIsolated(paths(root), taskId) : null;
+        const iso = taskId && /^rt-[\w-]+$/.test(taskId) ? readIsolated(paths(cur()), taskId) : null;
         if (iso) return json(res, 200, { ...workingDiff(iso.dir), isolated: true });
-        return json(res, 200, workingDiff(root, preexisting(taskId)));
+        return json(res, 200, workingDiff(cur(), preexisting(taskId)));
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/api/task/")) {
-        if (!root) return json(res, 400, { error: "no repository open" });
+        if (!win().root) return json(res, 400, { error: "no repository open" });
         const id = url.pathname.slice("/api/task/".length);
         if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
         const live = runOfTask(id);
         // Approvals and questions this task is waiting on, so opening it from the sidebar shows what it needs from you.
         const waiting = live ? live.events.filter((e) => (e.type === "approval" && live.pending.has(e.id)) || (e.type === "question" && live.questions.has(e.id))) : [];
-        const events = readEvents(paths(root), id);
+        const events = readEvents(paths(cur()), id);
         return json(res, 200, { id, events, running: !!live, waiting, suggestion: live ? null : suggestionFromEvents(events) });
       }
 
@@ -797,7 +823,8 @@ export function startUi(opts: UiOptions) {
               return json(res, 400, { error: e.message });
             }
           }
-          root = r;
+          win().root = r;
+          lastRoot = r;
           saveRecent(r);
           const st = state();
           return json(res, 200, seedTask ? { ...st, seedTask } : st);
@@ -806,8 +833,9 @@ export function startUi(opts: UiOptions) {
           // Leaving the current project back to the rootless planning screen — the only way there once
           // any folder has ever been opened, since the server otherwise reopens the last-used one at
           // launch and "New task" only resets the conversation, never the open folder.
-          if (rootBusy()) return json(res, 409, { error: "stop the running task before closing this project" });
-          root = null;
+          // Closing only changes what this window shows; it is blocked only by a task this window started.
+          if (runningRuns().some((r) => r.root === win().root && r.win === win().id)) return json(res, 409, { error: "stop the running task before closing this project" });
+          win().root = null;
           return json(res, 200, state());
         }
         case "/api/plan": {
@@ -830,12 +858,12 @@ export function startUi(opts: UiOptions) {
           return json(res, 200, { taskId: r.taskId, reply: r.text });
         }
         case "/api/init": {
-          if (!root) return json(res, 400, { error: "no repository open" });
-          initProject(paths(root));
+          if (!win().root) return json(res, 400, { error: "no repository open" });
+          initProject(paths(cur()));
           return json(res, 200, state());
         }
         case "/api/models": {
-          const p = root ? paths(root) : null;
+          const p = win().root ? paths(cur()) : null;
           const provider = String(body.provider ?? "");
           if (!isProvider(provider)) return json(res, 400, { error: `unknown provider "${provider}"` });
           const effort = String(body.effort ?? "");
@@ -869,8 +897,8 @@ export function startUi(opts: UiOptions) {
           return json(res, 200, state());
         }
         case "/api/skills": {
-          if (!root) return json(res, 400, { error: "no repository open" });
-          const p = paths(root);
+          if (!win().root) return json(res, 400, { error: "no repository open" });
+          const p = paths(cur());
           const name = String(body.name ?? "").trim();
           try {
             ensureDirs(p);
@@ -882,13 +910,13 @@ export function startUi(opts: UiOptions) {
         }
         case "/api/push": {
           // An explicit click in the app is the only way this runs; nothing pushes automatically.
-          if (!root) return json(res, 400, { error: "no repository open" });
+          if (!win().root) return json(res, 400, { error: "no repository open" });
           if (rootBusy()) return json(res, 409, { error: "wait for the task in this folder to finish" });
-          const r = pushBranch(root);
+          const r = pushBranch(cur());
           if (!r.ok) {
             // A brand-new local project has no remote yet: offer to create one on GitHub (a separate, explicit
             // step) instead of a dead-end error telling the user to run git by hand.
-            if (r.message === "no-remote") return json(res, 409, { error: "no-remote", suggestedName: basename(root) });
+            if (r.message === "no-remote") return json(res, 409, { error: "no-remote", suggestedName: basename(cur()) });
             return json(res, 400, { error: r.message });
           }
           return json(res, 200, { message: r.message, state: state() });
@@ -902,53 +930,53 @@ export function startUi(opts: UiOptions) {
         }
         case "/api/pr": {
           // The current branch's pull request and its checks (asks GitHub through the gh CLI; changes nothing).
-          if (!root) return json(res, 400, { error: "no repository open" });
-          const s = prStatus(root);
+          if (!win().root) return json(res, 400, { error: "no repository open" });
+          const s = prStatus(cur());
           if (s.available && s.pr) s.pr.title = redact(s.pr.title);
           return json(res, 200, s);
         }
         case "/api/pr/create": {
           // Only an explicit click in the app opens a pull request.
-          if (!root) return json(res, 400, { error: "no repository open" });
-          const r = createPr(root);
+          if (!win().root) return json(res, 400, { error: "no repository open" });
+          const r = createPr(cur());
           if (!r.ok) return json(res, 400, { error: r.message });
-          return json(res, 200, { message: r.message, url: r.url, pr: prStatus(root) });
+          return json(res, 200, { message: r.message, url: r.url, pr: prStatus(cur()) });
         }
         case "/api/github/create-repo": {
           // Publishing is a separate, explicit action from creating the project — never automatic (see
           // planning.ts's createProjectFromDraft, which only ever does a local git init).
-          if (!root) return json(res, 400, { error: "no repository open" });
+          if (!win().root) return json(res, 400, { error: "no repository open" });
           if (rootBusy()) return json(res, 409, { error: "wait for the task in this folder to finish" });
           const name = String(body.name ?? "").trim();
           if (!/^[\w.-]+$/.test(name)) return json(res, 400, { error: "give this repo a name using only letters, numbers, - . and _" });
-          const r = createGithubRepo(root, name, { private: body.private !== false });
+          const r = createGithubRepo(cur(), name, { private: body.private !== false });
           if (!r.ok) return json(res, 400, { error: r.message });
           return json(res, 200, { message: r.message, state: state() });
         }
         case "/api/session/rename":
         case "/api/session/delete": {
-          if (!root) return json(res, 400, { error: "no repository open" });
+          if (!win().root) return json(res, 400, { error: "no repository open" });
           const id = String(body.id ?? "");
           if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad session id" });
           if (runOfTask(id)) return json(res, 409, { error: "stop the running task first" });
-          const dir = join(paths(root).runtime, id);
+          const dir = join(paths(cur()).runtime, id);
           if (!existsSync(dir)) return json(res, 404, { error: "no such session" });
           if (route === "POST /api/session/delete") {
-            removeProjectPath(root, dir, { recursive: true });
+            removeProjectPath(cur(), dir, { recursive: true });
           } else {
             const title = String(body.title ?? "").trim().slice(0, 200);
-            if (title) writeProjectFile(root, join(dir, "title.txt"), title + "\n");
-            else removeProjectPath(root, join(dir, "title.txt"));
+            if (title) writeProjectFile(cur(), join(dir, "title.txt"), title + "\n");
+            else removeProjectPath(cur(), join(dir, "title.txt"));
           }
           return json(res, 200, state());
         }
         case "/api/memory/suggested": {
           // Approve or dismiss one of the notes proposed at the end of a task. Only approval writes to project memory.
-          if (!root) return json(res, 400, { error: "no repository open" });
+          if (!win().root) return json(res, 400, { error: "no repository open" });
           const id = String(body.task ?? "");
           const idx = Number(body.index);
           if (!/^rt-[\w-]+$/.test(id) || !Number.isInteger(idx) || idx < 0) return json(res, 400, { error: "bad request" });
-          const p = paths(root);
+          const p = paths(cur());
           const evs = readEvents(p, id);
           const sug = [...evs].reverse().find((e) => Array.isArray(e.meta?.suggested))?.meta?.suggested as { type: string; text: string; reason?: string; files?: string[] }[] | undefined;
           const n = sug?.[idx];
@@ -966,9 +994,9 @@ export function startUi(opts: UiOptions) {
           return json(res, 200, state());
         }
         case "/api/memory/remove": {
-          if (!root) return json(res, 400, { error: "no repository open" });
+          if (!win().root) return json(res, 400, { error: "no repository open" });
           // Marked resolved, not deleted: the note stays on disk (and in the vault) but is never recalled again.
-          const e = openMemory(paths(root)).setStatus(String(body.id ?? ""), "resolved");
+          const e = openMemory(paths(cur())).setStatus(String(body.id ?? ""), "resolved");
           if (!e) return json(res, 404, { error: "no such note (or it's read-only)" });
           return json(res, 200, state());
         }
@@ -981,8 +1009,8 @@ export function startUi(opts: UiOptions) {
           }
         }
         case "/api/skills/delete": {
-          if (!root) return json(res, 400, { error: "no repository open" });
-          removeSkill(paths(root), String(body.name ?? ""));
+          if (!win().root) return json(res, 400, { error: "no repository open" });
+          removeSkill(paths(cur()), String(body.name ?? ""));
           return json(res, 200, state());
         }
         case "/api/connectors": {
@@ -1078,12 +1106,12 @@ export function startUi(opts: UiOptions) {
           return json(res, 200, state());
         }
         case "/api/endpoint": {
-          if (!root) return json(res, 400, { error: "no repository open" });
+          if (!win().root) return json(res, 400, { error: "no repository open" });
           const prov = String(body.provider ?? "");
           if (!isProvider(prov) || PROVIDER_INFO[prov].kind === "subscription") return json(res, 400, { error: "that provider has no endpoint" });
           const baseUrl = String(body.baseUrl ?? "").trim();
           if (baseUrl && !/^https?:\/\/[^\s]+$/.test(baseUrl)) return json(res, 400, { error: "base URL must start with http:// or https://" });
-          const p = paths(root);
+          const p = paths(cur());
           const cfg = loadConfig(p);
           const agent = (cfg.agent ??= {});
           const eps = (agent.endpoints ??= {});
@@ -1106,19 +1134,19 @@ export function startUi(opts: UiOptions) {
             live.queue.push(task.slice(0, 20_000));
             return json(res, 200, { ok: true, queued: true });
           }
-          if (root && !body.force && !continueTask && body.isolate !== true && !rootBusy(root)) {
-            const g = gitState(root);
+          if (win().root && !body.force && !continueTask && body.isolate !== true && !rootBusy(win().root)) {
+            const g = gitState(cur());
             const changed = [...new Set([...g.dirty, ...g.staged])];
             if (changed.length) return json(res, 409, { error: "dirty", files: changed });
           }
           const maxSteps = Math.min(100, Math.max(1, Number(body.maxSteps) || 20));
           // Attachments are named by the id /api/attach returned; anything else is ignored, so a page can't point the agent at other files.
-          if (!root) return json(res, 400, { error: "open a repository first" });
+          if (!win().root) return json(res, 400, { error: "open a repository first" });
           let attachments: string[];
           try {
             attachments = (Array.isArray(body.attachments) ? body.attachments : [])
               .filter((a: unknown): a is string => typeof a === "string" && /^[0-9a-f]{8}-[\w.\- ]+$/.test(a))
-              .map((a: string) => join(attachmentDir(root!), a))
+              .map((a: string) => join(attachmentDir(win().root!), a))
               .filter((f: string) => existsSync(f))
               .slice(0, 6);
           } catch (e: any) {
@@ -1130,11 +1158,11 @@ export function startUi(opts: UiOptions) {
           return json(res, r.status, r.body);
         }
         case "/api/attach": {
-          if (!root) return json(res, 400, { error: "open a repository first" });
+          if (!win().root) return json(res, 400, { error: "open a repository first" });
           try {
             const data = Buffer.from(String(body.data ?? ""), "base64");
             if (!data.length) return json(res, 400, { error: "empty file" });
-            const f = saveAttachment(root, String(body.name ?? "file"), data);
+            const f = saveAttachment(cur(), String(body.name ?? "file"), data);
             return json(res, 200, { id: basename(f), name: basename(f).replace(/^[0-9a-f]{8}-/, ""), kind: attachmentKind(f) });
           } catch (e: any) {
             return json(res, 400, { error: e.message });
@@ -1150,7 +1178,7 @@ export function startUi(opts: UiOptions) {
           return json(res, resolveQuestion(String(body.id ?? ""), answer) ? 200 : 404, { ok: true });
         }
         case "/api/compact": {
-          if (!root) return json(res, 400, { error: "no repository open" });
+          if (!win().root) return json(res, 400, { error: "no repository open" });
           const id = String(body.task ?? "");
           if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
           const live = runOfTask(id);
@@ -1158,23 +1186,23 @@ export function startUi(opts: UiOptions) {
             live.compactRequested = true;
             return json(res, 200, { ok: true, when: "after the model's current step" });
           }
-          const p = paths(root);
+          const p = paths(cur());
           if (!readEvents(p, id).length) return json(res, 404, { error: "no such chat" });
           // An idle chat: mark it, so the next message starts a fresh session from the summary instead of resuming.
           appendEvent(p, id, { actor: "user", type: "handoff", summary: "you compacted this chat — your next message starts a fresh session from a short summary", meta: { manual: true } });
           return json(res, 200, { ok: true, when: "with your next message" });
         }
         case "/api/rewind": {
-          if (!root) return json(res, 400, { error: "no repository open" });
+          if (!win().root) return json(res, 400, { error: "no repository open" });
           if (rootBusy()) return json(res, 409, { error: "stop the running task in this folder first" });
           const id = String(body.task ?? "");
           if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
-          const p = paths(root);
+          const p = paths(cur());
           const cps = listCheckpoints(p, id);
           const target = cps.find((c) => c.id === String(body.checkpoint ?? ""));
           if (!target) return json(res, 404, { error: "no such checkpoint" });
           const isolated = readIsolated(p, id);
-          const targetRoot = isolated ? isolated.dir : root;
+          const targetRoot = isolated ? isolated.dir : cur();
           const r = restoreCheckpoint(targetRoot, target.commit);
           if (!r.ok) return json(res, 500, { error: r.message });
           appendEvent(p, id, { actor: "user", type: "checkpoint", summary: `rewound to: ${target.summary}`, meta: { rewoundTo: target.id } });
@@ -1182,16 +1210,16 @@ export function startUi(opts: UiOptions) {
         }
         case "/api/fork": {
           // Branch a conversation from one of your earlier messages: a new conversation with everything before it.
-          if (!root) return json(res, 400, { error: "no repository open" });
+          if (!win().root) return json(res, 400, { error: "no repository open" });
           const id = String(body.task ?? "");
           if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
-          const r = forkTask(paths(root), id, String(body.event ?? ""));
+          const r = forkTask(paths(cur()), id, String(body.event ?? ""));
           if ("error" in r) return json(res, 400, { error: r.error });
-          return json(res, 200, { ok: true, taskId: r.taskId, isolated: !!readIsolated(paths(root), id) });
+          return json(res, 200, { ok: true, taskId: r.taskId, isolated: !!readIsolated(paths(cur()), id) });
         }
         case "/api/stop": {
           // The conversation being viewed (body.task), else whatever is running in the open folder.
-          const targets = typeof body.task === "string" ? [runOfTask(body.task)].filter((r): r is Run => !!r) : runningRuns().filter((r) => r.root === root);
+          const targets = typeof body.task === "string" ? [runOfTask(body.task)].filter((r): r is Run => !!r) : runningRuns().filter((r) => r.root === win().root && r.win === win().id);
           for (const run of targets) {
             run.controller.abort();
             for (const id of [...run.pending.keys()]) resolveApproval(id, "deny");
@@ -1202,48 +1230,48 @@ export function startUi(opts: UiOptions) {
         }
         case "/api/isolated/apply":
         case "/api/isolated/discard": {
-          if (!root) return json(res, 400, { error: "no repository open" });
+          if (!win().root) return json(res, 400, { error: "no repository open" });
           if (rootBusy()) return json(res, 409, { error: "wait for the task in this folder to finish" });
           const id = String(body.task ?? "");
           if (!/^rt-[\w-]+$/.test(id)) return json(res, 400, { error: "bad task id" });
-          if (route === "POST /api/isolated/discard") { discardIsolated(paths(root), id); return json(res, 200, { ok: true, message: "Discarded the separate copy. Your folder was never touched." }); }
-          const r = applyIsolated(paths(root), id);
+          if (route === "POST /api/isolated/discard") { discardIsolated(paths(cur()), id); return json(res, 200, { ok: true, message: "Discarded the separate copy. Your folder was never touched." }); }
+          const r = applyIsolated(paths(cur()), id);
           if (!r.ok) return json(res, 409, { error: r.message });
-          discardIsolated(paths(root), id);
+          discardIsolated(paths(cur()), id);
           return json(res, 200, { ok: true, message: r.message, files: r.files });
         }
         case "/api/commit": {
-          if (!root) return json(res, 400, { error: "no repository open" });
+          if (!win().root) return json(res, 400, { error: "no repository open" });
           if (rootBusy()) return json(res, 409, { error: "wait for the task in this folder to finish" });
           const message = String(body.message ?? "").trim();
           if (!message) return json(res, 400, { error: "write a commit message" });
-          const { files } = workingDiff(root, preexisting(typeof body.task === "string" ? body.task : null));
+          const { files } = workingDiff(cur(), preexisting(typeof body.task === "string" ? body.task : null));
           if (!files.length) return json(res, 400, { error: "nothing to commit" });
           // Checkpoint: nothing leaves this machine by commit, but a pushed secret cannot be un-pushed,
           // so stop here if the change adds credentials, unless the user says to go ahead.
           if (body.force !== true) {
-            const risky = auditRepo(root, { files }).filter((f) => f.severity === "high");
+            const risky = auditRepo(cur(), { files }).filter((f) => f.severity === "high");
             if (risky.length) return json(res, 409, { error: "secrets", findings: risky.slice(0, 8) });
           }
           // The repository's hooks run on commit, as in a terminal. A change to a hook file in this very commit (an agent edited
           // .husky/pre-commit, say) would run with it, so it is shown first.
-          const hooksPath = sh("git", ["config", "--get", "core.hooksPath"], root).stdout.trim() || undefined;
+          const hooksPath = sh("git", ["config", "--get", "core.hooksPath"], cur()).stdout.trim() || undefined;
           const hookFiles = files.filter((f) => isHookFile(f, hooksPath));
           if (hookFiles.length && body.hooksOk !== true) return json(res, 409, { error: "hooks", files: hookFiles.slice(0, 8) });
-          const add = sh("git", ["add", "-A", "--", ...files], root);
+          const add = sh("git", ["add", "-A", "--", ...files], cur());
           if (add.code !== 0) return json(res, 500, { error: add.stderr.trim() || "git add failed" });
           // Commit exactly the files shown on the Changes card (as they are on disk, which is what was scanned above) —
           // a plain `git commit` would also take whatever else was already staged, unseen and unscanned.
-          const c = sh("git", ["commit", "-m", message, "--only", "--", ...files], root, undefined, { hooks: true });
+          const c = sh("git", ["commit", "-m", message, "--only", "--", ...files], cur(), undefined, { hooks: true });
           if (c.code !== 0) return json(res, 500, { error: (c.stderr || c.stdout).trim() || "git commit failed" });
-          const leftStaged = sh("git", ["diff", "--cached", "--name-only", "-z"], root).stdout.split("\0").filter(Boolean);
-          return json(res, 200, { ok: true, head: sh("git", ["rev-parse", "--short", "HEAD"], root).stdout.trim(), leftStaged });
+          const leftStaged = sh("git", ["diff", "--cached", "--name-only", "-z"], cur()).stdout.split("\0").filter(Boolean);
+          return json(res, 200, { ok: true, head: sh("git", ["rev-parse", "--short", "HEAD"], cur()).stdout.trim(), leftStaged });
         }
         case "/api/reveal-recovered": {
           // Show a rewind/discard recovery folder in Finder. Only ever a folder under this project's
           // .narrowbit/rewind-trash — the page can't use this to open anything else.
-          if (!root) return json(res, 400, { error: "no repository open" });
-          const base = join(root, ".narrowbit", "rewind-trash");
+          if (!win().root) return json(res, 400, { error: "no repository open" });
+          const base = join(cur(), ".narrowbit", "rewind-trash");
           const want = resolve(String(body.path ?? ""));
           // A folder, never a file: `open` on a recovered file would launch it (a .command or .app that a task left there).
           if (!existsSync(want) || !existsSync(base) || !realpathSync(want).startsWith(realpathSync(base) + "/") || !statSync(want).isDirectory()) return json(res, 400, { error: "that isn't a recovery folder" });
@@ -1257,23 +1285,23 @@ export function startUi(opts: UiOptions) {
           // it. The old version restored every dirty file to HEAD — wiping the user's own edits made before or
           // after the task — and deleted new files outright. `preview: true` returns the plan without touching
           // anything, so the confirmation can show exactly what will happen.
-          if (!root) return json(res, 400, { error: "no repository open" });
+          if (!win().root) return json(res, 400, { error: "no repository open" });
           if (rootBusy()) return json(res, 409, { error: "wait for the task in this folder to finish" });
           const taskId = typeof body.task === "string" && /^rt-[\w-]+$/.test(body.task) ? body.task : null;
           if (!taskId) return json(res, 400, { error: "which task? (discard undoes one task's changes)" });
-          const cps = listCheckpoints(paths(root), taskId);
+          const cps = listCheckpoints(paths(cur()), taskId);
           if (cps.length < 2) return json(res, 409, { error: "This task has no record of its changes to undo (it made none, or it predates change tracking). Use Rewind, or git, to revert by hand." });
           const start = cps[0].commit, end = cps[cps.length - 1].commit;
           // Only files the agent's own edit actions changed count as the agent's. Anything else that differs between
           // the task's first and last checkpoint (a command's output, or the user working at the same time) is shown,
           // not reverted, unless the user explicitly includes it.
           const agentPaths = new Set<string>();
-          for (const e of readEvents(paths(root), taskId)) {
-            if (e.type === "edit" && typeof e.meta?.path === "string") agentPaths.add(relative(root, resolve(root, e.meta.path)).split("\\").join("/"));
+          for (const e of readEvents(paths(cur()), taskId)) {
+            if (e.type === "edit" && typeof e.meta?.path === "string") agentPaths.add(relative(cur(), resolve(cur(), e.meta.path)).split("\\").join("/"));
           }
           const opts = { agentPaths, includeReview: body.includeReview === true };
-          if (body.preview === true) return json(res, 200, { preview: true, ...planDiscard(root, start, end, opts) });
-          const r = discardTask(root, start, end, opts);
+          if (body.preview === true) return json(res, 200, { preview: true, ...planDiscard(cur(), start, end, opts) });
+          const r = discardTask(cur(), start, end, opts);
           if (!r.ok) return json(res, 500, { error: r.message });
           return json(res, 200, r);
         }
@@ -1282,6 +1310,16 @@ export function startUi(opts: UiOptions) {
     } catch (e: any) {
       if (!res.headersSent) json(res, 500, { error: friendlyFsError(e) });
     }
+  };
+  const server = createServer((req, res) => {
+    // Only a request that carries the app token gets (or creates) a window of its own; anything else is turned away by the handler.
+    let id: string | null = null;
+    try {
+      const u = new URL(req.url ?? "/", "http://localhost");
+      const given = u.pathname === "/api/stream" ? u.searchParams.get("t") : req.headers["x-narrowbit-token"];
+      if (tokenMatches(given, token)) id = (u.pathname === "/api/stream" ? u.searchParams.get("w") : (req.headers["x-narrowbit-window"] as string | undefined)) ?? null;
+    } catch { /* an unparseable address is refused by the handler */ }
+    als.run(winFor(id), () => { void handler(req, res); });
   });
 
   server.listen(opts.port, "127.0.0.1", () => {

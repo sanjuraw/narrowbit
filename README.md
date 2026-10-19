@@ -185,6 +185,7 @@ Requires Node ≥ 22.13 (for `node:sqlite`). Runtime dependency: `typescript` on
 
 ## More things it can do
 
+- **Side by side.** Each window (an app window via Window > New Window, ⌘N, or the ⧉ button; or a browser tab) has its own open project and conversation, so two tasks can be watched next to each other. Several tasks already ran at once (up to four, in separate copies when they share a folder).
 - **Notifications.** The Mac app and, in a browser, a background tab tell you when a task needs your OK or has finished.
 - **Side tasks.** When the agent finishes it can list up to three separate problems it noticed but left alone (dead code, a missing test); each is a button that starts a new task with that text.
 - **Pull requests.** For a GitHub project (it uses the `gh` CLI you are signed in with), open a pull request from the app (two clicks), see whether its checks are running, passed or failing, and turn failing checks into a task.

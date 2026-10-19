@@ -1342,6 +1342,49 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     ctl.abort();
   });
 
+  test("two windows each have their own open project and conversation: closing one leaves the other, and a window never adopts the other's running task", async () => {
+    const base = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const A = { ...base, "x-narrowbit-window": "window-aaaa1111" }, B = { ...base, "x-narrowbit-window": "window-bbbb2222" };
+    const post = (h, path, b) => fetch(`${app.base}${path}`, { method: "POST", headers: h, body: JSON.stringify(b) });
+    const state = (h) => fetch(`${app.base}/api/state`, { headers: h }).then((r) => r.json());
+    const countFile = join(fakeDir, "count");
+    const savedCount = existsSync(countFile) ? readFileSync(countFile, "utf8") : null;
+    writeFileSync(countFile, "0"); // the stand-in model starts again from its first reply (the question), whatever ran before
+    const defaultBefore = (await state(base)).root;
+    assert.equal((await post(A, "/api/repo", { path: repo })).status, 200);
+    const b0 = await state(B);
+    assert.equal(b0.root, repo, "a new window opens on the project most recently opened");
+    // A starts a task and it waits on a question; B, on the same project, must not adopt it.
+    const events = [];
+    const ctl = new AbortController();
+    const stream = await fetch(`${app.base}/api/stream?t=${app.token}&w=window-bbbb2222`, { signal: ctl.signal });
+    const reader = stream.body.getReader();
+    let buf = "";
+    (async () => { try { for (;;) { const { value, done } = await reader.read(); if (done) break; buf += new TextDecoder().decode(value); let i; while ((i = buf.indexOf("\n\n")) >= 0) { const chunk = buf.slice(0, i); buf = buf.slice(i + 2); const m = /^data: (.*)$/m.exec(chunk); if (m) events.push(JSON.parse(m[1])); } } } catch {} })();
+    const until = async (pred, what) => { for (let i = 0; i < 200; i++) { const hit = events.find(pred); if (hit) return hit; await new Promise((r) => setTimeout(r, 100)); } throw new Error("timed out: " + what); };
+    try {
+      const run = await post(A, "/api/run", { task: "task W: choose a colour", askBeforeCommands: false });
+      assert.equal(run.status, 200, await run.clone().text());
+      const q = await until((e) => e.type === "question", "the question");
+      const sa = await state(A), sb = await state(B);
+      assert.equal(sa.runningTask, q.task, "the window that started it has it as its running task");
+      assert.equal(sb.runningTask, null, "the other window does not adopt it");
+      assert.ok(sb.running, "but it still knows the folder is busy");
+      // Closing the project in B only changes B; it is allowed although A's task runs. A cannot close its own while it runs.
+      assert.equal((await post(B, "/api/repo/close", {})).status, 200);
+      assert.equal((await state(B)).root, null);
+      assert.equal((await state(A)).root, repo, "A still has its project");
+      assert.equal((await post(A, "/api/repo/close", {})).status, 409, "a window can't close a project its own task is running in");
+      // A window with no header (an older page) is the shared default and is unaffected by either.
+      assert.equal((await state(base)).root, defaultBefore, "the shared default window is unaffected by either");
+      assert.equal((await post(A, "/api/answer", { id: q.id, answer: "blue" })).status, 200);
+      await until((e) => e.type === "finished" && e.taskId === q.task, "the task to finish");
+      // A request without the app token never creates a window of its own.
+      const bad = await fetch(`${app.base}/api/state`, { headers: { "x-narrowbit-window": "window-cccc3333" } });
+      assert.equal(bad.status, 401);
+    } finally { ctl.abort(); if (savedCount !== null) writeFileSync(countFile, savedCount); }
+  });
+
   test("a message sent while the task is working is queued and delivered, not refused", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     const post = (path, b) => fetch(`${app.base}${path}`, { method: "POST", headers: H, body: JSON.stringify(b) });
@@ -1763,6 +1806,39 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     const csp = page.headers.get("content-security-policy");
     assert.match(csp, /frame-src http:\/\/localhost:\* http:\/\/127\.0\.0\.1:\*(;|$)/);
     assert.doesNotMatch(csp, /frame-src[^;]*(https?:\/\/\*|\*\.|example)/);
+  });
+
+  test("every request names this window; 'Open in new window' opens another with its own id on the same project", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const seen = new Set();
+    const page = await openPage(app.url, { route: (u, o) => { const w = o && o.headers && o.headers["x-narrowbit-window"]; if (w) seen.add(w); return null; } });
+    try {
+      await page.until(() => page.visible(page.$("winBtn")), "the new-window button for an open project");
+      await page.until(() => seen.size > 0, "a request with the window id");
+      assert.equal(seen.size, 1, "one window id, used for every request");
+      const id = [...seen][0];
+      assert.match(id, /^[a-z0-9]{12}$/);
+      assert.equal(page.w.sessionStorage.getItem("nb.win"), id, "kept for this window across reloads");
+      const opened = [];
+      page.w.open = (...a) => { opened.push(a); return null; };
+      page.$("winBtn").click();
+      assert.equal(opened.length, 1);
+      const u = new URL(opened[0][0], "http://x");
+      assert.equal(u.searchParams.get("t"), app.token);
+      assert.equal(u.searchParams.get("fresh"), "1", "the new window starts with an id of its own");
+      assert.equal(u.searchParams.get("project"), repo, "on the same project");
+      assert.equal(opened[0][2], "noopener");
+      await new Promise((r) => setTimeout(r, 300));
+    } finally { page.close(); }
+    // a window opened that way takes a new id and opens the named project
+    const other = await openPage(`${app.url}&fresh=1&project=${encodeURIComponent(repo)}`);
+    try {
+      await other.until(() => other.visible(other.$("winBtn")), "the second window's project");
+      assert.ok(!other.w.location.search.includes("fresh") && !other.w.location.search.includes("project"), "the hand-off parameters are removed from the address");
+      assert.match(other.w.sessionStorage.getItem("nb.win") || "", /^[a-z0-9]{12}$/);
+      await new Promise((r) => setTimeout(r, 300));
+    } finally { other.close(); }
   });
 
   test("an approval answer that did not go through gives the buttons back, says so, and sends again on the next click", async () => {
