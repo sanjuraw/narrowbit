@@ -477,6 +477,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <button class="pill hidden" id="planMini"></button>
       <span class="pill hidden" id="treePill"></span>
       <button class="pill warn hidden" id="pushPill" title="Push your commits to the remote"></button>
+      <button class="pill hidden" id="prPill"></button>
+      <button class="pill warn hidden" id="prFixPill" title="Start a task to fix the failing checks">Fix failing checks</button>
       <button class="pill hidden" id="publishPill" title="Create a GitHub repository for this project">Publish to GitHub</button>
       <button class="ghost" id="themeBtn" aria-label="Theme"></button>
     </div>
@@ -821,6 +823,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     // A local-only project (created via "Choose a folder", never touched GitHub) has no remote at all —
     // offer to publish one instead of just hiding both pills with no way forward.
     show($("publishPill"), !!(S && S.root && S.git && S.git.isRepo && r && !r.hasRemote));
+    var key = S && S.root && r && r.repoName ? S.root + "|" + (S.git && S.git.branch) + "|" + r.ahead : "";
+    if (key !== prKey) { prKey = key; loadPr(); }
     if (!S || !S.root || !r || !r.hasRemote || !r.ahead) { show(b, false); return; }
     var where = r.upstream || "origin";
     b.textContent = pushArm ? "Click again to push to " + where : "↑ " + r.ahead + " to push";
@@ -833,6 +837,50 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var b = $("pushPill"); b.textContent = "Pushing…"; b.disabled = true;
     api("/api/push", {}).then(function (r) { b.disabled = false; apply(r.state); banner("", null); flash($("savedMsg"), r.message); showToast(r.message); })
       .catch(function (e) { b.disabled = false; renderPush(); banner("bad", e.message); });
+  };
+  // The current branch's pull request: open one (two clicks, like Push), see its checks at a glance, and turn failing
+  // checks into a task. Asked of GitHub when the project, branch or unpushed count changes, and on a click.
+  var prInfo = null, prArm = null, prKey = null;
+  function openLink(u) { if (native) native.postMessage({ type: "openUrl", url: u }); else window.open(u, "_blank", "noopener"); }
+  function failing(p) { return p.checks.filter(function (c) { return c.state === "fail"; }); }
+  function loadPr() {
+    if (!prKey) { prInfo = null; renderPr(); return; }
+    var asked = prKey;
+    // Asking GitHub can take a few seconds; if the page is gone by then (a closed window), there is nothing to draw into.
+    api("/api/pr", {}).then(function (r) { if (typeof document !== "undefined" && asked === prKey) { prInfo = r; renderPr(); } }).catch(function () { if (typeof document !== "undefined") { prInfo = null; renderPr(); } });
+  }
+  function renderPr() {
+    var b = $("prPill");
+    show($("prFixPill"), false);
+    if (!prInfo || !prInfo.available) { show(b, false); return; }
+    if (prInfo.pr) {
+      var p = prInfo.pr, fail = failing(p).length;
+      var pend = p.checks.filter(function (c) { return c.state === "pending"; }).length;
+      b.className = "pill" + (fail ? " warn" : !pend && p.checks.length ? " ok" : "");
+      b.textContent = "PR #" + p.number + (fail ? " · " + fail + " failing" : pend ? " · checks running" : p.checks.length ? " · checks passed" : "");
+      b.title = p.title + " (open on GitHub)";
+      show(b, true);
+      show($("prFixPill"), fail > 0);
+      return;
+    }
+    if (!prInfo.canCreate) { show(b, false); return; }
+    b.className = "pill";
+    b.textContent = prArm ? "Click again to open a pull request" : "Open pull request";
+    b.title = "Open a pull request for " + prInfo.branch + " on GitHub, titled from its commits";
+    show(b, true);
+  }
+  $("prPill").onclick = function () {
+    if (prInfo && prInfo.pr) { openLink(prInfo.pr.url); loadPr(); return; }
+    if (!prArm) { prArm = setTimeout(function () { prArm = null; renderPr(); }, 4000); renderPr(); return; }
+    clearTimeout(prArm); prArm = null;
+    var b = $("prPill"); b.textContent = "Opening…"; b.disabled = true;
+    api("/api/pr/create", {}).then(function (r) { b.disabled = false; prInfo = r.pr; renderPr(); showToast(r.message); })
+      .catch(function (e) { b.disabled = false; renderPr(); banner("bad", e.message); });
+  };
+  $("prFixPill").onclick = function () {
+    var p = prInfo && prInfo.pr; if (!p) return;
+    var names = failing(p).map(function (c) { return c.name; }).join(", ");
+    startSideTask("The CI checks on pull request #" + p.number + " failed: " + names + ". Find out why (run the project's own checks, or read the failure log with: gh run view --log-failed), fix it, and verify.");
   };
   // Publishing is a separate, explicit step from creating the project (planning.ts's createProjectFromDraft
   // never touches GitHub) — this is that step: create the repo and add it as the remote, but don't push.

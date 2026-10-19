@@ -201,3 +201,76 @@ export function githubIdentity(root: string): GithubIdentity {
   const acct = /Logged in to github\.com (?:account|as) (\S+)/.exec(`${gh.stdout ?? ""}${gh.stderr ?? ""}`);
   return { remoteUrl, repo: m ? m[1] : null, author: { name: cfg("user.name"), email: cfg("user.email") }, ghAccount: acct ? acct[1] : null, ghInstalled, helper: cfg("credential.helper") };
 }
+
+export interface PrCheck {
+  name: string;
+  state: "pass" | "fail" | "pending";
+}
+export type PrStatus =
+  | { available: false; reason: string }
+  | { available: true; branch: string; pr: null; canCreate: boolean; why?: string }
+  | { available: true; branch: string; pr: { number: number; url: string; title: string; state: string; checks: PrCheck[] }; canCreate: false };
+
+/** The GitHub CLI, run in the project with nothing interactive: it never waits on a prompt nobody can see. */
+function gh(root: string, args: string[], timeout = 20_000) {
+  return spawnSync("gh", args, {
+    cwd: root, encoding: "utf8", timeout,
+    env: { ...process.env, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "safe.directory", GIT_CONFIG_VALUE_0: root, GIT_TERMINAL_PROMPT: "0", GH_PROMPT_DISABLED: "1", NO_COLOR: "1" },
+  });
+}
+
+function ghReady(root: string): string | null {
+  const a = gh(root, ["auth", "status", "--hostname", "github.com"], 8000);
+  if (a.error && (a.error as any).code === "ENOENT") return "The GitHub CLI (gh) isn't installed. Install it (brew install gh) and run gh auth login to use pull requests here.";
+  if (a.status !== 0) return "Not signed in to GitHub. Run gh auth login in a terminal to use pull requests here.";
+  return null;
+}
+
+function defaultBranch(root: string): string {
+  const r = sh("git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], root);
+  return r.code === 0 && r.stdout.trim() ? r.stdout.trim().replace(/^origin\//, "") : "main";
+}
+
+/** A GitHub check's many spellings (CheckRun conclusions, commit-status states) reduced to passed / failed / still running. */
+export function checkState(c: { conclusion?: string | null; state?: string | null; status?: string | null }): PrCheck["state"] {
+  const v = String(c.conclusion || c.state || c.status || "").toUpperCase();
+  if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(v)) return "pass";
+  if (["FAILURE", "CANCELLED", "TIMED_OUT", "ERROR", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"].includes(v)) return "fail";
+  return "pending";
+}
+
+/** The pull request for the current branch and its checks, or whether one can be opened. Asks GitHub; nothing changes. */
+export function prStatus(root: string): PrStatus {
+  const info = remoteInfo(root);
+  if (!info.hasRemote || !info.repoName) return { available: false, reason: "This project has no GitHub remote." };
+  const notReady = ghReady(root);
+  if (notReady) return { available: false, reason: notReady };
+  const branch = sh("git", ["rev-parse", "--abbrev-ref", "HEAD"], root).stdout.trim();
+  const v = gh(root, ["pr", "view", "--json", "number,url,title,state,statusCheckRollup"]);
+  if (v.status === 0) {
+    try {
+      const j = JSON.parse(v.stdout);
+      const checks = (Array.isArray(j.statusCheckRollup) ? j.statusCheckRollup : []).map((c: any) => ({ name: String(c.name ?? c.context ?? "check"), state: checkState(c) }));
+      return { available: true, branch, pr: { number: Number(j.number), url: String(j.url), title: String(j.title ?? ""), state: String(j.state ?? ""), checks }, canCreate: false };
+    } catch {
+      /* fall through: treated as no pull request */
+    }
+  }
+  if (!branch || branch === "HEAD") return { available: true, branch, pr: null, canCreate: false, why: "You're not on a branch." };
+  if (branch === defaultBranch(root)) return { available: true, branch, pr: null, canCreate: false, why: `You're on ${branch}. Work on a separate branch to open a pull request.` };
+  if (!info.upstream || info.ahead > 0) return { available: true, branch, pr: null, canCreate: false, why: "Push this branch first." };
+  return { available: true, branch, pr: null, canCreate: true };
+}
+
+/** Opens a pull request for the pushed current branch, titled and described from its commits. Only on an explicit click. */
+export function createPr(root: string): { ok: boolean; message: string; url?: string } {
+  const s = prStatus(root);
+  if (!s.available) return { ok: false, message: s.reason };
+  if (s.pr) return { ok: true, message: `Pull request #${s.pr.number} already exists.`, url: s.pr.url };
+  if (!s.canCreate) return { ok: false, message: s.why ?? "Can't open a pull request from here." };
+  const r = gh(root, ["pr", "create", "--fill", "--head", s.branch], 60_000);
+  const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`.trim();
+  const url = /(https:\/\/github\.com\/\S+\/pull\/\d+)/.exec(out)?.[1];
+  if (r.status !== 0 || !url) return { ok: false, message: out.split("\n").slice(-3).join("\n") || "Opening the pull request failed." };
+  return { ok: true, message: `Opened ${url}`, url };
+}

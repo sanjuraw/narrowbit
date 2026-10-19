@@ -15,7 +15,7 @@ import { listCheckpoints, restoreCheckpoint } from "./checkpoints.js";
 import { createProjectFromDraft, draftsPaths, planningReply, tooBroadForProject } from "./planning.js";
 import { findSkills } from "./skillimport.js";
 import { appendEvent, fold, forkTask, readEvents, type Event } from "./events.js";
-import { changedSince, createGithubRepo, githubIdentity, gitState, pushBranch, remoteInfo } from "./git.js";
+import { changedSince, createGithubRepo, githubIdentity, gitState, pushBranch, remoteInfo, prStatus, createPr } from "./git.js";
 import { listConnectorTools } from "./mcpClient.js";
 import { initProject } from "./project.js";
 import { keySource, setKey } from "./keys.js";
@@ -876,6 +876,20 @@ export function startUi(opts: UiOptions) {
             return json(res, 400, { error: r.message });
           }
           return json(res, 200, { message: r.message, state: state() });
+        }
+        case "/api/pr": {
+          // The current branch's pull request and its checks (asks GitHub through the gh CLI; changes nothing).
+          if (!root) return json(res, 400, { error: "no repository open" });
+          const s = prStatus(root);
+          if (s.available && s.pr) s.pr.title = redact(s.pr.title);
+          return json(res, 200, s);
+        }
+        case "/api/pr/create": {
+          // Only an explicit click in the app opens a pull request.
+          if (!root) return json(res, 400, { error: "no repository open" });
+          const r = createPr(root);
+          if (!r.ok) return json(res, 400, { error: r.message });
+          return json(res, 200, { message: r.message, url: r.url, pr: prStatus(root) });
         }
         case "/api/github/create-repo": {
           // Publishing is a separate, explicit action from creating the project — never automatic (see

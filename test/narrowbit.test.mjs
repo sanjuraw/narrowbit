@@ -6015,3 +6015,62 @@ describe("side tasks: problems the agent noticed but left alone", () => {
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 });
+
+describe("pull requests through the GitHub CLI (stand-in gh, no network)", () => {
+  function setup({ branch = "feature", pushed = true, prJson = null, auth = true } = {}) {
+    const { root, p } = tinyRepo();
+    const bin = realpathSync(mkdtempSync(join(tmpdir(), "nb-gh-")));
+    const g = (...a) => execFileSync("git", a, { cwd: root, encoding: "utf8" });
+    g("remote", "add", "origin", "https://github.com/acme/demo.git");
+    if (branch !== "main") g("checkout", "-q", "-b", branch);
+    if (pushed) {
+      g("update-ref", `refs/remotes/origin/${branch}`, "HEAD");
+      g("config", `branch.${branch}.remote`, "origin");
+      g("config", `branch.${branch}.merge`, `refs/heads/${branch}`);
+    }
+    const log = join(bin, "calls.log");
+    writeFileSync(join(bin, "gh"), `#!/bin/sh
+echo "$*" >> ${JSON.stringify(log)}
+case "$1 $2" in
+  "auth status") exit ${auth ? 0 : 1};;
+  "pr view") ${prJson ? `printf '%s' ${JSON.stringify(JSON.stringify(prJson))}; exit 0` : `echo "no pull requests found" >&2; exit 1`};;
+  "pr create") echo "https://github.com/acme/demo/pull/7"; exit 0;;
+esac
+exit 1
+`, { mode: 0o755 });
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${bin}:${oldPath}`;
+    return { root, calls: () => (existsSync(log) ? readFileSync(log, "utf8") : ""), done: () => { process.env.PATH = oldPath; rmSync(root, { recursive: true, force: true }); rmSync(bin, { recursive: true, force: true }); } };
+  }
+
+  test("a pushed feature branch can open one; the default branch, an unpushed branch or no sign-in cannot; a click creates it with --fill", async () => {
+    const { prStatus, createPr } = await dist("git.js");
+    let s = setup();
+    try {
+      const st = prStatus(s.root);
+      assert.equal(st.available, true); assert.equal(st.pr, null); assert.equal(st.canCreate, true);
+      const r = createPr(s.root);
+      assert.equal(r.ok, true); assert.equal(r.url, "https://github.com/acme/demo/pull/7");
+      assert.match(s.calls(), /pr create --fill --head feature/);
+    } finally { s.done(); }
+    s = setup({ branch: "main" });
+    try { const st = prStatus(s.root); assert.equal(st.canCreate, false); assert.match(st.why, /on main/); assert.equal(createPr(s.root).ok, false); assert.doesNotMatch(s.calls(), /pr create/); } finally { s.done(); }
+    s = setup({ pushed: false });
+    try { assert.match(prStatus(s.root).why, /Push this branch first/); } finally { s.done(); }
+    s = setup({ auth: false });
+    try { const st = prStatus(s.root); assert.equal(st.available, false); assert.match(st.reason, /gh auth login/); } finally { s.done(); }
+  });
+
+  test("an existing pull request comes back with its checks reduced to passed, failed and running", async () => {
+    const { prStatus, createPr } = await dist("git.js");
+    const s = setup({ prJson: { number: 12, url: "https://github.com/acme/demo/pull/12", title: "Fix parser", state: "OPEN", statusCheckRollup: [
+      { name: "test", conclusion: "FAILURE", status: "COMPLETED" }, { name: "lint", conclusion: "SUCCESS" }, { context: "ci/legacy", state: "PENDING" }, { name: "build", status: "IN_PROGRESS" } ] } });
+    try {
+      const st = prStatus(s.root);
+      assert.equal(st.pr.number, 12);
+      assert.deepEqual(st.pr.checks, [{ name: "test", state: "fail" }, { name: "lint", state: "pass" }, { name: "ci/legacy", state: "pending" }, { name: "build", state: "pending" }]);
+      const again = createPr(s.root);
+      assert.equal(again.ok, true); assert.match(again.message, /already exists/); assert.doesNotMatch(s.calls(), /pr create/);
+    } finally { s.done(); }
+  });
+});

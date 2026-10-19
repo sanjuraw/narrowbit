@@ -46,7 +46,7 @@ async function startApp({ cwd, home, env = {} }) {
 }
 
 /** Loads the page like a browser would, collecting every script error. */
-async function openPage(url) {
+async function openPage(url, opts = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (e) => errors.push(String(e.stack || e)));
@@ -55,7 +55,8 @@ async function openPage(url) {
     pretendToBeVisual: true,
     virtualConsole,
     beforeParse(w) {
-      w.fetch = (u, o) => fetch(new URL(u, w.location.href), o);
+      // opts.route lets a test answer chosen requests itself (for things that would need GitHub, say).
+      w.fetch = (u, o) => { const hit = opts.route && opts.route(String(u), o); return hit ? Promise.resolve(hit) : fetch(new URL(u, w.location.href), o); };
       w.EventSource = class { addEventListener() {} close() {} };
       w.Element.prototype.scrollIntoView = () => {};
       w.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
@@ -1677,6 +1678,40 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
       assert.ok(page.$("crumbName").textContent && !/Choose a folder/.test(page.$("crumbName").textContent), "still in the same project");
       await new Promise((r) => setTimeout(r, 500)); // the page reloads its lists after a new event; let that finish before closing
     } finally { page.close(); }
+  });
+
+  test("a GitHub project shows its pull request and checks; failing checks become a task; a pushed branch offers to open one", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    execFileSync("git", ["remote", "add", "origin", "https://github.com/acme/demo.git"], { cwd: repo });
+    const reply = (j) => ({ ok: true, status: 200, json: async () => j, text: async () => JSON.stringify(j) });
+    let pr = { available: true, branch: "feature", pr: { number: 12, url: "https://github.com/acme/demo/pull/12", title: "Fix parser", state: "OPEN", checks: [{ name: "test", state: "fail" }, { name: "lint", state: "pass" }] }, canCreate: false };
+    const created = [];
+    try {
+      await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+      const page = await openPage(app.url, { route: (u) => {
+        if (u.endsWith("/api/pr")) return reply(pr);
+        if (u.endsWith("/api/pr/create")) { created.push(1); return reply({ message: "Opened https://github.com/acme/demo/pull/7", url: "https://github.com/acme/demo/pull/7", pr: { ...pr, canCreate: false, pr: { number: 7, url: "https://github.com/acme/demo/pull/7", title: "t", state: "OPEN", checks: [] } } }); }
+        return null;
+      } });
+      try {
+        await page.until(() => page.visible(page.$("prPill")) && /PR #12/.test(page.$("prPill").textContent), "the pull request pill");
+        assert.match(page.$("prPill").textContent, /PR #12 · 1 failing/);
+        assert.ok(page.visible(page.$("prFixPill")), "a failing check offers a fix");
+        page.$("prFixPill").click();
+        assert.match(page.$("input").value, /pull request #12 failed: test\./, "the fix is a ready-to-send task naming the failing check");
+        pr = { available: true, branch: "feature", pr: null, canCreate: true };
+        page.$("prPill").click(); // an existing PR's pill refreshes on click; the reply now says there is none
+        await page.until(() => /Open pull request/.test(page.$("prPill").textContent), "the open-a-PR offer");
+        assert.ok(!page.visible(page.$("prFixPill")));
+        page.$("prPill").click();
+        assert.match(page.$("prPill").textContent, /Click again/, "opening one takes two clicks, like Push");
+        assert.equal(created.length, 0);
+        page.$("prPill").click();
+        await page.until(() => /PR #7/.test(page.$("prPill").textContent), "the new pull request");
+        assert.equal(created.length, 1);
+        await new Promise((r) => setTimeout(r, 300));
+      } finally { page.close(); }
+    } finally { execFileSync("git", ["remote", "remove", "origin"], { cwd: repo }); }
   });
 
   test("an approval answer that did not go through gives the buttons back, says so, and sends again on the next click", async () => {
