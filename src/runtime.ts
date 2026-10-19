@@ -99,7 +99,7 @@ const SYSTEM_INSTRUCTIONS = `You are driving a coding task through a tool-free r
 {"action":"remember","type":"fact"|"decision"|"constraint"|"convention"|"failure"|"bug"|"command"|"environment","text":"<durable knowledge, one or two sentences>","reason"?:"<why>","attempt"?:"<for failures: what was tried>","result"?:"<for failures: what happened>","files"?:["<path>"]}
 {"action":"describe","server":"<connector name>","tool":"<tool name>"}
 {"action":"connector","server":"<connector name>","tool":"<tool name>","args":{...}}
-{"action":"done","summary":"<what changed and why it satisfies the task>"}
+{"action":"done","summary":"<what changed and why it satisfies the task>","followups"?:["<a separate problem you noticed but rightly left alone, e.g. dead code, a missing test>", ...up to 3]}
 {"action":"ask","question":"<one focused question>","options"?:["<a likely answer>", ...up to 4]}
 {"action":"blocked","reason":"<what you need that you don't have>"}
 
@@ -198,6 +198,8 @@ interface Decision {
   note?: string;
   /** 1-based plan steps finished by this action. */
   steps_done?: number[];
+  /** done action: separate problems noticed but left alone; the app offers each as a new task. */
+  followups?: string[];
 }
 
 /** Parses one turn's response into 1-MAX_BATCH_ACTIONS decisions: a bare action object, or a JSON
@@ -1169,7 +1171,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
           markSteps(plan, plan.steps.map((_, i2) => i2 + 1));
           appendEvent(p, taskId, { actor: "model", type: "plan", summary: `plan: ${plan.steps.length}/${plan.steps.length} done`, meta: planMeta(plan) });
         }
-        appendEvent(p, taskId, { actor: "model", type: "decision", summary: `done: ${summary}`, meta: { note: decision.note } });
+        appendEvent(p, taskId, { actor: "model", type: "decision", summary: `done: ${summary}`, meta: { note: decision.note, ...(sideTasks(decision.followups).length ? { followups: sideTasks(decision.followups) } : {}) } });
         log(`[${steps}] (${turnModel}) ${tag}done: ${summary}`);
         taskEnded = true;
         break;
@@ -1856,4 +1858,17 @@ async function leadReview(
   const feedback = d.verdict === "revise" ? String(d.feedback ?? "").trim() || "The change is incomplete; re-check the task." : "";
   appendEvent(ctx.p, ctx.taskId, { actor: "model", type: "decision", summary: d.verdict === "approve" ? "lead review: approved" : `lead review: changes requested — ${feedback}`, meta: { review: d.verdict, feedback, by: ctx.model } });
   return { verdict: d.verdict, feedback };
+}
+
+/** At most three short, distinct suggestions; anything else in the field is ignored. */
+export function sideTasks(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const x of v) {
+    if (typeof x !== "string") continue;
+    const t = x.replace(/\s+/g, " ").trim().slice(0, 200);
+    if (t && !out.includes(t)) out.push(t);
+    if (out.length === 3) break;
+  }
+  return out;
 }

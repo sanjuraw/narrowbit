@@ -128,7 +128,7 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .sess .st span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sess .sm { font-size: 11.5px; color: var(--faint); padding-left: 14px; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; display: inline-block; }
-.o-done { color: var(--ok); } .o-blocked, .o-error { color: var(--bad); } .o-stopped, .o-unfinished, .o-max_steps { color: var(--warn); } .o-running { color: var(--accent); }
+.side-tasks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 2px; } .side-lbl { color: var(--muted); font-size: 12px; } .side-chip { font-size: 12px; padding: 3px 9px; border-radius: 12px; } .o-done { color: var(--ok); } .o-blocked, .o-error { color: var(--bad); } .o-stopped, .o-unfinished, .o-max_steps { color: var(--warn); } .o-running { color: var(--accent); }
 .side-foot { border-top: 1px solid var(--line); padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
 .side-foot .settings { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 6px 6px; text-align: left; border-radius: 8px; width: 100%; }
 .side-foot .settings:hover { background: var(--panel-2); }
@@ -1674,6 +1674,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   // Just blanking the composer for a fresh task within whatever project (or lack of one) is already
   // current — used for internal bookkeeping (first load, the active session got deleted, forking a task)
   // where nothing about which project is open should change.
+  // A side task starts a fresh conversation in the same project, with the suggestion in the box for you to edit or send.
+  function startSideTask(text) {
+    blankView();
+    input.value = text;
+    input.dispatchEvent(new Event("input"));
+    input.focus();
+  }
   function blankView() { resetView(null); show($("createProjectBar"), false); renderSessions(); input.focus(); closeSide(); }
   // The user-facing "New task" action, though, always starts a blank, no-folder chat — matching Claude's
   // own "New" — rather than silently continuing whatever project happened to be open. The current project
@@ -2028,6 +2035,12 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       var answer = e.summary.slice(6), ansCopy = iconBtn("copy", "Copy", function () { copyText(answer, ansCopy); });
       var saveSk = iconBtn("skill", "Save this as a skill", skillFromChat);
       add(el("div", { cls: "final-wrap" }, el("div", { cls: "final" }, rich(answer)), el("div", { cls: "msg-actions" }, ansCopy, saveSk)));
+      if (Array.isArray(m.followups) && m.followups.length) {
+        // Problems the agent noticed but left alone: each becomes its own new task in this project, one click away.
+        var side = el("div", { cls: "side-tasks" }, el("span", { cls: "side-lbl", text: "Noticed, not done:" }));
+        m.followups.forEach(function (t) { side.appendChild(el("button", { cls: "side-chip", title: "Start this as a new task", onclick: function () { startSideTask(String(t)); } }, "+ " + String(t))); });
+        add(side);
+      }
       return;
     }
     if (e.type === "blocker" && e.actor === "model") { add(el("div", { cls: "final-wrap" }, el("div", { cls: "blocked-tag", text: "Couldn't finish" }), el("div", { cls: "final" }, rich(String(e.summary).replace(/^Blocked:\s*/i, ""))))); return; }

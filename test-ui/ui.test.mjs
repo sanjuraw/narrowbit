@@ -1660,6 +1660,25 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { page.close(); }
   });
 
+  test("problems the agent noticed but left alone show as chips under the answer; a click starts a new task in the same project with that text", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const page = await openPage(app.url);
+    try {
+      await page.until(() => page.w.__nb && page.w.__nb.view(), "the page's conversation view");
+      const nb = page.w.__nb, doc = page.w.document;
+      const v = nb.view(); v.taskId = "rt-side"; v.pendingNew = false;
+      nb.stream({ type: "event", run: "x", event: { id: "e1", taskId: "rt-side", at: new Date().toISOString(), actor: "model", type: "decision", summary: "done: fixed the parser", meta: { followups: ["Remove the unused helper in util.js", "Add a test for empty input"] } } });
+      const chips = await page.until(() => { const c = [...doc.querySelectorAll(".side-chip")]; return c.length === 2 && c; }, "two side-task chips");
+      assert.match(chips[0].textContent, /Remove the unused helper in util\.js/);
+      chips[1].click();
+      assert.equal(page.$("input").value, "Add a test for empty input", "the suggestion is in the box, ready to edit or send");
+      assert.equal(nb.view().taskId, null, "it is a new conversation, not a follow-up");
+      assert.ok(page.$("crumbName").textContent && !/Choose a folder/.test(page.$("crumbName").textContent), "still in the same project");
+      await new Promise((r) => setTimeout(r, 500)); // the page reloads its lists after a new event; let that finish before closing
+    } finally { page.close(); }
+  });
+
   test("an approval answer that did not go through gives the buttons back, says so, and sends again on the next click", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });

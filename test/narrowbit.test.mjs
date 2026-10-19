@@ -5996,3 +5996,22 @@ exit 0
     assert.match(shadowed.out, /another narrowbit is first on your PATH/);
   });
 });
+
+describe("side tasks: problems the agent noticed but left alone", () => {
+  test("a done action's followups are saved with the answer (at most three, trimmed, no duplicates, junk ignored)", async () => {
+    const { sideTasks } = await dist("runtime.js");
+    assert.deepEqual(sideTasks(["  a   b ", "a b", 7, null, "c", "d", "e"]), ["a b", "c", "d"]);
+    assert.deepEqual(sideTasks("not a list"), []);
+    assert.equal(sideTasks(["x".repeat(500)])[0].length, 200);
+    const { root, p } = tinyRepo();
+    const done = JSON.stringify({ action: "done", summary: "a.txt says hello", followups: ["Remove the unused helper", "Remove the unused helper", "Add a test", { bad: 1 }] });
+    const fake = fakeClaude([done, done]);
+    try {
+      const r = await runTask(p, "what does a.txt say?", { claudeBin: fake.bin, boss: false, persistent: false, maxSteps: 4 });
+      const { readEvents } = await dist("memory.js");
+      const ev = readEvents(p, r.taskId).find((e) => e.type === "decision" && e.actor === "model" && e.summary.startsWith("done: "));
+      assert.ok(ev, "the answer was recorded");
+      assert.deepEqual(ev.meta.followups, ["Remove the unused helper", "Add a test"]);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
