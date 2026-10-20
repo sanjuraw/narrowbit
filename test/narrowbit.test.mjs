@@ -2683,6 +2683,24 @@ describe("handoff between models and automatic project memory", () => {
   });
 });
 
+describe("follow-ups after a failed model call", () => {
+  test("a call that failed left no session to resume: the follow-up starts a new session from the digest", async () => {
+    const { root, p } = tinyRepo();
+    const dir = mkdtempSync(join(tmpdir(), "nb-failclaude-"));
+    const bin = join(dir, "claude");
+    writeFileSync(bin, `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, result: "No conversation found with session ID: x", usage: { input_tokens: 0, output_tokens: 0 }, total_cost_usd: 0, num_turns: 0, session_id: "s" }));
+`, { mode: 0o755 });
+    const fake2 = fakeClaude([JSON.stringify({ action: "done", summary: "ok" })]);
+    try {
+      const r1 = await runTask(p, "say hi", { claudeBin: bin, boss: false, persistent: false, maxSteps: 4 });
+      assert.equal(r1.outcome, "error");
+      await runTask(p, "try again", { claudeBin: fake2.bin, boss: false, persistent: false, maxSteps: 4, continueTask: r1.taskId });
+      assert.equal(fake2.resumes()[0], "fresh", "the failed call's session id was not offered for resuming");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); rmSync(fake2.dir, { recursive: true, force: true }); }
+  });
+});
+
 describe("test-first gate (optional)", () => {
   test("the first source edit is refused until a check has failed; test files are always editable; off by default", async () => {
     const { root, p } = tinyRepo(); writeFileSync(join(root, "b.txt"), "x\n");

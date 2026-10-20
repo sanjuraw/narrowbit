@@ -912,7 +912,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   if (continuing) {
     // Resume the earlier session when it still exists (cheaper: the conversation is cached);
     // otherwise start fresh from the same deterministic digest compaction uses.
-    const last = [...prior].reverse().find((e) => e.type === "model_call" && typeof e.meta?.sessionId === "string" && e.tokens?.role === role);
+    // A call that failed made no session worth resuming (and carries the id it was asked to resume), so it is not a resume point.
+    const last = [...prior].reverse().find((e) => e.type === "model_call" && typeof e.meta?.sessionId === "string" && e.tokens?.role === role && !e.summary.endsWith("model call failed"));
     const lastSession = last?.meta?.sessionId as string | undefined;
     // A session keeps the instructions it started with, so after an update it would go on behaving the old
     // way; resume only if those instructions are still the current ones.
