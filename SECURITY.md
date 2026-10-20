@@ -29,8 +29,12 @@ If you can't use GitHub, email hello@narrowbit.dev with "security" in the subjec
   notes, settings) in `.narrowbit/`, which it keeps out of git. If a repository commits one, or a folder that isn't
   a git repository has one, it came from someone else: it is only used after you confirm, and you're asked again
   when its contents change.
-- **Web reader.** The optional web connector refuses private and local addresses, including through
-  redirects and requests made by the page's own scripts.
+- **Link reader.** A page you paste into the planning chat is fetched by Narrowbit itself, public web only: the address is
+  checked before the request, at every redirect, and again when the connection is made (so a name that points inside your
+  network is refused), http(s) on the usual ports, no cookies or logins, 1.5 MB and 10 second limits, text only, secrets
+  scrubbed. The text reaches the model labelled as web content and never as instructions; a page can still try to steer a model,
+  as any web content can. A web connector you add yourself (an MCP server) is separate: it refuses private and local addresses,
+  including through redirects and requests made by the page's own scripts.
 - **Secrets.** API keys are stored in `~/.narrowbit/keys.json` and connector environment variables in
   `~/.narrowbit/connectors.json`, both mode 0600, and never sent to the app page. Text the agent stores
   or re-reads is redacted for known secret formats. Redaction is pattern-based and can miss unusual formats.

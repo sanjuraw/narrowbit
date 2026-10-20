@@ -2016,6 +2016,25 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { page.close(); }
   });
 
+  test("the planning chat shows which linked pages were read and which were not, above the reply", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const reply = (j) => ({ ok: true, status: 200, json: async () => j, text: async () => JSON.stringify(j) });
+    const page = await openPage(app.url, { route: (u) => (u.endsWith("/api/plan") ? reply({ taskId: "pl-link1234", reply: "It is a reverse engineering helper.", links: [{ url: "https://github.com/morluto/rea", ok: true, note: "README and file list of morluto/rea" }, { url: "http://127.0.0.1/", ok: false, note: "that is a private or local address" }] }) : null) });
+    try {
+      await page.until(() => page.$("input") && page.w.__nb && page.w.__nb.view() && page.visible(page.$("splitBtn")), "the page");
+      page.w.__nb.view().taskId = "pl-link1234"; page.w.__nb.view().pendingNew = false;   // an earlier planning conversation, opened with a project open
+      page.$("input").value = "go through https://github.com/morluto/rea and http://127.0.0.1/";
+      page.$("sendBtn").click();
+      await page.until(() => /reverse engineering helper/.test(page.$("items").textContent), "the reply");
+      const notes = [...page.$("items").querySelectorAll(".link-note")].map((n) => n.textContent);
+      assert.deepEqual(notes, ["Read https://github.com/morluto/rea — README and file list of morluto/rea", "Couldn't read http://127.0.0.1/ — that is a private or local address"]);
+      const text = page.$("items").textContent;
+      assert.ok(text.indexOf("Read https://github.com") < text.indexOf("reverse engineering helper"), "the notes come before the reply");
+      await new Promise((r) => setTimeout(r, 400));
+    } finally { page.close(); }
+  });
+
   test("an approval answer that did not go through gives the buttons back, says so, and sends again on the next click", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });

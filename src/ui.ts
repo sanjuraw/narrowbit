@@ -2,6 +2,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync, lstatSync, readlinkSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { readLinks } from "./linkreader.js";
 import { describe, loadSchedules, runDue, runSchedule, saveSchedules } from "./schedule.js";
 import { connect } from "node:net";
 import { homedir } from "node:os";
@@ -854,9 +855,12 @@ export function startUi(opts: UiOptions) {
           }
           const unavailable = unavailableReason(sel, ga);
           if (unavailable) return json(res, 400, { error: unavailable });
-          const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.execute, sel.effort, undefined, resolveEndpoint(sel.provider, ga) ? hasSession : undefined);
+          // Links in the message are read here (the model cannot browse); what happened to each is reported back to the page.
+          const linked = await readLinks(task);
+          const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.execute, sel.effort, undefined, resolveEndpoint(sel.provider, ga) ? hasSession : undefined, linked.block || undefined);
+          const links = linked.results.map((x) => ({ url: x.url, ok: x.ok, note: x.note }));
           if (r.isError) return json(res, 400, { error: r.errorMessage ?? "the model call failed", taskId: r.taskId });
-          return json(res, 200, { taskId: r.taskId, reply: r.text });
+          return json(res, 200, { taskId: r.taskId, reply: r.text, links });
         }
         case "/api/init": {
           if (!win().root) return json(res, 400, { error: "no repository open" });

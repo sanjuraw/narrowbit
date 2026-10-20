@@ -148,6 +148,7 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .chap-wrap { position: relative; } .chap-list { position: absolute; top: 28px; right: 0; z-index: 20; min-width: 230px; max-width: 360px; max-height: 60vh; overflow: auto; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 4px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
 .chap-list button { display: block; width: 100%; text-align: left; border: 0; background: transparent; color: var(--text); padding: 5px 9px; border-radius: 7px; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .chap-list button:hover { background: var(--panel); }
 .sched-row { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); } .sched-row:first-child { border-top: 0; }
+.link-note { font-size: 12px; margin: 4px 0; word-break: break-all; }
 .side-tasks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 2px; } .side-lbl { color: var(--muted); font-size: 12px; } .side-chip { font-size: 12px; padding: 3px 9px; border-radius: 12px; } .o-done { color: var(--ok); } .o-blocked, .o-error { color: var(--bad); } .o-stopped, .o-unfinished, .o-max_steps { color: var(--warn); } .o-running { color: var(--accent); }
 .side-foot { border-top: 1px solid var(--line); padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
 .side-foot .settings { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 6px 6px; text-align: left; border-radius: 8px; width: 100%; }
@@ -1776,6 +1777,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       $("sendBtn").disabled = false;
       if (!view || (cont && view.taskId !== cont)) return;
       if (wasNew) { view.taskId = r.taskId; show($("welcome"), false); }
+      // The pages that were read for this message, or why one was not (the model cannot browse; Narrowbit fetches links for it).
+      (r.links || []).forEach(function (l) { add(el("div", { cls: "muted link-note" }, (l.ok ? "Read " : "Couldn't read ") + l.url + " — " + l.note)); });
       add(el("div", { cls: "final-wrap" }, el("div", { cls: "final" }, rich(r.reply))));
       show($("createProjectBar"), !(S && S.root));   // "Create project" belongs to a conversation with no project yet
       load();
