@@ -1987,6 +1987,35 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     assert.equal((await post(H, "/api/schedules/run", { id: "sc-nope" })).status, 404);
   });
 
+  test("a message in a planning conversation opened while a project is open goes on as that planning conversation, not as a new task in the project", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const calls = [];
+    const reply = (j) => ({ ok: true, status: 200, json: async () => j, text: async () => JSON.stringify(j) });
+    const page = await openPage(app.url, { route: (u, o) => {
+      if (u.endsWith("/api/plan")) { calls.push(["plan", JSON.parse(o.body)]); return reply({ taskId: "pl-abc12345", reply: "A reply from the planning chat." }); }
+      if (u.endsWith("/api/run")) { calls.push(["run", JSON.parse(o.body)]); return reply({ id: "x" }); }
+      return null;
+    } });
+    try {
+      await page.until(() => page.w.__nb && page.w.__nb.view() && page.visible(page.$("splitBtn")), "an open project");
+      const v = page.w.__nb.view(); v.taskId = "pl-abc12345"; v.pendingNew = false;
+      page.$("input").value = "can you go through the repo now?";
+      page.$("sendBtn").click();
+      await page.until(() => calls.length >= 1, "the request");
+      assert.equal(calls[0][0], "plan", "sent to the planning chat");
+      assert.equal(calls[0][1].continueTask, "pl-abc12345", "as a continuation of that conversation");
+      await page.until(() => /A reply from the planning chat/.test(page.$("items").textContent), "the reply in the same conversation");
+      assert.ok(!calls.some((c) => c[0] === "run"), "never as a task in the project");
+      assert.ok(!page.visible(page.$("createProjectBar")), "no 'create project' offer when a project is open");
+      // an ordinary task conversation in the same project still goes to the project
+      page.w.__nb.view().taskId = "rt-normal"; page.$("input").value = "and now this"; page.$("sendBtn").click();
+      await page.until(() => calls.some((c) => c[0] === "run"), "a task request");
+      assert.equal(calls.find((c) => c[0] === "run")[1].continueTask, "rt-normal");
+      await new Promise((r) => setTimeout(r, 400));
+    } finally { page.close(); }
+  });
+
   test("an approval answer that did not go through gives the buttons back, says so, and sends again on the next click", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });

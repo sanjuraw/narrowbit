@@ -1777,7 +1777,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (!view || (cont && view.taskId !== cont)) return;
       if (wasNew) { view.taskId = r.taskId; show($("welcome"), false); }
       add(el("div", { cls: "final-wrap" }, el("div", { cls: "final" }, rich(r.reply))));
-      show($("createProjectBar"), true);
+      show($("createProjectBar"), !(S && S.root));   // "Create project" belongs to a conversation with no project yet
       load();
     }).catch(function (e) {
       thinking.remove();
@@ -1789,7 +1789,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var text = input.value.trim();
     if (!text || $("sendBtn").disabled) return;
     if (view) view.suggestion = null;
-    if (S && !S.root) { sendDraft(text); return; }
+    // A planning conversation (a draft from before any project existed) goes on as a planning conversation wherever it is opened,
+    // even with a project open; sent as a task there it would start a new, unrelated conversation in that project.
+    if ((S && !S.root) || (view && /^pl-/.test(view.taskId || ""))) { sendDraft(text); return; }
     if (!native && window.Notification && window.Notification.permission === "default") { try { window.Notification.requestPermission(); } catch (e) { /* not supported */ } }
     banner("", null);
     var cont = view && view.taskId ? view.taskId : null;
