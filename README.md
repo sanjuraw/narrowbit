@@ -25,7 +25,7 @@ macOS. The installer checks what you have, asks before installing anything missi
 git clone https://github.com/sanjuraw/narrowbit.git ~/Narrowbit && ~/Narrowbit/scripts/install.sh
 ```
 
-Run `scripts/install.sh --check` first to only see what's missing. The app is installed to `~/Applications/Narrowbit.app` (your own Applications folder). If `narrowbit` ends up off your PATH (npm's global folder isn't always on it), the installer says so and prints the line to add. It can't sign in for you: to use Claude run `claude auth login` (or `codex login`, or add a free API key); the app's "get a model ready" card and `narrowbit doctor` show what's left.
+Run `scripts/install.sh --check` first to only see what's missing. The app is installed to `/Applications/Narrowbit.app` (or `~/Applications` if your account cannot write to `/Applications`). If `narrowbit` ends up off your PATH (npm's global folder isn't always on it), the installer says so and prints the line to add. It can't sign in for you: to use Claude run `claude auth login` (or `codex login`, or add a free API key); the app's "get a model ready" card and `narrowbit doctor` show what's left.
 
 Manual install: Node ≥ 22.13, then `npm install && npm run build && npm link && scripts/build-mac-app.sh --install`.
 

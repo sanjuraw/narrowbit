@@ -132,6 +132,6 @@ say "Done. What's ready to use:"
 node bin/narrowbit.js doctor || true
 echo
 if [ "$ON_PATH" = 1 ]; then RUN_UI="narrowbit ui"; else RUN_UI="node \"$DIR/bin/narrowbit.js\" ui"; fi
-echo "  Open the app: open ~/Applications/Narrowbit.app   (it is in your own Applications folder; or run: $RUN_UI)"
+echo "  Open the app: Narrowbit in Launchpad or Spotlight (it is in /Applications, or ~/Applications if you cannot write there); or run: $RUN_UI"
 echo "  Nothing above ready? Sign in to Claude with:  claude auth login   — the app's setup card will guide you too."
 echo "  Updates: the app shows an 'Update available' banner when GitHub has something new."

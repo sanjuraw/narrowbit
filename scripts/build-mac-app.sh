@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds Narrowbit.app (a native window around `narrowbit ui`) with SwiftPM — no Xcode project
 # needed, the Command Line Tools are enough. Usage: scripts/build-mac-app.sh [--install]
-#   --install  copy the app to ~/Applications (it then shows up in Launchpad / Spotlight)
+#   --install  copy the app to /Applications (or ~/Applications when you cannot write there); it then shows up in Launchpad / Spotlight
 set -eu
 cd "$(dirname "$0")/.."
 swift build -c release --package-path mac
@@ -41,8 +41,15 @@ PLIST
 codesign --force --sign - "$APP" >/dev/null
 echo "built $APP"
 if [ "${1:-}" = "--install" ]; then
-  mkdir -p "$HOME/Applications"
-  rm -rf "$HOME/Applications/Narrowbit.app"
-  cp -R "$APP" "$HOME/Applications/"
-  echo "installed ~/Applications/Narrowbit.app"
+  # The system Applications folder when this account may write there (an administrator can), else your own ~/Applications.
+  # NARROWBIT_APPS_DIR overrides the choice.
+  if [ -n "${NARROWBIT_APPS_DIR:-}" ]; then DEST="$NARROWBIT_APPS_DIR"
+  elif [ -w /Applications ]; then DEST=/Applications
+  else DEST="$HOME/Applications"; fi
+  mkdir -p "$DEST"
+  rm -rf "$DEST/Narrowbit.app"
+  cp -R "$APP" "$DEST/"
+  # An older copy in your own Applications folder would be a stale duplicate.
+  if [ "$DEST" = /Applications ]; then rm -rf "$HOME/Applications/Narrowbit.app"; fi
+  echo "installed $DEST/Narrowbit.app"
 fi

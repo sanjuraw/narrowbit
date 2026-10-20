@@ -6588,3 +6588,26 @@ describe("planning chat: notes the model suggests", () => {
   });
 });
 
+describe("Mac app installer: where the app goes", () => {
+  const script = readFileSync(join(here, "..", "scripts", "build-mac-app.sh"), "utf8");
+  const block = script.slice(script.indexOf('if [ "${1:-}" = "--install" ]'));
+
+  test("the install step copies the app to the chosen folder and replaces an older copy there", () => {
+    const tmp = realpathSync(mkdtempSync(join(tmpdir(), "nb-apps-")));
+    try {
+      const app = join(tmp, "build", "Narrowbit.app"); mkdirSync(join(app, "Contents"), { recursive: true }); writeFileSync(join(app, "Contents", "marker"), "new");
+      const dest = join(tmp, "Applications"); mkdirSync(join(dest, "Narrowbit.app"), { recursive: true }); writeFileSync(join(dest, "Narrowbit.app", "old"), "old");
+      const out = execFileSync("bash", ["-c", `set -e; APP='${app}'; set -- --install; ${block}`], { env: { ...process.env, HOME: join(tmp, "home"), NARROWBIT_APPS_DIR: dest } }).toString();
+      assert.match(out, /installed .*Applications\/Narrowbit\.app/);
+      assert.equal(readFileSync(join(dest, "Narrowbit.app", "Contents", "marker"), "utf8"), "new");
+      assert.ok(!existsSync(join(dest, "Narrowbit.app", "old")), "the older copy was replaced, not merged");
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+
+  test("without an override it prefers /Applications when it is writable, else ~/Applications, and removes the stale ~/Applications copy", () => {
+    assert.match(block, /elif \[ -w \/Applications \]; then DEST=\/Applications/);
+    assert.match(block, /else DEST="\$HOME\/Applications"; fi/);
+    assert.match(block, /if \[ "\$DEST" = \/Applications \]; then rm -rf "\$HOME\/Applications\/Narrowbit\.app"; fi/);
+  });
+});
+
