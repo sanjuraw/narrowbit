@@ -50,6 +50,9 @@ export interface ModelCallOptions {
   /** A JSON Schema the reply must match (`--json-schema`): the model answers through a structured-output tool call
    * instead of free text, and the validated object becomes the reply text. */
   jsonSchema?: string;
+  /** Let the provider's own web search run for this call (the planning chat's research questions). Claude: WebSearch and WebFetch;
+   * Codex: live web search; Antigravity: its search_web tool. API providers ignore it. Off for every action-loop call. */
+  webSearch?: boolean;
   /** Usage-ledger attribution bucket, e.g. "planning" | "retrieval" | "execution" | "verification". */
   role: string;
   claudeBin?: string;
@@ -396,11 +399,12 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
     "--model",
     opts.model ?? "sonnet",
     "--tools",
-    "", // no built-in tools: this call is a pure text turn, Narrowbit executes every action itself
+    opts.webSearch ? "WebSearch,WebFetch" : "", // otherwise no built-in tools: a pure text turn, Narrowbit executes every action itself
     "--strict-mcp-config",
     "--mcp-config",
     JSON.stringify({ mcpServers: {} }),
   );
+  if (opts.webSearch) args.push("--allowedTools", "WebSearch,WebFetch");
   // Partial messages carry the reply as it is written; only asked for when someone is watching.
   // Always streamed: the pieces show progress, which the stall watchdog needs even when nobody is watching the text.
   args.push("--include-partial-messages");

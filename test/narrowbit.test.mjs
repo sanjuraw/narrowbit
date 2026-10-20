@@ -939,6 +939,7 @@ const fs = require("fs");
 const f = ${JSON.stringify(join(dir, "replies.json"))}, c = ${JSON.stringify(join(dir, "count"))};
 const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
 fs.appendFileSync(${JSON.stringify(join(dir, "resumes.log"))}, (process.argv.includes("--resume") ? "resume" : "fresh") + "\\n");
+fs.appendFileSync(${JSON.stringify(join(dir, "args.log"))}, process.argv.slice(2).join(" ").slice(0, 600) + "\\n");
 fs.appendFileSync(${JSON.stringify(join(dir, "models.log"))}, (process.argv[process.argv.indexOf("--model") + 1] || "?") + "\\n");
 fs.appendFileSync(${JSON.stringify(join(dir, "efforts.log"))}, (process.argv[process.argv.indexOf("--effort") + 1] || "?") + "\\n");
 const r = JSON.parse(fs.readFileSync(f, "utf8")); const text = r[Math.min(n, r.length - 1)];
@@ -6390,6 +6391,27 @@ describe("planning chat: a model that cannot resume its session still gets the e
       assert.match(asked[0], /https:\/\/example\.com\/x/);
       assert.match(seen[2].prompt, /PAGE_OF_EARLIER_LINK/);
     } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test("the planning chat turns on the provider's own web search; the action loop never does", async () => {
+    const { callModel } = await dist("providers/claude-cli.js");
+    const { planningReply } = await dist("planning.js");
+    const fake = fakeClaude(["ok"]);
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-plan-")));
+    const old = process.env.HOME; process.env.HOME = home;
+    try {
+      const base = { cwd: home, prompt: "hi", model: "sonnet", role: "x", claudeBin: fake.bin };
+      await callModel({ ...base, webSearch: true });
+      await callModel({ ...base });
+      const lines = readFileSync(join(fake.dir, "args.log"), "utf8").trim().split("\n");
+      assert.match(lines[0], /--tools WebSearch,WebFetch/);
+      assert.match(lines[0], /--allowedTools WebSearch,WebFetch/);
+      assert.doesNotMatch(lines[1], /WebSearch/, "a plain call has no tools");
+      let seen = null;
+      await planningReply(undefined, "what apps exist", async (o) => { seen = o; return { text: "x", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: 0, turns: 1, isError: false }; }, "m", "low");
+      assert.equal(seen.webSearch, true);
+      assert.match(seen.systemPrompt, /web search tool/);
+    } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 });
 

@@ -30,6 +30,7 @@ If you can't use GitHub, email hello@narrowbit.dev with "security" in the subjec
   a git repository has one, it came from someone else: it is only used after you confirm, and you're asked again
   when its contents change.
 - **Link reader.** A page you paste into the planning chat is fetched by Narrowbit itself, public web only: the address is
+- **Web search (planning chat only).** The planning chat lets the chosen provider use its own search tools. Those run inside the provider's CLI, not in Narrowbit, so the link reader's address checks do not apply to them; results are web text and the model is told to treat them as information, never instructions. The coding loop never gets web tools.
   checked before the request, at every redirect, and again when the connection is made (so a name that points inside your
   network is refused), http(s) on the usual ports, no cookies or logins, 1.5 MB and 10 second limits, text only, secrets
   scrubbed. The text reaches the model labelled as web content and never as instructions; a page can still try to steer a model,

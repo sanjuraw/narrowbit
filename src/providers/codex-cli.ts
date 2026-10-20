@@ -68,7 +68,7 @@ export function callCodex(opts: ModelCallOptions): Promise<ModelCallResult> {
     for (const f of LEAN_OFF) modelFlags.push("-c", `features.${f}=false`);
     // Two more fixed costs found with `codex debug prompt-input` and one-word calls (gpt-6-luna, codex-cli 0.156): the web-search
     // tool definition (~2.5k tokens per call) and the bundled-skills list (~0.6k). Neither is usable through our JSON actions.
-    modelFlags.push("-c", "web_search=\"disabled\"", "-c", "skills.bundled.enabled=false");
+    modelFlags.push("-c", `web_search=${opts.webSearch ? "\"live\"" : "\"disabled\""}`, "-c", "skills.bundled.enabled=false");
   }
 
   // Images go through `-i`; PDFs become text in the prompt (Codex takes no PDFs).
