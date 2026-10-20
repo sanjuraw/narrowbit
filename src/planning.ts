@@ -53,7 +53,8 @@ export async function planningReply(
   const prior = readEvents(p, id);
   const continuing = prior.length > 0;
   appendEvent(p, id, { actor: "user", type: "decision", summary: text.slice(0, 300), meta: continuing ? { followUp: text } : { goal: text }, });
-  const last = [...prior].reverse().find((e) => e.type === "model_call" && typeof e.meta?.sessionId === "string");
+  // A failed call never made a usable session (and carries the id it was asked to resume), so it is not a resume point.
+  const last = [...prior].reverse().find((e) => e.type === "model_call" && typeof e.meta?.sessionId === "string" && !e.summary.startsWith("planning: model call failed"));
   const savedId = last?.meta?.sessionId as string | undefined;
   // A session id belongs to the model that made it: after the user switches model or provider, the new one can't resume it.
   const switched = !!last && !!last.tokens?.model && last.tokens.model !== model;

@@ -6357,4 +6357,21 @@ describe("planning chat: a model that cannot resume its session still gets the e
       assert.match(seen[2].prompt, /FIRST_QUESTION/);
     } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
   });
+
+  test("after a failed call on the new model, the next try still replays instead of resuming the old session", async () => {
+    const { planningReply } = await dist("planning.js");
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-plan-")));
+    const old = process.env.HOME; process.env.HOME = home;
+    try {
+      const seen = [];
+      let n = 0;
+      const call = async (o) => { seen.push(o); n++; const bad = n === 2; return { text: bad ? "" : "reply " + n, usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: 0, turns: 1, isError: bad, errorMessage: bad ? "No conversation found" : undefined, sessionId: o.sessionId }; };
+      const a = await planningReply(undefined, "FIRST_QUESTION", call, "gemini", "low");
+      await planningReply(a.taskId, "on claude", call, "claude-sonnet-5-5", "low");
+      await planningReply(a.taskId, "on claude again", call, "claude-sonnet-5-5", "low");
+      assert.equal(seen[2].resume, false);
+      assert.match(seen[2].prompt, /FIRST_QUESTION/);
+    } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  });
 });
+
