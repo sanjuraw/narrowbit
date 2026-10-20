@@ -29,6 +29,8 @@ export interface NarrowbitConfig {
   memoryDirs: string[];
   /** `narrowbit agent` defaults for this repo; CLI flags override. See providers/models.ts. */
   agent?: AgentConfig;
+  /** Commands of your own that run after each applied edit and when a task ends; see hooks.ts. A shipped one runs only once accepted. */
+  hooks?: { afterEdit?: string; afterTask?: string };
 }
 
 export interface AgentConfig {
@@ -202,10 +204,11 @@ export function loadConfig(p: Paths): NarrowbitConfig {
   const risks = repoConfigRisks(raw);
   if (risks.length && !isTrusted(p.root, risks)) {
     cfg.memoryDirs = [];
+    cfg.hooks = undefined;
     if (cfg.agent?.endpoints) cfg.agent = { ...cfg.agent, endpoints: undefined };
     if (!warned.has(p.root)) {
       warned.add(p.root);
-      process.stderr.write(`narrowbit: ignoring the API endpoint / memory folder settings in ${p.config} — this repository isn't trusted yet (narrowbit agent --trust, or open it in the app).\n`);
+      process.stderr.write(`narrowbit: ignoring the API endpoint / memory folder / hook settings in ${p.config} — this repository isn't trusted yet (narrowbit agent --trust, or open it in the app).\n`);
     }
   }
   return cfg;

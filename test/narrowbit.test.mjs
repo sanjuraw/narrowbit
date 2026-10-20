@@ -6074,3 +6074,50 @@ exit 1
     } finally { s.done(); }
   });
 });
+
+describe("hooks: commands of your own around the agent's edits and the end of a task", () => {
+  const hookSrc = `const fs = require("fs"); fs.appendFileSync(process.env.NARROWBIT_FILE, "// formatted\\n"); fs.writeFileSync("hook.log", [process.env.NARROWBIT_HOOK, process.env.NARROWBIT_FILE_REL, process.env.NARROWBIT_TASK ? "task" : "notask", process.cwd() === process.env.NARROWBIT_ROOT ? "incwd" : "elsewhere"].join(" "));`;
+
+  test("afterEdit runs after an applied edit with the file in its environment, a rewritten file is reported, afterTask sees the outcome, and a failing hook doesn't stop the task", async () => {
+    const { saveConfig, loadConfig } = await import(join(here, "..", "dist", "config.js"));
+    const { trustConfig } = await dist("trust.js");
+    const { readEvents } = await dist("memory.js");
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([JSON.stringify({ action: "edit", path: "a.txt", old: "hello", new: "hi" }), JSON.stringify({ action: "run", command: "echo checked" }), JSON.stringify({ action: "done", summary: "changed it" })]);
+    try {
+      writeFileSync(join(root, "hook.js"), hookSrc);
+      writeFileSync(join(root, "task.js"), `require("fs").writeFileSync("after.log", process.env.NARROWBIT_OUTCOME + " " + process.env.NARROWBIT_TASK); process.exit(3);`);
+      const cfg = loadConfig(p);
+      cfg.hooks = { afterEdit: "node hook.js", afterTask: "node task.js" };
+      saveConfig(p, cfg); trustConfig(root);
+      const r = await runTask(p, "say hi in a.txt", { claudeBin: fake.bin, boss: false, persistent: false, maxSteps: 6, approve: async () => true });
+      assert.equal(r.outcome, "done", "a failing afterTask hook (exit 3) does not change the outcome");
+      assert.equal(readFileSync(join(root, "hook.log"), "utf8"), "afterEdit a.txt task incwd", "run in the project folder with the file and task in its environment");
+      assert.match(readFileSync(join(root, "a.txt"), "utf8"), /hi\n\/\/ formatted/, "the hook's rewrite is in the file");
+      assert.match(readFileSync(join(root, "after.log"), "utf8"), /^done rt-/);
+      const notes = readEvents(p, r.taskId).filter((e) => e.type === "tool_result").map((e) => e.summary);
+      assert.ok(notes.some((n) => /hook afterEdit ran; it rewrote the file/.test(n)), notes.join(" | "));
+      assert.ok(notes.some((n) => /hook afterTask failed \(exit 3\)/.test(n)), notes.join(" | "));
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("a hook in a settings file the repository shipped does not run until it is accepted; the hooks command sets, lists and clears", async () => {
+    const { loadConfig } = await import(join(here, "..", "dist", "config.js"));
+    const { trustConfig } = await dist("trust.js");
+    const { root, p } = tinyRepo();
+    try {
+      const raw = JSON.parse(readFileSync(p.config, "utf8"));
+      raw.hooks = { afterEdit: "echo hi" };
+      writeFileSync(p.config, JSON.stringify(raw));
+      assert.equal(loadConfig(p).hooks, undefined, "shipped, not accepted: dropped");
+      trustConfig(root);
+      assert.equal(loadConfig(p).hooks?.afterEdit, "echo hi", "accepted: kept");
+      const nb = (...a) => spawnSync(process.execPath, [BIN, ...a], { cwd: root, encoding: "utf8" });
+      assert.equal(nb("hooks", "set", "afterTask", "say done").status, 0);
+      assert.match(nb("hooks").stdout, /afterTask: say done/);
+      assert.equal(nb("hooks", "clear", "afterTask").status, 0);
+      assert.doesNotMatch(nb("hooks").stdout, /afterTask/);
+      assert.equal(nb("hooks", "set", "nonsense", "x").status, 2, "only the two known hooks");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});

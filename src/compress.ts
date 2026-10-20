@@ -345,7 +345,7 @@ export function commandEnv(): NodeJS.ProcessEnv {
   return { ...process.env, CI: "1", FORCE_COLOR: "0", GIT_CONFIG_COUNT: String(n + 1), [`GIT_CONFIG_KEY_${n}`]: "core.fsmonitor", [`GIT_CONFIG_VALUE_${n}`]: "false" };
 }
 
-export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number; cwd?: string; signal?: AbortSignal; onOutput?: (text: string) => void } = {}): Promise<RunResult> {
+export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number; cwd?: string; signal?: AbortSignal; onOutput?: (text: string) => void; env?: Record<string, string> } = {}): Promise<RunResult> {
   const t0 = Date.now();
   return new Promise((resolveP) => {
     const chunks: Buffer[] = [];
@@ -403,7 +403,7 @@ export function runCommand(p: Paths, command: string, opts: { timeoutMs?: number
     }
     // Its own process group, so Stop and the timeout can end everything the command started: killing only the shell
     // left a background process (a dev server, a hung test) running, and the call waited for it.
-    const child = spawn(hardenRunnerCommand(hardenGitCommand(command)), { cwd: opts.cwd ?? p.root, shell: true, detached: true, env: commandEnv() });
+    const child = spawn(hardenRunnerCommand(hardenGitCommand(command)), { cwd: opts.cwd ?? p.root, shell: true, detached: true, env: { ...commandEnv(), ...(opts.env ?? {}) } });
     // Nothing is ever typed into a command: a reader with no file to read gets end-of-input at once instead of waiting.
     child.stdin?.end();
     killTree = (sig) => {

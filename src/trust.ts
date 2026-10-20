@@ -67,6 +67,9 @@ export function repoConfigRisks(raw: any): GitRisk[] {
       for (const f of ["baseUrl", "keyEnv"]) if (typeof ep?.[f] === "string" && ep[f].trim()) risks.push({ key: `narrowbit.agent.endpoints.${prov}.${f}`, value: ep[f] });
     }
   }
+  // A hook is a command that runs on its own after every edit or task: it must be accepted like an endpoint.
+  const hooks = raw?.hooks;
+  if (hooks && typeof hooks === "object") for (const [n, v] of Object.entries<any>(hooks)) if (typeof v === "string" && v.trim()) risks.push({ key: `narrowbit.hooks.${n}`, value: v });
   if (Array.isArray(raw?.memoryDirs)) for (const d of raw.memoryDirs) if (typeof d === "string" && d.trim()) risks.push({ key: "narrowbit.memoryDirs", value: d });
   return risks;
 }

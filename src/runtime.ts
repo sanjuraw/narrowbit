@@ -20,6 +20,7 @@ import { callAntigravity } from "./providers/antigravity-cli.js";
 import { COMPACT_AT, contextWindowFor, DEFAULT_TIERS, resolveEndpoint, resolveSelection, unavailableReason, type ModelTiers, type ProviderName } from "./providers/models.js";
 import { callOpenAICompat, hasSession } from "./providers/openai-compat.js";
 import { redact, redactCommand } from "./redact.js";
+import { runHook } from "./hooks.js";
 import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
 import { termsOf } from "./terms.js";
@@ -1236,6 +1237,12 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
           const rel = relative(p.root, resolve(p.root, String(decision.path))).split("\\").join("/");
           editedPaths.add(rel);
           editLog.push(rel);
+          // The user's own afterEdit hook (a formatter, say): its outcome is logged, and the model is told when it failed or rewrote the file.
+          const hook = await runHook(p, cfg, "afterEdit", { NARROWBIT_FILE: resolve(p.root, String(decision.path)), NARROWBIT_FILE_REL: rel, NARROWBIT_TASK: taskId }, resolve(p.root, String(decision.path)));
+          if (hook.ran) {
+            appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: hook.note });
+            if (hook.exit !== 0 || hook.changed) batchResults[batchResults.length - 1] += `\n[${hook.note}${hook.changed ? " — read the file again before editing it" : ""}]`;
+          }
         }
         editedSinceVerify = true;
         checkedSinceEdit = false;
@@ -1346,6 +1353,10 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // The folder as the task left it. With the start checkpoint this bounds exactly what the task changed —
   // including what its commands changed, not just its edits — so Discard can undo the task and nothing else.
   checkpointNow(p, taskId, steps + 1, "end of task");
+  {
+    const hook = await runHook(p, cfg, "afterTask", { NARROWBIT_TASK: taskId, NARROWBIT_OUTCOME: outcome, NARROWBIT_SUMMARY: String(summary ?? "").slice(0, 500) });
+    if (hook.ran) appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: hook.note });
+  }
   appendEvent(p, taskId, { actor: "system", type: "decision", summary: `outcome: ${outcome}`, meta: { outcome, summary, steps, ...(failure ? { errorKind: failure.kind, resets: failure.resets } : {}) } });
   store.close();
   return { taskId, outcome, summary: redact(summary), steps, actionCounts, compactions };

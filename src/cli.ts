@@ -32,6 +32,7 @@ import { startUi } from "./ui.js";
 import { Tasks, type TaskRecord } from "./tasks.js";
 import { fmtNum, launcherPage, now, sh, visible, writeProjectFile, stateText } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
+import { configuredHooks, HOOK_NAMES, type HookName } from "./hooks.js";
 import { redactCommand } from "./redact.js";
 import { covered, editsSince, type Grant } from "./approvals.js";
 import { trustConfig, trustRepo, untrustedForUnattended, untrustedReason } from "./trust.js";
@@ -141,6 +142,7 @@ const HELP = `narrowbit — a local, context-managed coding agent
 
   narrowbit train [--commits 150] [--skip N]   learn ranking weights from this repo's history (local, no model calls)
   narrowbit eval [--commits 40] [--rerank]   offline selection benchmark over git history (--rerank A/Bs a hosted decision model)
+  narrowbit hooks [set|clear <afterEdit|afterTask> "<command>"]   commands of your own that run after each edit / when a task ends
   narrowbit benchmark init            write a benchmark task template (benchmark.json)
   narrowbit benchmark run <file> [--only id,..] [--arms native,narrowbit] [--dry-run]
   narrowbit benchmark report [--run id]
@@ -719,6 +721,31 @@ export async function main(argv: string[]): Promise<number> {
         const src = keySource(pr, info.keyEnv);
         out(`  ${pr.padEnd(11)} ${src === "env" ? `set (from $${info.keyEnv})` : src === "file" ? "set (saved)" : "not set"}${!src && info.keyUrl ? `   — get one at ${info.keyUrl}` : ""}`);
       }
+      return 0;
+    }
+    case "hooks": {
+      // Commands of your own that run after each applied edit (afterEdit) and when a task ends (afterTask); see hooks.ts.
+      const sub = pos[0];
+      if (!sub) {
+        const h = configuredHooks(loadConfig(p));
+        if (!HOOK_NAMES.some((n) => h[n])) out("no hooks set. Example: narrowbit hooks set afterEdit 'npx prettier --write \"$NARROWBIT_FILE\"'");
+        for (const n of HOOK_NAMES) if (h[n]) out(`${n}: ${h[n]}`);
+        return 0;
+      }
+      const name = pos[1] as HookName;
+      if ((sub !== "set" && sub !== "clear") || !HOOK_NAMES.includes(name) || (sub === "set" && !pos[2]?.trim())) {
+        process.stderr.write("usage: narrowbit hooks [set <afterEdit|afterTask> \"<command>\" | clear <afterEdit|afterTask>]\n  afterEdit sees $NARROWBIT_FILE (absolute path), $NARROWBIT_FILE_REL, $NARROWBIT_TASK; afterTask sees $NARROWBIT_TASK, $NARROWBIT_OUTCOME, $NARROWBIT_SUMMARY.\n  A hook runs in the project folder, 30 s at most, and a failing one never stops the task.\n");
+        return 2;
+      }
+      const cfg = loadConfig(p);
+      cfg.hooks = { ...(cfg.hooks ?? {}) };
+      if (sub === "set") cfg.hooks[name] = pos[2].trim();
+      else delete cfg.hooks[name];
+      if (!Object.keys(cfg.hooks).length) cfg.hooks = undefined;
+      ensureDirs(p);
+      saveConfig(p, cfg);
+      trustConfig(p.root); // the file now holds only what was already accepted plus this explicit change
+      out(sub === "set" ? `${name}: ${pos[2].trim()}` : `${name}: cleared`);
       return 0;
     }
     case "models": {
