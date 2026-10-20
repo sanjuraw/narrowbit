@@ -6267,6 +6267,23 @@ describe("link reader: pages pasted into a message are read for the model, publi
     assert.equal(relative.ok, true); assert.match(relative.text, /arrived at \/b/);
   });
 
+  test("a GitHub repository also brings a few key files (manifest, design notes, entry point), not lockfiles, tests or translated READMEs", async () => {
+    const { readLink, keyFilesOf } = await lr();
+    const paths = ["package.json", "package-lock.json", "README.md", "docs/readme/README_zh.md", "docs/architecture.md", "tests/a.test.ts", "src/index.ts", "src/deep/very/nested/file.ts", "node_modules/x/index.js", "logo.png"];
+    assert.deepEqual(keyFilesOf(paths), ["package.json", "docs/architecture.md", "src/index.ts"]);
+    const asked = [];
+    const t = async (url, headers) => {
+      asked.push(url.pathname);
+      if (url.pathname.endsWith("/readme")) return reply(200, "text/plain", "# rea");
+      if (url.pathname.includes("/git/trees/")) return reply(200, "application/json", JSON.stringify({ tree: paths.map((p) => ({ type: "blob", path: p })) }));
+      return reply(200, "text/plain", "CONTENT_OF " + url.pathname.split("/contents/")[1] + "x".repeat(9000));
+    };
+    const r = await readLink("https://github.com/o/r", t);
+    assert.match(r.text, /Key files:/); assert.match(r.text, /----- docs\/architecture\.md\nCONTENT_OF docs\/architecture\.md/);
+    assert.match(r.text, /\(cut\)/, "each key file is cut at 5,000 characters");
+    assert.ok(!asked.some((u) => /package-lock|node_modules|tests\//.test(u)));
+  });
+
   test("a GitHub repository is read through its API: the README and the file list", async () => {
     const { readLink, githubRepoOf } = await lr();
     assert.deepEqual(githubRepoOf(new URL("https://github.com/morluto/rea")), { owner: "morluto", repo: "rea" });
@@ -6440,6 +6457,42 @@ describe("planning chat: a model that cannot resume its session still gets the e
       for (const m of ["two", "three", "four"]) await planningReply(a.taskId, m, call, "m", "low");
       const costs = readEvents(draftsPaths(), a.taskId).filter((e) => e.type === "model_call").map((e) => Math.round(e.tokens.costUsd * 100) / 100);
       assert.deepEqual(costs, [0.10, 0.15, 0.05, 0.05], "0.30 -> 0.05 is a restart: that call's own cost");
+    } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+describe("planning chat: the open project's skills and memory notes, and the stronger model", () => {
+  test("skills are listed, a named skill's text and matching notes come with the message; no project means built-in skills only", async () => {
+    const { planningContext } = await dist("planningcontext.js");
+    const { saveSkill } = await dist("skills.js");
+    const { openMemory } = await dist("memory.js");
+    const { root, p } = tinyRepo();
+    try {
+      saveSkill(p, "Pricing check", "How to sanity-check pricing", "1. Compare three rivals.\n2. State the margin.");
+      openMemory(p).add({ type: "decision", text: "Subscriptions are billed through Stripe, never PayPal", reason: "fees" });
+      const c = planningContext(root, "use the Pricing check skill: how do we bill with Stripe?");
+      assert.match(c.system, /- Pricing check: How to sanity-check pricing/);
+      assert.match(c.system, /- Security review:/, "built-in skills are listed too");
+      assert.match(c.prompt, /Skill "Pricing check":\n1\. Compare three rivals/);
+      assert.match(c.prompt, /billed through Stripe/);
+      assert.match(c.prompt, /not instructions/);
+      const plain = planningContext(root, "hello there");
+      assert.equal(plain.prompt, "", "nothing is added when nothing matches");
+      const none = planningContext(null, "use the Pricing check skill, Stripe");
+      assert.match(none.system, /Security review/); assert.doesNotMatch(none.system, /Pricing check/); assert.equal(none.prompt, "");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("planningReply adds the project's skills to a new session's instructions and the notes to the message", async () => {
+    const { planningReply } = await dist("planning.js");
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-plan-")));
+    const old = process.env.HOME; process.env.HOME = home;
+    try {
+      let seen = null;
+      const call = async (o) => { seen = o; return { text: "x", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: 0, turns: 1, isError: false }; };
+      await planningReply(undefined, "hi", call, "m", "low", undefined, undefined, undefined, undefined, { system: "\n\nSKILL_LIST", prompt: "NOTES_BLOCK" });
+      assert.match(seen.systemPrompt, /SKILL_LIST$/);
+      assert.match(seen.prompt, /hi\n\nNOTES_BLOCK$/);
     } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
   });
 });

@@ -22,6 +22,8 @@ export interface LinkResult {
 
 const MAX_BYTES = 1_500_000;
 const MAX_TEXT = 12_000;
+const KEY_FILE_TEXT = 5_000; // per key file of a repository
+const REPO_TEXT = 36_000; // a repository (README, file list, key files) may be longer than an ordinary page
 const MAX_LINKS = 3;
 const MAX_REDIRECTS = 4;
 const TIMEOUT_MS = 10_000;
@@ -126,6 +128,24 @@ export function htmlToText(html: string): { title?: string; text: string } {
 const cap = (s: string) => (s.length > MAX_TEXT ? s.slice(0, MAX_TEXT) + "\n… (cut: the page is longer)" : s);
 
 /** A GitHub repository address (the repository itself or a folder or file in it) → owner and name. */
+/** Which files of a repository say the most about it: the project manifest, architecture and design notes, the entry point.
+ * Lockfiles, tests, fixtures, vendored and generated folders are skipped; shallow files rank above deep ones. */
+export function keyFilesOf(paths: string[], limit = 6): string[] {
+  const skip = /(^|\/)(node_modules|vendor|dist|build|\.github|test|tests|__tests__|fixtures?|examples?|locales?|i18n|readme)(\/|$)|(-lock|\.lock|\.min\.|\.map|\.svg|\.png|\.jpe?g|\.gif|\.ico|\.pdf|\.zip)$|package-lock|README/i;
+  const score = (p: string): number => {
+    const name = p.split("/").pop() ?? p;
+    const depth = p.split("/").length - 1;
+    let n = 0;
+    if (/^(package\.json|pyproject\.toml|Cargo\.toml|go\.mod|pom\.xml|Gemfile|composer\.json)$/.test(name) && depth === 0) n = 100;
+    else if (/^(architecture|design|overview|how-it-works|contributing|agents|claude)\.md$/i.test(name)) n = 90;
+    else if (/^docs\/.*\.md$/i.test(p)) n = 70;
+    else if (/^(src\/)?(index|main|app|server|cli)\.(ts|js|mjs|py|go|rs)$/.test(p)) n = 60;
+    else if (/\.(ts|js|py|go|rs|md)$/.test(name) && depth <= 1) n = 30;
+    return n ? n - depth * 3 : 0;
+  };
+  return paths.filter((p) => !skip.test(p)).map((p) => ({ p, n: score(p) })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n || a.p.localeCompare(b.p)).slice(0, limit).map((x) => x.p);
+}
+
 export function githubRepoOf(u: URL): { owner: string; repo: string } | null {
   if (u.hostname.toLowerCase() !== "github.com") return null;
   const m = /^\/([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/(?:tree|blob)\/.*)?\/?$/.exec(u.pathname);
@@ -155,8 +175,18 @@ export async function readLink(raw: string, transport: Transport = netTransport)
         const paths: string[] = (JSON.parse(tree.text).tree ?? []).filter((e: any) => e.type === "blob").map((e: any) => String(e.path));
         files = `Files (${paths.length}${paths.length > 150 ? ", first 150" : ""}):\n` + paths.slice(0, 150).join("\n");
       } catch { /* no listing */ }
-      const text = redact(cap(`GitHub repository ${gh.owner}/${gh.repo}\n\n${readme.status === 200 ? "README:\n" + readme.text : "(no README)"}\n\n${files}`));
-      return { url: raw, ok: true, title: `${gh.owner}/${gh.repo}`, text, note: `README and file list of ${gh.owner}/${gh.repo}` };
+      // A few of the files that say the most about the project, so the model can discuss its design, not only its README.
+      let key = "";
+      try {
+        const paths: string[] = (JSON.parse(tree.text).tree ?? []).filter((e: any) => e.type === "blob").map((e: any) => String(e.path));
+        for (const path of keyFilesOf(paths)) {
+          const file = await fetchText(new URL(`${base}/contents/${path.split("/").map(encodeURIComponent).join("/")}`), transport, { accept: "application/vnd.github.raw" });
+          if (file.status === 200 && !file.text.includes("\u0000")) key += `\n\n----- ${path}\n${file.text.length > KEY_FILE_TEXT ? file.text.slice(0, KEY_FILE_TEXT) + "\n… (cut)" : file.text}`;
+        }
+      } catch { /* the README and file list still stand */ }
+      const whole = `GitHub repository ${gh.owner}/${gh.repo}\n\n${readme.status === 200 ? "README:\n" + readme.text : "(no README)"}\n\n${files}${key ? "\n\nKey files:" + key : ""}`;
+      const text = redact(whole.length > REPO_TEXT ? whole.slice(0, REPO_TEXT) + "\n… (cut: the repository text is longer)" : whole);
+      return { url: raw, ok: true, title: `${gh.owner}/${gh.repo}`, text, note: `README, file list and key files of ${gh.owner}/${gh.repo}` };
     }
     let url = first.url;
     for (let hop = 0; ; hop++) {

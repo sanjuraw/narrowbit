@@ -49,6 +49,8 @@ export async function planningReply(
   linked?: string,
   /** When the conversation is replayed (the model could not resume), reads the links in the earlier messages again: the page text is not kept in the log. */
   readEarlier?: (earlierUserText: string) => Promise<string>,
+  /** What the open project adds (planningcontext.ts): `system` joins the instructions of a new session, `prompt` goes with this message. */
+  extra?: { system?: string; prompt?: string },
 ): Promise<PlanningReply> {
   const p = draftsPaths();
   const id = taskId ?? `pl-${randomUUID().slice(0, 8)}`;
@@ -75,8 +77,8 @@ export async function planningReply(
     : "";
   const res = await call({
     cwd: homedir(), // no project folder exists yet; the model is told not to touch files, so cwd is never used for real work
-    systemPrompt: resume ? undefined : PLANNING_INSTRUCTIONS,
-    prompt: (earlier ? `This continues a planning chat; the model cannot resume its own session, so here is what was said so far:\n${earlier}${earlierPages ? `\n\n${earlierPages}` : ""}\n\nTheir new message:\n${text}` : text) + (linked ? `\n\n${linked}` : ""),
+    systemPrompt: resume ? undefined : PLANNING_INSTRUCTIONS + (extra?.system ?? ""),
+    prompt: (earlier ? `This continues a planning chat; the model cannot resume its own session, so here is what was said so far:\n${earlier}${earlierPages ? `\n\n${earlierPages}` : ""}\n\nTheir new message:\n${text}` : text) + (linked ? `\n\n${linked}` : "") + (extra?.prompt ? `\n\n${extra.prompt}` : ""),
     model,
     effort,
     role: "planning-chat",

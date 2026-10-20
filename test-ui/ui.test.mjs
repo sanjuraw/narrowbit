@@ -352,6 +352,7 @@ describe("planning a project before any folder exists (stand-in model, no networ
 // without touching the reply counter below, or it races the test's own send and steals a reply by chance.
 if (process.argv[2] === "auth") { console.log(JSON.stringify({ loggedIn: true })); process.exit(0); }
 const fs = require("fs"); const d = ${JSON.stringify(fakeDir)};
+fs.appendFileSync(d + "/args.log", process.argv.slice(2).join(" ").slice(-500) + "\\n");
 const c = d + "/count"; const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
 const r = JSON.parse(fs.readFileSync(d + "/replies.json", "utf8")); const text = r[Math.min(n, r.length - 1)];
 const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
@@ -373,7 +374,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     page.$("sendBtn").click();
     await page.until(() => page.w.document.querySelector(".final"), "the model's reply");
     assert.match(page.w.document.querySelector(".final").textContent, /small CLI tool|language/);
-    assert.ok(!page.$("createProjectBar").classList.contains("hidden"), "Create project appears once there's a reply");
+    assert.ok(!page.$("createProjectBar").classList.contains("hidden"), "Create project appears once there's a reply");    const call = readFileSync(join(fakeDir, "args.log"), "utf8").split("\n").find((l) => /--model/.test(l));
+    assert.match(call, /--effort high/, "the planning chat thinks harder than the everyday medium: " + call.slice(0, 300));
+    assert.match(call, /WebSearch,WebFetch/);
   });
 
   test("the draft is listed in the sidebar and can be reopened", async () => {
