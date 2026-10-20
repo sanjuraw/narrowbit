@@ -88,9 +88,6 @@ export interface BenchArm {
   provider?: string;
   /** runtime arm only: explicit model per tier (otherwise every tier uses the file's `model`, i.e. no routing). */
   tiers?: { explore: string; execute: string; escalate: string };
-  /** runtime arm only: how tiers are chosen — "rules" (default) or "decider" (needs `routerUrl`). */
-  router?: "rules" | "decider";
-  routerUrl?: string;
   /** runtime arm only: lead mode (plan + review). Defaults to runTask's own default (true). */
   boss?: boolean;
   /** Extra args for `claude` in this arm. */
@@ -323,7 +320,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             };
           } else if (arm.runtime) {
             log(`${tag}: running narrowbit's own loop…`);
-            const runOpts = { leadModel: arm.leadModel as any, reviewer: arm.reviewer as any, scout: arm.scout as any, compactThreshold: arm.compactThreshold, testFirst: arm.testFirst, effortByTier: arm.effortByTier, jsonActions: arm.jsonActions, effort: arm.effort, provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, router: arm.router ? { kind: arm.router, url: arm.routerUrl } : undefined, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss, reviewOnly: arm.reviewOnly };
+            const runOpts = { leadModel: arm.leadModel as any, reviewer: arm.reviewer as any, scout: arm.scout as any, compactThreshold: arm.compactThreshold, testFirst: arm.testFirst, effortByTier: arm.effortByTier, jsonActions: arm.jsonActions, effort: arm.effort, provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss, reviewOnly: arm.reviewOnly };
             let result = await runTask(wp, t.prompt, runOpts);
             // A usage limit is not a wrong answer. Wait for the reset and continue the same task (same worktree, same log),
             // so a long unattended run survives a plan's 5-hour window instead of recording a string of bogus failures.

@@ -2073,57 +2073,6 @@ describe("connector tools are described on demand, not listed in full every turn
   });
 });
 
-describe("experimental decider routing", () => {
-  const tiers = { explore: "m-explore", execute: "m-execute", escalate: "m-escalate" };
-  const script = () => [JSON.stringify({ action: "read", path: "a.txt" }), JSON.stringify({ action: "done", summary: "ok" })];
-  let srv, url, asked = [];
-  before(async () => {
-    srv = createHttp((req, res) => {
-      let b = ""; req.on("data", (d) => (b += d));
-      req.on("end", () => {
-        const body = JSON.parse(b); asked.push(body.state);
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ answers: { tier: { choice: "escalate", probabilities: { explore: 0.1, execute: 0.2, escalate: 0.7 }, confidence: 0.7 } } }));
-      });
-    });
-    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
-    url = `http://127.0.0.1:${srv.address().port}`;
-  });
-  after(() => srv.close());
-
-  test("rules (the default) route reading to the explore tier", async () => {
-    const { root, p } = tinyRepo(); const fake = fakeClaude(script());
-    try {
-      await runTask(p, "read a.txt", { claudeBin: fake.bin, boss: false, maxSteps: 6, models: tiers });
-      assert.equal(fake.models()[0], "m-explore");
-    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
-  });
-
-  test("with the decider router, its choice picks the tier, and only compact metadata is sent to it", async () => {
-    asked = [];
-    const { root, p } = tinyRepo(); writeFileSync(join(root, "a.txt"), "SECRET-CONTENT-OF-A-FILE\n");
-    const fake = fakeClaude(script());
-    try {
-      const r = await runTask(p, "read a.txt", { claudeBin: fake.bin, boss: false, maxSteps: 6, models: tiers, router: { kind: "decider", url } });
-      assert.equal(fake.models()[0], "m-escalate", "the decider said escalate");
-      const route = readEvents(p, r.taskId).find((e) => e.meta?.route)?.meta.route;
-      assert.equal(route.chosen, "escalate"); assert.equal(route.rules, "explore"); assert.equal(route.used, true);
-      assert.ok(asked.length >= 1 && asked.every((st) => /Task: read a\.txt/.test(st) && /step \d+ of/.test(st)));
-      assert.ok(!asked.some((st) => st.includes("SECRET-CONTENT")), "file contents never leave the runtime — only metadata");
-    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
-  });
-
-  test("an unreachable decider falls back to the rules instead of failing the task", async () => {
-    const { root, p } = tinyRepo(); const fake = fakeClaude(script());
-    try {
-      const r = await runTask(p, "read a.txt", { claudeBin: fake.bin, boss: false, maxSteps: 6, models: tiers, router: { kind: "decider", url: "http://127.0.0.1:1" } });
-      assert.equal(r.outcome, "done");
-      assert.equal(fake.models()[0], "m-explore");
-      assert.match(readEvents(p, r.taskId).find((e) => e.meta?.route).summary, /decider unavailable/);
-    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
-  });
-});
-
 describe("output compression ideas borrowed from OmniRoute", () => {
   test("near-identical lines collapse into one with a count; error lines are never grouped", () => {
     const lines = ["start", ...Array.from({ length: 40 }, (_, i) => `progress ${i}/40 at 2026-09-25T10:00:${String(i).padStart(2, "0")}Z id=${(i * 7919).toString(16).padStart(8, "a")}`), "error TS2304 a.ts(12,3): Cannot find name x", "error TS2304 a.ts(15,3): Cannot find name y", "error TS2304 a.ts(18,3): Cannot find name z", "done"];

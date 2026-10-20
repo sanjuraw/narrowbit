@@ -66,7 +66,7 @@ function parseArgs(argv: string[]): Args {
 }
 
 const VALUE_FLAGS = new Set([
-  "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip",
+  "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "skip",
   "max-steps", "task", "every", "at", "day", "attach", "scout", "memory-inject", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description", "env",
 ]);
 
@@ -145,7 +145,7 @@ const HELP = `narrowbit — a local, context-managed coding agent
   narrowbit mcp                       MCP stdio server (used by agents)
 
   narrowbit train [--commits 150] [--skip N]   learn ranking weights from this repo's history (local, no model calls)
-  narrowbit eval [--commits 40] [--rerank]   offline selection benchmark over git history (--rerank A/Bs a hosted decision model)
+  narrowbit eval [--commits 40]   offline selection benchmark over git history
   narrowbit schedule [add|list|remove|run|run-due|install|uninstall]   tasks of your own on a timer (separate copy, checks only)
   narrowbit hooks [set|clear <afterEdit|afterTask> "<command>"]   commands of your own that run after each edit / when a task ends
   narrowbit benchmark init            write a benchmark task template (benchmark.json)
@@ -1272,10 +1272,7 @@ export async function main(argv: string[]): Promise<number> {
     case "eval": {
       requireInit(p);
       const noWeights = !!args.flags["no-weights"];
-      const rerankOpt = args.flags.rerank
-        ? { weight: args.flags["rerank-weight"] ? Number(args.flags["rerank-weight"]) : undefined, topN: args.flags["rerank-top"] ? Number(args.flags["rerank-top"]) : undefined }
-        : undefined;
-      const r = await evalHistory(p, { noWeights, rerank: rerankOpt as any, commits: args.flags.commits ? Number(args.flags.commits) : 40, budget: args.flags.budget ? Number(args.flags.budget) : undefined, ref: args.flags.ref as string | undefined });
+      const r = await evalHistory(p, { noWeights, commits: args.flags.commits ? Number(args.flags.commits) : 40, budget: args.flags.budget ? Number(args.flags.budget) : undefined, ref: args.flags.ref as string | undefined });
       const s = r.summary;
       const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
       out(`\nSELECTION EVAL over ${s.cases} commits (commit message as task; lower bound)`);
@@ -1283,12 +1280,6 @@ export async function main(argv: string[]): Promise<number> {
       out(`  gold files loaded as code: ${pct(s.recallLoaded)}   in package (incl. outline): ${pct(s.recallInPackage)}`);
       out(`  mean package ~${fmtNum(Math.round(s.meanPackageTokens))} tokens est.`);
       out(`  by confidence: ${Object.entries(s.byConfidence).map(([k, v]: any) => `${k} n=${v.n}${v.recallInPackage !== null ? ` in-pkg ${pct(v.recallInPackage)}` : ""}`).join("; ")}`);
-      const rr: any = (s as any).rerank;
-      if (rr) {
-        out(`\n  RE-RANKED by ${rr.model} (weight ${rr.weight}): recall@5 ${pct(rr.recallAt5)} (${rr.recallAt5 >= s.recallAt5 ? "+" : ""}${((rr.recallAt5 - s.recallAt5) * 100).toFixed(1)}pp)   recall@10 ${pct(rr.recallAt10)} (${((rr.recallAt10 - s.recallAt10) * 100).toFixed(1)}pp)   hit@1 ${pct(rr.hitAt1)} (${((rr.hitAt1 - s.hitAt1) * 100).toFixed(1)}pp)   MRR ${rr.mrr.toFixed(3)}`);
-        out(`  cost: ${rr.calls} calls, ${rr.errors} error(s), ~${fmtNum(rr.inputTokens)} input tokens, ${rr.estCostUsd ? `~$${rr.estCostUsd.toFixed(4)}` : "cost n/a"} (${rr.provider ?? "provider"} credit, not Claude quota)`);
-        if (rr.firstError) out(`  first error: ${rr.firstError}`);
-      }
       out(`  details: ${relative(process.cwd(), r.file)}`);
       return 0;
     }

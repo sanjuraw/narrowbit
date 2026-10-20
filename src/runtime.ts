@@ -9,7 +9,6 @@ import { getConnector, listConnectors } from "./connectors.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { ensureIsolated } from "./isolate.js";
 import { MEMORY_TYPES, appendEvent, digestWithMemory, fold, openMemory, project, proposeNotes, readEvents, recordTaskNote, renderMemory, subscribe, writeEvidence, type Event, type MemoryType, type PlanStep } from "./memory.js";
-import { chooseTier } from "./route.js";
 import { guardNote } from "./guard.js";
 import { callConnectorTool, listConnectorTools } from "./mcpClient.js";
 import { classifyModelError, isPermanentModelError } from "./errors.js";
@@ -526,10 +525,6 @@ export interface RuntimeOptions {
   /** Continue an earlier task with `taskText` as a follow-up request, in the same event log —
    * resuming its model session when it still exists, else from a deterministic digest. */
   continueTask?: string;
-  /** How each turn's model tier is chosen. "rules" (default): Haiku-class until the first edit, then the executor, the
-   * escalation model when stuck. "decider": ask a local Jev-style decision model (`url`, see scripts/decider_server.py)
-   * from compact metadata; falls back to the rules if it is unreachable or unsure. Experimental — see bench.ts. */
-  router?: { kind: "rules" | "decider"; url?: string; minConfidence?: number };
   /** API providers (experimental, off unless true): ask for a pure JSON object reply ({"actions":[…]}) via the provider's
    * JSON mode. Claude (on unless false): answer through a structured-output tool call (`--json-schema`), which removed
    * tool-call markup and looping replies (history entry 64). */
@@ -937,8 +932,6 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     }
   }
   let reviews = 0;
-  const recentActions: string[] = [];
-  let lastResultHead = "";
   const asks = { n: 0 };
   const gate = { testFirst: !!opts.testFirst, sawRed: false };
   // Tokens the provider adds to every request on its own (its CLI's instructions and tool definitions), measured on the
@@ -969,14 +962,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     // put ordinary reading on Opus — on this repo's first real task, 5 plain reads/greps in a row
     // escalated, most of a 143k-token run for a one-file change.
     const stuck = checksSinceEdit >= 2 || sinceLastEdit >= 2 * STALL_THRESHOLD;
-    const ruleTier = stuck ? "escalate" : hasEdited ? "execute" : "explore";
-    let tierName: "explore" | "execute" | "escalate" = ruleTier;
-    if (opts.router?.kind === "decider" && opts.router.url) {
-      const d = await chooseTier(opts.router.url, { goal, step: steps, maxSteps, edits: editsApplied, editedSinceVerify, checksSinceEdit, sinceLastEdit, recent: recentActions, lastResult: lastResultHead });
-      const sure = d && (d.confidence === null || d.confidence >= (opts.router.minConfidence ?? 0));
-      if (d && sure) tierName = d.tier;
-      appendEvent(p, taskId, { actor: "system", type: "decision", summary: `route: ${tierName}${d ? "" : " (decider unavailable — rules)"} — rules said ${ruleTier}`, meta: { route: { chosen: tierName, rules: ruleTier, probs: d?.probs, confidence: d?.confidence ?? null, ms: d?.ms ?? null, used: !!(d && sure) } } });
-    }
+    const tierName: "explore" | "execute" | "escalate" = stuck ? "escalate" : hasEdited ? "execute" : "explore";
     const turnModel = tiers[tierName];
     const callOpts = {
       cwd: p.root,
@@ -1240,8 +1226,6 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         }
       }
       batchResults.push(`${tag}${resultText}`);
-      lastResultHead = resultMeta(decision, resultText);
-      recentActions.push(`${decision.action}${decision.path ? " " + decision.path : ""}${checkFailedLabel(decision, resultText)}`);
       batchLabels.push(`${decision.action}${decision.path ? ` ${decision.path}` : decision.server ? ` ${decision.server}.${decision.tool}` : decision.command ? ` ${redactCommand(decision.command).slice(0, 60)}` : decision.query ? ` "${decision.query.slice(0, 40)}"` : decision.pattern ? ` "${decision.pattern.slice(0, 40)}"` : ""}`);
       // executeAction returns "edited <path>" only when the file was actually written; a refused
       // edit (old text not found / not unique) doesn't count as progress for the done gate.
@@ -1377,23 +1361,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   return { taskId, outcome, summary: redact(summary), steps, actionCounts, compactions };
 }
 
-/** A one-line, content-free description of what an action returned — this is all the router's decision model sees. */
-function resultMeta(d: Decision, result: string): string {
-  const lines = result.split("\n").length;
-  switch (d.action) {
-    case "read": return /file not found/.test(result) ? "the file was not found" : `read ${d.path ?? "a file"} (${lines} lines)`;
-    case "grep": case "search": return /no matches/i.test(result) ? "no matches" : `${Math.max(0, lines - 1)} result lines`;
-    case "edit": return result.startsWith("edited ") ? "the edit was applied" : "the edit was refused";
-    case "verify": return result.startsWith("VERIFICATION FAILED") ? "verification failed" : result.startsWith("VERIFICATION NO CHECKS") ? "verify ran but no checks are configured" : "verification passed";
-    case "run": { const m = /\(exit (\d+)/.exec(result); return m ? (m[1] === "0" ? "the command succeeded" : `the command failed (exit ${m[1]})`) : "the command ran"; }
-    default: return `${d.action} returned ${lines} line(s)`;
-  }
-}
 export { digestWithMemory };
-
-function checkFailedLabel(d: Decision, result: string): string {
-  return (d.action === "verify" && result.startsWith("VERIFICATION FAILED")) || (d.action === "run" && /^\$ .*\(exit [1-9]/.test(result)) ? " (failed)" : "";
-}
 
 /** Executes one action and returns the (capped) result text to feed back as the next turn's prompt. */
 async function executeAction(p: Paths, taskId: string, d: Decision, approve?: RuntimeOptions["approve"], ask?: RuntimeOptions["ask"], asks?: { n: number }, gate?: { testFirst: boolean; sawRed: boolean }, signal?: AbortSignal, onOutput?: (command: string, text: string) => void): Promise<string> {
