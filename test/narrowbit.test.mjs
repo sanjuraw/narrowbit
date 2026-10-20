@@ -6373,5 +6373,23 @@ describe("planning chat: a model that cannot resume its session still gets the e
       assert.match(seen[2].prompt, /FIRST_QUESTION/);
     } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
   });
+
+  test("a replayed conversation re-reads the pages linked in its earlier messages", async () => {
+    const { planningReply } = await dist("planning.js");
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-plan-")));
+    const old = process.env.HOME; process.env.HOME = home;
+    try {
+      const seen = [];
+      const call = async (o) => { seen.push(o); return { text: "reply", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: 0, turns: 1, isError: false, sessionId: "s" + seen.length }; };
+      const asked = [];
+      const reader = async (t) => { asked.push(t); return "PAGE_OF_EARLIER_LINK"; };
+      const a = await planningReply(undefined, "look at https://example.com/x", call, "gemini", "low", undefined, undefined, "PAGE_OF_EARLIER_LINK");
+      await planningReply(a.taskId, "go on", call, "gemini", "low", undefined, undefined, undefined, reader);
+      assert.equal(asked.length, 0, "a resumed conversation already has the page");
+      await planningReply(a.taskId, "now on claude", call, "claude-sonnet-5-5", "low", undefined, undefined, undefined, reader);
+      assert.match(asked[0], /https:\/\/example\.com\/x/);
+      assert.match(seen[2].prompt, /PAGE_OF_EARLIER_LINK/);
+    } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  });
 });
 
