@@ -77,7 +77,7 @@ footer a { color: var(--muted); }
 <div class="wrap">
   <header class="top">
     <a class="brand" href="#"><svg viewBox="23 28 54 44" width="28" height="23" aria-hidden="true"><g fill="#c96442"><rect x="26.4" y="31.7" width="2.5" height="36.7"/><rect x="26.4" y="31.7" width="8.8" height="2.5"/><rect x="26.4" y="65.9" width="8.8" height="2.5"/><rect x="71.1" y="31.7" width="2.5" height="36.7"/><rect x="64.8" y="31.7" width="8.8" height="2.5"/><rect x="64.8" y="65.9" width="8.8" height="2.5"/><rect x="39.7" y="39.6" width="20.6" height="20.6"/></g></svg>Narrowbit</a>
-    <nav><a href="#how">How it works</a><a href="#memory">Memory</a><a href="#results">Results</a><a href="#limits">Limits</a><a class="gh" href="https://github.com/sanjuraw/narrowbit">GitHub</a></nav>
+    <nav><a href="#how">How it works</a><a href="#plan">Plan</a><a href="#memory">Memory</a><a href="#results">Results</a><a href="#limits">Limits</a><a class="gh" href="https://github.com/sanjuraw/narrowbit">GitHub</a></nav>
   </header>
 
   <div class="hero">
@@ -93,13 +93,25 @@ footer a { color: var(--muted); }
     <h2>How it works</h2>
     <p class="intro">The measure is correct coding work per unit of AI usage, not fewer tokens for their own sake. If quality drops, Narrowbit has failed.</p>
     <div class="grid">
-      <div class="card"><h3>Bring your own model</h3><p>Claude or Codex through your existing subscription, or any OpenAI-compatible API: DeepSeek, OpenRouter, Gemini, Groq, Ollama, LM Studio and others.</p></div>
+      <div class="card"><h3>Bring your own model</h3><p>Claude, Codex or Antigravity through your existing subscription, or any OpenAI-compatible API: DeepSeek, OpenRouter, Gemini, Groq, Ollama, LM Studio and others.</p></div>
       <div class="card"><h3>Small context, every step</h3><p>A local index and a durable task log let each turn carry only what the next action needs, instead of the whole conversation so far.</p></div>
       <div class="card"><h3>Checked, not claimed</h3><p>"Done" is tested against your repository's own typecheck, lint and test commands before the agent is allowed to stop.</p></div>
       <div class="card"><h3>You stay in control</h3><p>Commands ask first (or only the checks run without asking), edits show as diffs, every step can be rewound, and nothing is committed until you say so.</p></div>
       <div class="card"><h3>Local-first</h3><p>No telemetry and no repository upload. Code goes only to the model provider you choose. Known secret patterns are redacted from what the agent stores (best effort).</p></div>
       <div class="card"><h3>App and terminal</h3><p>A native Mac app with live progress, plus a CLI and an MCP server. Skills for common jobs and connectors for MCP tools such as GitHub.</p></div>
     </div>
+  </section>
+
+  <section id="plan">
+    <h2>Plan before you build</h2>
+    <p class="intro">Start with a conversation, not a folder. The planning chat has no project and changes no files; when the plan is settled, one button turns it into a real project.</p>
+    <div class="grid">
+      <div class="card"><h3>Reads links, searches the web</h3><p>Paste a public link and Narrowbit fetches the page for the model (no logins, size-limited, secrets redacted). For current facts the model uses its own search: Claude's, Codex's or Antigravity's.</p></div>
+      <div class="card"><h3>Explores a GitHub repository</h3><p>A linked public repository is copied read-only, and Claude or Antigravity can open, list and search its files with their own tools, fenced to that copy. Codex and API models get the README, file list and key files.</p></div>
+      <div class="card"><h3>Knows your skills and notes</h3><p>With a project open it lists your skills, sends one in full when you name it, and brings in matching notes from the project's memory.</p></div>
+      <div class="card"><h3>Suggests what to keep</h3><p>When a decision, limit or fact is settled, a card offers to save it to project memory. Nothing is saved until you press Save.</p></div>
+    </div>
+    <ul class="labels"><li>new, not benchmarked</li><li>web and repository text can still try to steer a model: it is labelled as information, not a guarantee</li><li>Claude and Antigravity only for file exploring</li></ul>
   </section>
 
   <section id="memory">
@@ -162,6 +174,7 @@ footer a { color: var(--muted); }
         <li>macOS only for the app; the CLI needs Node 22.13 or newer.</li>
         <li>Measured on two repositories (TypeScript and Python), one try per task; other languages and project sizes are not yet shown.</li>
         <li>The agent edits real files and runs your project's own commands. Review the diff before you commit.</li>
+        <li>The planning chat (links, search, repository exploring, suggested notes) is new and has no benchmark behind it.</li>
       </ul>
       <ul class="plain">
         <li>Files the agent reads can contain instructions aimed at it. Don't run it with commands allowed on code you don't trust.</li>
