@@ -5,7 +5,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -345,7 +345,7 @@ describe("planning a project before any folder exists (stand-in model, no networ
     home = fresh("home"); fakeDir = fresh("fake");
     writeFileSync(join(fakeDir, "replies.json"), JSON.stringify([
       "Sounds good — a small CLI tool. What language do you want to use?",
-      "Got it, Python it is. I'd suggest argparse for the CLI and a src/ layout.",
+      "Got it, Python it is. I'd suggest argparse for the CLI and a src/ layout.\nNOTE (decision): The CLI is written in Python with argparse.",
     ]));
     writeFileSync(join(fakeDir, "claude"), `#!/usr/bin/env node
 // The app's own readiness check calls "claude auth status" on page load, on the same binary — answer that
@@ -426,6 +426,18 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(page.$("sendBtn").disabled, false, "Send is on although the open project is not set up");
     assert.match(page.$("modeNote").textContent, /^Planning chat/, "a planning chat opened inside a project is still a planning chat");
+  });
+
+  test("a note the planning chat suggests is shown without its NOTE line, and is saved to the open project's memory only when Save is pressed", async () => {
+    // the open project here is the one made from the draft in an earlier test
+    page.$("input").value = "Python please, with argparse";
+    page.$("sendBtn").click();
+    const chip = await page.until(() => page.w.document.querySelector(".note-chip"), "the suggested note");
+    assert.match(chip.textContent, /Remember \(decision\): The CLI is written in Python with argparse\./);
+    assert.ok(![...page.w.document.querySelectorAll(".final")].some((f) => /NOTE \(/.test(f.textContent)), "the NOTE line is not part of the reply text");
+    chip.querySelectorAll("button")[0].click();
+    await page.until(() => /Saved to project memory/.test(page.w.document.querySelector(".note-chip")?.textContent || ""), "the note to be saved");
+    await page.until(() => /Python with argparse/.test(page.$("memList").textContent), "the note in the sidebar's memory list");
   });
 
   test("choosing a folder that already has files (but no git yet) versions them — after showing them and asking", async () => {

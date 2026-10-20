@@ -6616,3 +6616,26 @@ describe("coding tasks: links in the message are read and sent with it", () => {
   });
 });
 
+describe("planning chat: notes the model suggests", () => {
+  test("NOTE lines are taken out of the reply and offered as notes (at most three, only the four kinds)", async () => {
+    const { splitNotes } = await dist("planning.js");
+    const r = splitNotes("We agreed on Python.\n\nNOTE (decision): The CLI is written in Python.\nNOTE (constraint): Budget is under 50 dollars a month.\nNOTE (hunch): not a kind\nNOTE (fact): a\nNOTE (fact): Solo developer, evenings only.\nNOTE (fact): a fourth valid one");
+    assert.equal(r.text, "We agreed on Python.\n\nNOTE (hunch): not a kind\nNOTE (fact): a", "an unknown kind or a too-short note stays as ordinary text; a valid fourth note is dropped, not shown");
+    assert.deepEqual(r.notes, [{ type: "decision", text: "The CLI is written in Python." }, { type: "constraint", text: "Budget is under 50 dollars a month." }, { type: "fact", text: "Solo developer, evenings only." }]);
+    assert.deepEqual(splitNotes("just talk").notes, []);
+  });
+
+  test("planningReply logs and returns the reply without NOTE lines and hands the notes back", async () => {
+    const { planningReply, draftsPaths } = await dist("planning.js");
+    const { readEvents } = await dist("memory.js");
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-plan-")));
+    const old = process.env.HOME; process.env.HOME = home;
+    try {
+      const call = async () => ({ text: "Python it is.\nNOTE (decision): Use Python.", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: 0, turns: 1, isError: false });
+      const r = await planningReply(undefined, "hi", call, "m", "low");
+      assert.equal(r.text, "Python it is."); assert.deepEqual(r.notes, [{ type: "decision", text: "Use Python." }]);
+      assert.ok(!JSON.stringify(readEvents(draftsPaths(), r.taskId)).includes("NOTE ("), "the log has no NOTE lines");
+    } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  });
+});
+

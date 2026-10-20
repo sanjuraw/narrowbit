@@ -903,7 +903,7 @@ export function startUi(opts: UiOptions) {
           const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.escalate || sel.tiers.execute, sel.effort, undefined, resolveEndpoint(sel.provider, ga) ? hasSession : sel.provider === "antigravity" ? () => false : undefined, linked.block || undefined, async (earlierText) => (await readLinks(earlierText)).block, { ...planningContext(win().root, task), readDir, canRead });
           const links = linked.results.map((x) => ({ url: x.url, ok: x.ok, note: x.note }));
           if (r.isError) return json(res, 400, { error: r.errorMessage ?? "the model call failed", taskId: r.taskId });
-          return json(res, 200, { taskId: r.taskId, reply: r.text, links });
+          return json(res, 200, { taskId: r.taskId, reply: r.text, links, notes: win().root ? r.notes ?? [] : [] });
         }
         case "/api/init": {
           if (!win().root) return json(res, 400, { error: "no repository open" });
@@ -1055,6 +1055,20 @@ export function startUi(opts: UiOptions) {
             }
           }
           appendEvent(p, id, { actor: "user", type: "decision", summary: approve ? `saved to project memory: ${n.text.slice(0, 100)}` : `dismissed suggestion: ${n.text.slice(0, 100)}`, meta: { suggestedDone: idx, saved: approve } });
+          return json(res, 200, state());
+        }
+        case "/api/memory/from-chat": {
+          // A note the planning chat suggested, saved because the person pressed Save. Only an open project has a memory to write to.
+          if (!win().root) return json(res, 400, { error: "open a project to save notes to its memory" });
+          const type = String(body.type ?? "");
+          const text = String(body.text ?? "").trim().slice(0, 400);
+          const task = String(body.task ?? "");
+          if (!["decision", "constraint", "fact", "convention"].includes(type) || text.length < 3 || !/^pl-[\w-]+$/.test(task)) return json(res, 400, { error: "bad request" });
+          try {
+            openMemory(paths(cur())).add({ type: type as any, text, source: task, confidence: "medium" });
+          } catch (e: any) {
+            return json(res, 400, { error: e.message });
+          }
           return json(res, 200, state());
         }
         case "/api/memory/remove": {

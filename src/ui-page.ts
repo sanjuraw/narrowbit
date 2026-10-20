@@ -153,6 +153,8 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .chap-wrap { position: relative; } .chap-list { position: absolute; top: 28px; right: 0; z-index: 20; min-width: 230px; max-width: 360px; max-height: 60vh; overflow: auto; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 4px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
 .chap-list button { display: block; width: 100%; text-align: left; border: 0; background: transparent; color: var(--text); padding: 5px 9px; border-radius: 7px; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .chap-list button:hover { background: var(--panel); }
 .sched-row { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); } .sched-row:first-child { border-top: 0; }
+.note-chip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); font-size: 13px; }
+.note-chip .nc-text { flex: 1 1 260px; }
 .link-note { font-size: 12px; margin: 4px 0; word-break: break-all; }
 .side-tasks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 2px; } .side-lbl { color: var(--muted); font-size: 12px; } .side-chip { font-size: 12px; padding: 3px 9px; border-radius: 12px; } .o-done { color: var(--ok); } .o-blocked, .o-error { color: var(--bad); } .o-stopped, .o-unfinished, .o-max_steps { color: var(--warn); } .o-running { color: var(--accent); }
 .side-foot { border-top: 1px solid var(--line); padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
@@ -1781,6 +1783,23 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (t === "drop" && e.dataTransfer && e.dataTransfer.files.length) attachFiles(e.dataTransfer.files);
     });
   });
+  function noteChip(task, n) {
+    var row = el("div", { cls: "note-chip" });
+    var label = el("span", { cls: "nc-text" });
+    label.appendChild(el("b", { text: "Remember (" + n.type + "): " }));
+    label.appendChild(document.createTextNode(n.text));
+    var save = el("button", { cls: "ghost", text: "Save to project memory" });
+    var skip = el("button", { cls: "ghost", text: "Dismiss", onclick: function () { row.remove(); } });
+    save.onclick = function () {
+      save.disabled = true;
+      api("/api/memory/from-chat", { task: task, type: n.type, text: n.text }).then(function (st) {
+        apply(st);
+        clear(row); row.appendChild(el("span", { cls: "muted", text: "Saved to project memory: " + n.text }));
+      }).catch(function (e) { save.disabled = false; banner("bad", e.message); });
+    };
+    row.appendChild(label); row.appendChild(save); row.appendChild(skip);
+    return row;
+  }
   function sendDraft(text) {
     banner("", null);
     var cont = view && view.taskId ? view.taskId : null;
@@ -1799,6 +1818,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       // The pages that were read for this message, or why one was not (the model cannot browse; Narrowbit fetches links for it).
       (r.links || []).forEach(function (l) { add(el("div", { cls: "muted link-note" }, (l.ok ? "Read " : "Couldn't read ") + l.url + " — " + l.note)); });
       add(el("div", { cls: "final-wrap" }, el("div", { cls: "final" }, rich(r.reply))));
+      // Things the model thinks are worth keeping in the open project's memory: saved only when the person presses Save.
+      (r.notes || []).forEach(function (n) { add(noteChip(r.taskId, n)); });
       show($("createProjectBar"), !(S && S.root));   // "Create project" belongs to a conversation with no project yet
       load();
     }).catch(function (e) {
