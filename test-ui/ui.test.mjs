@@ -412,6 +412,16 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     assert.match(page.$("input").value, /CLI tool|language|Python/i, "the discussion was seeded into the composer, not auto-sent");
   });
 
+  test("a planning chat can still be sent to while the project made from it is not set up yet", async () => {
+    // The project made in the previous test has no index yet (the setup card is showing).
+    const sess = await page.until(() => [...page.w.document.querySelectorAll("#sessions .sess")].find((x) => /CLI tool/.test(x.textContent)), "the planning chat in the sidebar");
+    sess.click();
+    await page.until(() => page.w.document.querySelector(".final"), "the chat's reply");
+    page.$("input").value = "and what about tests?";
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(page.$("sendBtn").disabled, false, "Send is on although the open project is not set up");
+  });
+
   test("choosing a folder that already has files (but no git yet) versions them — after showing them and asking", async () => {
     const target = join(home, "Projects", "hand-made-scaffold");
     mkdirSync(target, { recursive: true });

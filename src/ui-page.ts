@@ -1712,6 +1712,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function renderComposer() {
     renderSuggestion();
     var typing = input.value.trim().length > 0;
+    var inDraft = !!(view && view.taskId && /^pl-/.test(view.taskId));   // a planning chat does not use the open project, so a project that is not set up yet must not block it
     var busy = !!(view && view.pendingNew && !view.taskId);   // a brand-new task that has no id yet can't take a message
     var P = S && S.providers && S.providers[S.selection.provider];
     // With no folder open there is no per-repo config to trust, so P.unavailable (which only reflects
@@ -1725,7 +1726,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     // to the agent before its next step).
     show($("stopBtn"), viewingRun() && !typing);
     show($("sendBtn"), !viewingRun() || typing);
-    $("sendBtn").disabled = !S || (!!S.root && !S.initialized) || busy || !!(P && P.unavailable) || notReadyNoRoot;
+    $("sendBtn").disabled = !S || (!!S.root && !S.initialized && !inDraft) || busy || !!(P && P.unavailable) || notReadyNoRoot;
     $("leadTog").checked = !!(S && S.lead);
     input.placeholder = activeSuggestion() || (view && view.taskId ? "Ask for a follow-up or a change…" : S && S.root ? "Describe a task…" : "What do you want to build? Let's talk it through…");
     $("hint").textContent = !S ? "" : viewingRun() && typing ? "Enter to send — the agent gets it before its next step" : P && P.unavailable ? P.unavailable : notReadyNoRoot ? ((R[S.selection.provider] && R[S.selection.provider].detail) || "not signed in — pick a model that's ready") : !S.root ? "Enter to send · No folder needed yet — we'll create one when you're ready" : "Enter to send · Shift+Enter for a new line";
