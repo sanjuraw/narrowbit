@@ -6413,5 +6413,18 @@ describe("planning chat: a model that cannot resume its session still gets the e
       assert.match(seen.systemPrompt, /web search tool/);
     } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
+
+  test("the log keeps the whole reply, so a restarted app shows it in full", async () => {
+    const { planningReply, draftsPaths } = await dist("planning.js");
+    const { readEvents } = await dist("memory.js");
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-plan-")));
+    const old = process.env.HOME; process.env.HOME = home;
+    try {
+      const long = "word ".repeat(400) + "THE_END";
+      const r = await planningReply(undefined, "hi", async () => ({ text: long, usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: 0, turns: 1, isError: false }), "m", "low");
+      const shown = readEvents(draftsPaths(), r.taskId).find((e) => e.type === "model_call").summary;
+      assert.ok(shown.endsWith("THE_END"), "the reply is not cut at 300 characters");
+    } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  });
 });
 

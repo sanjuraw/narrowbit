@@ -88,7 +88,7 @@ export async function planningReply(
   appendEvent(p, id, {
     actor: "model",
     type: "model_call",
-    summary: res.isError ? `planning: model call failed${res.errorMessage ? ` — ${res.errorMessage.slice(0, 200)}` : ""}` : `done: ${res.text.slice(0, 300)}`,
+    summary: res.isError ? `planning: model call failed${res.errorMessage ? ` — ${res.errorMessage.slice(0, 200)}` : ""}` : `done: ${res.text.slice(0, 30000)}`,
     tokens: { model, role: "planning-chat", inputTokens: res.usage.input, cacheCreationTokens: res.usage.cacheCreate, cacheReadTokens: res.usage.cacheRead, outputTokens: res.usage.output, costUsd: res.costUsd ?? 0 },
     meta: { sessionId: res.sessionId ?? sessionId },
   });
@@ -103,7 +103,7 @@ export function draftDigest(taskId: string): string {
   const events = readEvents(p, taskId);
   const turns = events
     .filter((e) => e.type === "decision" && (e.actor === "user" || (e.actor === "model" && e.summary.startsWith("done: "))))
-    .map((e) => (e.actor === "user" ? `User: ${e.summary}` : `Assistant: ${e.summary.slice(6)}`));
+    .map((e) => (e.actor === "user" ? `User: ${e.summary}` : `Assistant: ${e.summary.slice(6, 2006)}`));
   return turns.join("\n\n");
 }
 
