@@ -55,7 +55,9 @@ export async function planningReply(
   appendEvent(p, id, { actor: "user", type: "decision", summary: text.slice(0, 300), meta: continuing ? { followUp: text } : { goal: text }, });
   const last = [...prior].reverse().find((e) => e.type === "model_call" && typeof e.meta?.sessionId === "string");
   const savedId = last?.meta?.sessionId as string | undefined;
-  const lost = !!last && !!savedId && !!canResume && !canResume(savedId);
+  // A session id belongs to the model that made it: after the user switches model or provider, the new one can't resume it.
+  const switched = !!last && !!last.tokens?.model && last.tokens.model !== model;
+  const lost = !!last && !!savedId && (switched || (!!canResume && !canResume(savedId)));
   const sessionId = lost || !savedId ? randomUUID() : savedId;
   const resume = !!last && !lost;
   // The conversation lived only in the old process: start a new one seeded with what the log kept (replies are shortened).
@@ -68,7 +70,7 @@ export async function planningReply(
   const res = await call({
     cwd: homedir(), // no project folder exists yet; the model is told not to touch files, so cwd is never used for real work
     systemPrompt: resume ? undefined : PLANNING_INSTRUCTIONS,
-    prompt: (earlier ? `This continues a planning chat; the app was restarted since, so here is what was said so far:\n${earlier}\n\nTheir new message:\n${text}` : text) + (linked ? `\n\n${linked}` : ""),
+    prompt: (earlier ? `This continues a planning chat; the model cannot resume its own session, so here is what was said so far:\n${earlier}\n\nTheir new message:\n${text}` : text) + (linked ? `\n\n${linked}` : ""),
     model,
     effort,
     role: "planning-chat",
@@ -84,7 +86,7 @@ export async function planningReply(
     meta: { sessionId: res.sessionId ?? sessionId },
   });
   if (res.isError) return { taskId: id, text: "", isError: true, errorMessage: res.errorMessage };
-  appendEvent(p, id, { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: res.text.slice(0, 300) } });
+  appendEvent(p, id, { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: res.text.slice(0, 1500) } });
   return { taskId: id, text: res.text, isError: false };
 }
 

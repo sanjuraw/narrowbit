@@ -6324,3 +6324,37 @@ describe("link reader: pages pasted into a message are read for the model, publi
     } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
   });
 });
+
+describe("planning chat: a model that cannot resume its session still gets the earlier conversation", () => {
+  test("canResume false -> the follow-up carries the first message and the first reply, and starts a new session", async () => {
+    const { planningReply } = await dist("planning.js");
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-plan-")));
+    const old = process.env.HOME; process.env.HOME = home;
+    try {
+      const seen = [];
+      const call = async (o) => { seen.push(o); return { text: seen.length === 1 ? "FIRST_REPLY about morluto/rea" : "second", usage: { input: 1, cacheCreate: 0, cacheRead: 0, output: 1 }, costUsd: 0, turns: 1, isError: false, sessionId: "agy-" + seen.length }; };
+      const a = await planningReply(undefined, "FIRST_QUESTION reverse engineer something", call, "m", "low", undefined, () => false);
+      await planningReply(a.taskId, "can you now go through this repo", call, "m", "low", undefined, () => false);
+      assert.equal(seen[1].resume, false);
+      assert.match(seen[1].prompt, /FIRST_QUESTION reverse engineer something/);
+      assert.match(seen[1].prompt, /FIRST_REPLY about morluto\/rea/);
+      assert.match(seen[1].prompt, /can you now go through this repo$/);
+    } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test("switching to another model replays the conversation instead of resuming the old model's session", async () => {
+    const { planningReply } = await dist("planning.js");
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-plan-")));
+    const old = process.env.HOME; process.env.HOME = home;
+    try {
+      const seen = [];
+      const call = async (o) => { seen.push(o); return { text: "reply " + seen.length, usage: { input: 1, cacheCreate: 0, cacheRead: 0, output: 1 }, costUsd: 0, turns: 1, isError: false, sessionId: "s" + seen.length }; };
+      const a = await planningReply(undefined, "FIRST_QUESTION", call, "gemini", "low");
+      await planningReply(a.taskId, "same model follow-up", call, "gemini", "low");
+      assert.equal(seen[1].resume, true, "same model resumes");
+      await planningReply(a.taskId, "now on claude", call, "claude-sonnet-5-5", "low");
+      assert.equal(seen[2].resume, false);
+      assert.match(seen[2].prompt, /FIRST_QUESTION/);
+    } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  });
+});

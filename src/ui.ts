@@ -857,7 +857,7 @@ export function startUi(opts: UiOptions) {
           if (unavailable) return json(res, 400, { error: unavailable });
           // Links in the message are read here (the model cannot browse); what happened to each is reported back to the page.
           const linked = await readLinks(task);
-          const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.execute, sel.effort, undefined, resolveEndpoint(sel.provider, ga) ? hasSession : undefined, linked.block || undefined);
+          const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.execute, sel.effort, undefined, resolveEndpoint(sel.provider, ga) ? hasSession : sel.provider === "antigravity" ? () => false : undefined, linked.block || undefined);
           const links = linked.results.map((x) => ({ url: x.url, ok: x.ok, note: x.note }));
           if (r.isError) return json(res, 400, { error: r.errorMessage ?? "the model call failed", taskId: r.taskId });
           return json(res, 200, { taskId: r.taskId, reply: r.text, links });
