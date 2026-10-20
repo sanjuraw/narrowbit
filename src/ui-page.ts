@@ -735,7 +735,11 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   // project per window, so two windows can show two conversations side by side.
   var qs = new URLSearchParams(location.search), wantProject = qs.get("project"), wantOpen = qs.get("open"), fresh = qs.has("fresh"), isPane = qs.has("pane");
   var W = ""; try { W = fresh ? "" : (sessionStorage.getItem("nb.win") || ""); } catch (e) { /* storage blocked */ }
+  // After the app is restarted this window's session storage is empty. Take back the id of the window that was used last
+  // if no open window is keeping it alive (each window stamps its id every few seconds), so it reopens on its own project.
+  if (!W && !fresh && !isPane && !wantProject) { try { var lastW = localStorage.getItem("nb.win.last"), beat = Number(localStorage.getItem("nb.win.beat." + lastW) || 0); if (lastW && Date.now() - beat > 15000) { W = lastW; sessionStorage.setItem("nb.win", W); } } catch (e) { /* storage blocked */ } }
   if (!W) { W = Array.prototype.map.call(crypto.getRandomValues(new Uint8Array(12)), function (b) { return (b % 36).toString(36); }).join(""); try { sessionStorage.setItem("nb.win", W); } catch (e) { /* storage blocked */ } }
+  if (!isPane) { var stampWin = function () { try { localStorage.setItem("nb.win.last", W); localStorage.setItem("nb.win.beat." + W, String(Date.now())); } catch (e) { /* storage blocked */ } }; stampWin(); setInterval(stampWin, 5000); }
   var native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.narrowbit;
   var BT = String.fromCharCode(96); // a backtick; a literal one would end this TS template
   // "Needs your OK" and "finished" notices. The Mac app shows them itself; in a browser they use the web Notification API,

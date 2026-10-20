@@ -339,12 +339,23 @@ export function startUi(opts: UiOptions) {
   const win = (): Win => als.getStore() ?? defaultWin;
   /** The open project where the code has already checked there is one (the old narrowing of a plain variable, which a per-window value can't give). */
   const cur = (): string => win().root as string;
+  // Which project each window had, kept across restarts of the app (the page asks for its old window id back; see ui-page.ts).
+  const winFile = join(homedir(), ".narrowbit", "windows.json");
+  const savedRoots: Record<string, string | null> = (() => { try { const j = JSON.parse(readFileSync(winFile, "utf8")); return j && typeof j === "object" && !Array.isArray(j) ? j : {}; } catch { return {}; } })();
+  const rememberRoot = (id: string, root: string | null) => {
+    if (!id) return;
+    delete savedRoots[id];
+    savedRoots[id] = root;
+    for (const k of Object.keys(savedRoots).slice(0, Math.max(0, Object.keys(savedRoots).length - 64))) delete savedRoots[k];
+    try { mkdirSync(dirname(winFile), { recursive: true }); writeFileSync(winFile, JSON.stringify(savedRoots), { mode: 0o600 }); } catch { /* not essential */ }
+  };
   const winFor = (id: string | null): Win => {
     if (!id || !/^[\w-]{6,40}$/.test(id)) return defaultWin;
     let w = windows.get(id);
     if (!w) {
       if (windows.size >= 64) windows.delete(windows.keys().next().value as string); // a long-running server doesn't grow without bound
-      w = { id, root: lastRoot }; // a folder that has since vanished is reported by state() as missing, as for the first window
+      const saved = typeof savedRoots[id] === "string" && !untrustedReason(savedRoots[id] as string) ? (savedRoots[id] as string) : id in savedRoots ? null : lastRoot;
+      w = { id, root: saved }; // a folder that has since vanished is reported by state() as missing, as for the first window
       windows.set(id, w);
     }
     return w;
@@ -842,6 +853,7 @@ export function startUi(opts: UiOptions) {
             }
           }
           win().root = r;
+          rememberRoot(win().id, r);
           lastRoot = r;
           saveRecent(r);
           const st = state();
@@ -854,6 +866,7 @@ export function startUi(opts: UiOptions) {
           // Closing only changes what this window shows; it is blocked only by a task this window started.
           if (runningRuns().some((r) => r.root === win().root && r.win === win().id)) return json(res, 409, { error: "stop the running task before closing this project" });
           win().root = null;
+          rememberRoot(win().id, null);
           return json(res, 200, state());
         }
         case "/api/plan": {

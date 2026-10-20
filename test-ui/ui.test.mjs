@@ -57,6 +57,7 @@ async function openPage(url, opts = {}) {
     beforeParse(w) {
       // opts.route lets a test answer chosen requests itself (for things that would need GitHub, say).
       w.fetch = (u, o) => { const hit = opts.route && opts.route(String(u), o); return hit ? Promise.resolve(hit) : fetch(new URL(u, w.location.href), o); };
+      if (opts.before) opts.before(w); // a test can set browser storage before the page script runs
       w.EventSource = class { addEventListener() {} close() {} };
       w.Element.prototype.scrollIntoView = () => {};
       w.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
@@ -1846,6 +1847,31 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     const html = await (await fetch(app.url)).text();
     assert.match(html, /font-family: "Anthropic Serif"; src: url\(\/fonts\/serif\.ttf\)/);
     assert.match(html, /\.final \{[^}]*font-size: 16px/);
+  });
+
+  test("a window gets its own project back after the app restarts, and a page takes back its old window id once nothing keeps it alive", async () => {
+    const home2 = fresh("home");
+    const repoA = fresh("repoA"), repoB = fresh("repoB");
+    for (const r of [repoA, repoB]) {
+      const git = (...a) => execFileSync("git", a, { cwd: r, stdio: "ignore" });
+      git("init", "-q", "-b", "main"); git("config", "user.email", "t@t.t"); git("config", "user.name", "t");
+      writeFileSync(join(r, "a.txt"), "hi\n"); git("add", "-A"); git("commit", "-qm", "init");
+    }
+    const open = (a, project, win) => fetch(`${a.base}/api/repo`, { method: "POST", headers: { "x-narrowbit-token": a.token, "x-narrowbit-window": win, "content-type": "application/json" }, body: JSON.stringify({ path: project }) });
+    const rootOf = async (a, win) => (await (await fetch(`${a.base}/api/state`, { headers: { "x-narrowbit-token": a.token, "x-narrowbit-window": win } })).json()).root;
+    let a1 = await startApp({ cwd: home2, home: home2 });
+    try { await open(a1, repoA, "windowaaaa1"); await open(a1, repoB, "windowbbbb2"); } finally { a1.stop(); }
+    await new Promise((r) => setTimeout(r, 300));
+    const a2 = await startApp({ cwd: home2, home: home2 });
+    try {
+      assert.equal(await rootOf(a2, "windowaaaa1"), realpathSync(repoA), "window A is back on its own project");
+      assert.equal(await rootOf(a2, "windowbbbb2"), realpathSync(repoB), "window B is back on its own");
+      // the page side: an old id is taken back only when its stamp is stale
+      const stale = await openPage(a2.url, { before: (w) => { w.localStorage.setItem("nb.win.last", "windowaaaa1"); w.localStorage.setItem("nb.win.beat.windowaaaa1", String(Date.now() - 60000)); } });
+      try { await stale.until(() => stale.w.sessionStorage.getItem("nb.win"), "a window id"); assert.equal(stale.w.sessionStorage.getItem("nb.win"), "windowaaaa1"); await new Promise((r) => setTimeout(r, 400)); } finally { stale.close(); }
+      const live = await openPage(a2.url, { before: (w) => { w.localStorage.setItem("nb.win.last", "windowaaaa1"); w.localStorage.setItem("nb.win.beat.windowaaaa1", String(Date.now())); } });
+      try { await live.until(() => live.w.sessionStorage.getItem("nb.win"), "a window id"); assert.notEqual(live.w.sessionStorage.getItem("nb.win"), "windowaaaa1", "an id another window keeps alive is not taken"); await new Promise((r) => setTimeout(r, 400)); } finally { live.close(); }
+    } finally { a2.stop(); for (const d of [home2, repoA, repoB]) rmSync(d, { recursive: true, force: true }); }
   });
 
   test("every request names this window; 'Open in new window' opens another with its own id on the same project", async () => {
