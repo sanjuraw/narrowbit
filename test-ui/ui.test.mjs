@@ -375,7 +375,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     await page.until(() => page.w.document.querySelector(".final"), "the model's reply");
     assert.match(page.w.document.querySelector(".final").textContent, /small CLI tool|language/);
     assert.ok(!page.$("createProjectBar").classList.contains("hidden"), "Create project appears once there's a reply");    const call = readFileSync(join(fakeDir, "args.log"), "utf8").split("\n").find((l) => /--model/.test(l));
-    assert.match(call, /--effort high/, "the planning chat thinks harder than the everyday medium: " + call.slice(0, 300));
+    assert.match(call, /--effort medium/, "the planning chat uses the effort you chose, not a hidden one: " + call.slice(0, 300));
     assert.match(call, /WebSearch,WebFetch/);
   });
 

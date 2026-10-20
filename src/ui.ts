@@ -313,8 +313,6 @@ export interface UiOptions {
   onListening: (url: string) => void;
 }
 
-// The planning chat is where the plan is made, so it thinks harder than the everyday setting (and uses the top model tier).
-const PLANNING_EFFORT: Record<string, string> = { low: "high", medium: "high" };
 const CLAUDE_FONTS: Record<string, string> = {
   "sans.ttf": "AnthropicSans-Romans-Variable-25x258.ttf",
   "sans-italic.ttf": "AnthropicSans-Italics-Variable-25x258.ttf",
@@ -889,7 +887,7 @@ export function startUi(opts: UiOptions) {
           if (unavailable) return json(res, 400, { error: unavailable });
           // Links in the message are read here (the model cannot browse); what happened to each is reported back to the page.
           const linked = await readLinks(task);
-          const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.escalate || sel.tiers.execute, PLANNING_EFFORT[sel.effort] ?? sel.effort, undefined, resolveEndpoint(sel.provider, ga) ? hasSession : sel.provider === "antigravity" ? () => false : undefined, linked.block || undefined, async (earlierText) => (await readLinks(earlierText)).block, planningContext(win().root, task));
+          const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.escalate || sel.tiers.execute, sel.effort, undefined, resolveEndpoint(sel.provider, ga) ? hasSession : sel.provider === "antigravity" ? () => false : undefined, linked.block || undefined, async (earlierText) => (await readLinks(earlierText)).block, planningContext(win().root, task));
           const links = linked.results.map((x) => ({ url: x.url, ok: x.ok, note: x.note }));
           if (r.isError) return json(res, 400, { error: r.errorMessage ?? "the model call failed", taskId: r.taskId });
           return json(res, 200, { taskId: r.taskId, reply: r.text, links });
