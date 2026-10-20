@@ -53,6 +53,9 @@ export interface ModelCallOptions {
   /** Let the provider's own web search run for this call (the planning chat's research questions). Claude: WebSearch and WebFetch;
    * Codex: live web search; Antigravity: its search_web tool. API providers ignore it. Off for every action-loop call. */
   webSearch?: boolean;
+  /** A folder the provider may read with its own file tools (Read, Glob, Grep) and nothing else: the planning chat's copy of a
+   * linked repository (repocopy.ts). Claude: path-limited rules; Antigravity: its read tools; Codex has no way to fence one in. */
+  readDir?: string;
   /** Usage-ledger attribution bucket, e.g. "planning" | "retrieval" | "execution" | "verification". */
   role: string;
   claudeBin?: string;
@@ -386,6 +389,15 @@ export function claudeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Process
   return env;
 }
 
+function claudeTools(opts: ModelCallOptions): string[] {
+  return [...(opts.webSearch ? ["WebSearch", "WebFetch"] : []), ...(opts.readDir ? ["Read", "Glob", "Grep"] : [])];
+}
+/** Permission rules: the web tools as they are, the file tools only inside `readDir` ("//" starts an absolute path in a rule). */
+function claudeAllowed(opts: ModelCallOptions): string[] {
+  const inside = opts.readDir ? `//${opts.readDir.replace(/^\/+/, "")}/**` : "";
+  return [...(opts.webSearch ? ["WebSearch", "WebFetch"] : []), ...(opts.readDir ? [`Read(${inside})`, `Glob(${inside})`, `Grep(${inside})`] : [])];
+}
+
 export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
   const bin = opts.claudeBin ?? process.env.NARROWBIT_CLAUDE ?? "claude";
   const args = ["-p", "--output-format", "stream-json", "--verbose", "--safe-mode"];
@@ -399,12 +411,13 @@ export function callModel(opts: ModelCallOptions): Promise<ModelCallResult> {
     "--model",
     opts.model ?? "sonnet",
     "--tools",
-    opts.webSearch ? "WebSearch,WebFetch" : "", // otherwise no built-in tools: a pure text turn, Narrowbit executes every action itself
+    claudeTools(opts).join(","), // none by default: a pure text turn, Narrowbit executes every action itself
     "--strict-mcp-config",
     "--mcp-config",
     JSON.stringify({ mcpServers: {} }),
   );
-  if (opts.webSearch) args.push("--allowedTools", "WebSearch,WebFetch");
+  if (opts.webSearch || opts.readDir) args.push("--allowedTools", ...claudeAllowed(opts));
+  if (opts.readDir) args.push("--add-dir", opts.readDir);
   // Partial messages carry the reply as it is written; only asked for when someone is watching.
   // Always streamed: the pieces show progress, which the stall watchdog needs even when nobody is watching the text.
   args.push("--include-partial-messages");

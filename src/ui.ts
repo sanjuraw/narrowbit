@@ -2,7 +2,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync, lstatSync, readlinkSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { readLinks } from "./linkreader.js";
+import { githubRepoOf, readLinks } from "./linkreader.js";
 import { describe, loadSchedules, runDue, runSchedule, saveSchedules } from "./schedule.js";
 import { connect } from "node:net";
 import { homedir } from "node:os";
@@ -47,6 +47,7 @@ import { providerCallFor, runTask, type Progress } from "./runtime.js";
 import { acknowledgeUpdateNotes, applyUpdate, checkUpdate, pendingUpdateNotes, readVersion } from "./update.js";
 import { listSkills, removeSkill, saveSkill } from "./skills.js";
 import { planningContext } from "./planningcontext.js";
+import { copyRepo } from "./repocopy.js";
 import { uiPage } from "./ui-page.js";
 import { isHookFile, sh, visible, writeProjectFile, removeProjectPath, stateText } from "./util.js";
 import { updateCli } from "./providers/models.js";
@@ -887,7 +888,18 @@ export function startUi(opts: UiOptions) {
           if (unavailable) return json(res, 400, { error: unavailable });
           // Links in the message are read here (the model cannot browse); what happened to each is reported back to the page.
           const linked = await readLinks(task);
-          const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.escalate || sel.tiers.execute, sel.effort, undefined, resolveEndpoint(sel.provider, ga) ? hasSession : sel.provider === "antigravity" ? () => false : undefined, linked.block || undefined, async (earlierText) => (await readLinks(earlierText)).block, planningContext(win().root, task));
+          // A linked GitHub repository is also copied (read-only) so a model that can read files can explore it, not just its README.
+          const canRead = sel.provider === "claude" || sel.provider === "antigravity";
+          let readDir: string | undefined;
+          if (canRead) {
+            const hit = linked.results.map((x) => { try { return { x, gh: x.ok ? githubRepoOf(new URL(x.url)) : null }; } catch { return { x, gh: null }; } }).find((y) => y.gh);
+            if (hit?.gh) {
+              const c = await copyRepo(hit.gh.owner, hit.gh.repo);
+              if ("dir" in c) { readDir = c.dir; hit.x.note = `${hit.x.note ?? ""}; copied read-only so the model can explore its files`; }
+              else hit.x.note = `${hit.x.note ?? ""}; could not copy it for exploring (${c.error})`;
+            }
+          }
+          const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.escalate || sel.tiers.execute, sel.effort, undefined, resolveEndpoint(sel.provider, ga) ? hasSession : sel.provider === "antigravity" ? () => false : undefined, linked.block || undefined, async (earlierText) => (await readLinks(earlierText)).block, { ...planningContext(win().root, task), readDir, canRead });
           const links = linked.results.map((x) => ({ url: x.url, ok: x.ok, note: x.note }));
           if (r.isError) return json(res, 400, { error: r.errorMessage ?? "the model call failed", taskId: r.taskId });
           return json(res, 200, { taskId: r.taskId, reply: r.text, links });

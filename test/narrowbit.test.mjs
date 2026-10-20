@@ -6422,7 +6422,7 @@ describe("planning chat: a model that cannot resume its session still gets the e
       await callModel({ ...base });
       const lines = readFileSync(join(fake.dir, "args.log"), "utf8").trim().split("\n");
       assert.match(lines[0], /--tools WebSearch,WebFetch/);
-      assert.match(lines[0], /--allowedTools WebSearch,WebFetch/);
+      assert.match(lines[0], /--allowedTools WebSearch WebFetch/);
       assert.doesNotMatch(lines[1], /WebSearch/, "a plain call has no tools");
       let seen = null;
       await planningReply(undefined, "what apps exist", async (o) => { seen = o; return { text: "x", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: 0, turns: 1, isError: false }; }, "m", "low");
@@ -6493,6 +6493,82 @@ describe("planning chat: the open project's skills and memory notes, and the str
       await planningReply(undefined, "hi", call, "m", "low", undefined, undefined, undefined, undefined, { system: "\n\nSKILL_LIST", prompt: "NOTES_BLOCK" });
       assert.match(seen.systemPrompt, /SKILL_LIST$/);
       assert.match(seen.prompt, /hi\n\nNOTES_BLOCK$/);
+    } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+describe("planning chat: a read-only copy of a linked repository, explored with the provider's file tools", () => {
+  function sourceRepo() {
+    const src = realpathSync(mkdtempSync(join(tmpdir(), "nb-src-")));
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: src });
+    mkdirSync(join(src, "docs"));
+    writeFileSync(join(src, "docs", "design.md"), "# design\n");
+    writeFileSync(join(src, "main.py"), "print('hi')\n");
+    symlinkSync("/etc/hosts", join(src, "sneaky"));
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], { cwd: src });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"], { cwd: src });
+    return src;
+  }
+
+  test("the copy has the files but no .git and no symbolic links; it is reused for a day; old copies are removed", async () => {
+    const { copyRepo } = await dist("repocopy.js");
+    const src = sourceRepo();
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "nb-copies-")));
+    try {
+      const a = await copyRepo("o", "r", { url: src, root });
+      assert.ok("dir" in a, JSON.stringify(a));
+      assert.equal(readFileSync(join(a.dir, "docs", "design.md"), "utf8"), "# design\n");
+      assert.ok(!existsSync(join(a.dir, ".git")), "no .git folder");
+      assert.ok(!existsSync(join(a.dir, "sneaky")) && !readdirSync(a.dir).includes("sneaky"), "the link to a file outside is gone");
+      writeFileSync(join(a.dir, "marker"), "x");
+      const b = await copyRepo("o", "r", { url: src, root });
+      assert.equal(b.dir, a.dir); assert.ok(existsSync(join(a.dir, "marker")), "a fresh copy is reused, not cloned again");
+      const old = new Date(Date.now() - 5 * 24 * 3600_000);
+      mkdirSync(join(root, "x__old")); utimesSync(join(root, "x__old"), old, old);
+      await copyRepo("o", "r", { url: src, root });
+      assert.ok(!existsSync(join(root, "x__old")), "a copy older than three days is deleted");
+      const bad = await copyRepo("../etc", "passwd", { root });
+      assert.ok("error" in bad);
+      const gone = await copyRepo("o", "nope", { url: join(root, "no-such-repo"), root });
+      assert.ok("error" in gone, "a failed clone reports an error and leaves nothing behind");
+      assert.ok(!readdirSync(root).some((n) => n.startsWith(".tmp-")));
+    } finally { rmSync(src, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("Claude gets Read, Glob and Grep only inside the copy (path-limited rules, the folder added), and none without it", async () => {
+    const { callModel } = await dist("providers/claude-cli.js");
+    const fake = fakeClaude(["ok"]);
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "nb-copy-")));
+    try {
+      const base = { cwd: dir, prompt: "hi", model: "sonnet", role: "x", claudeBin: fake.bin };
+      await callModel({ ...base, webSearch: true, readDir: dir });
+      await callModel({ ...base, webSearch: true });
+      const lines = readFileSync(join(fake.dir, "args.log"), "utf8").trim().split("\n");
+      assert.match(lines[0], /--tools WebSearch,WebFetch,Read,Glob,Grep/);
+      assert.ok(lines[0].includes(`Read(/${dir}/**)`) && lines[0].includes(`Grep(/${dir}/**)`) && lines[0].includes(`Glob(/${dir}/**)`), lines[0]);
+      assert.ok(lines[0].includes(`--add-dir ${dir}`));
+      assert.doesNotMatch(lines[1], /Read|Grep|Glob|--add-dir/);
+    } finally { rmSync(dir, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("the planning chat works in the copy, keeps it for follow-ups, starts a new session when a copy first appears, and does not offer it where it cannot be fenced", async () => {
+    const { planningReply } = await dist("planning.js");
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-plan-")));
+    const dir = join(home, "copy"); mkdirSync(dir);
+    const old = process.env.HOME; process.env.HOME = home;
+    try {
+      const seen = [];
+      const call = async (o) => { seen.push(o); return { text: "r", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: 0, turns: 1, isError: false, sessionId: "s" + seen.length }; };
+      const a = await planningReply(undefined, "just talking", call, "m", "low");
+      assert.equal(seen[0].readDir, undefined);
+      await planningReply(a.taskId, "now this repo", call, "m", "low", undefined, undefined, undefined, undefined, { readDir: dir, canRead: true });
+      assert.equal(seen[1].readDir, dir); assert.equal(seen[1].cwd, dir);
+      assert.equal(seen[1].resume, false, "a running session cannot get file tools later");
+      assert.match(seen[1].systemPrompt, /read-only copy of the repository/);
+      await planningReply(a.taskId, "and the tests?", call, "m", "low", undefined, undefined, undefined, undefined, { canRead: true });
+      assert.equal(seen[2].readDir, dir, "a follow-up keeps the copy"); assert.equal(seen[2].resume, true);
+      await planningReply(a.taskId, "on codex now", call, "m", "low", undefined, undefined, undefined, undefined, { canRead: false });
+      assert.equal(seen[3].readDir, undefined, "a provider that cannot be fenced in gets no file tools");
     } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
   });
 });
