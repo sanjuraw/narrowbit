@@ -370,6 +370,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
 
   test("the composer works with no folder open, and the reply renders like an ordinary message", async () => {
     assert.equal(page.$("sendBtn").disabled, false, "sending doesn't need a folder");
+    assert.match(page.$("modeNote").textContent, /^Planning chat · talks it through, reads links, searches the web; changes no files/, "the page says what a message will become");
     page.$("input").value = "I want to build a small CLI tool";
     page.$("sendBtn").click();
     await page.until(() => page.w.document.querySelector(".final"), "the model's reply");
@@ -424,6 +425,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     page.$("input").value = "and what about tests?";
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(page.$("sendBtn").disabled, false, "Send is on although the open project is not set up");
+    assert.match(page.$("modeNote").textContent, /^Planning chat/, "a planning chat opened inside a project is still a planning chat");
   });
 
   test("choosing a folder that already has files (but no git yet) versions them — after showing them and asking", async () => {
@@ -520,6 +522,11 @@ describe("app page with a folder open", () => {
     app?.stop();
     rmSync(home, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
+  });
+
+  test("with a project open and no chat selected, the page says a message becomes a coding task there", async () => {
+    await page.until(() => /Coding task/.test(page.$("modeNote").textContent), "the mode label");
+    assert.match(page.$("modeNote").textContent, /^Coding task · can read and edit files in .+ and run checks$/);
   });
 
   test("typing @ opens a popover of matching repo files; picking one inserts its path", async () => {

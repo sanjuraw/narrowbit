@@ -181,6 +181,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .crumb-wrap { max-width: 780px; margin: 0 auto 8px; }
 .crumb { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--panel-2); border: 1px solid var(--line); text-align: left; }
 .crumb:hover { background: var(--line); }
+.mode-note { font-size: 12px; color: var(--muted); margin-left: 6px; }
+.mode-note b { color: var(--text); font-weight: 600; }
 .crumb.empty { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .crumb .ci { font-size: 11px; }
 .crumb #crumbName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
@@ -543,7 +545,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
           <button class="primary" id="cpbarOpen">Choose a folder</button>
         </div>
       </div>
-      <div class="crumb-wrap" id="crumbWrap"><button class="crumb" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button> <button class="crumb hidden" id="ghCrumb" title="Open this repository on GitHub"><span class="ci">⎇</span><span id="ghName"></span></button></div>
+      <div class="crumb-wrap" id="crumbWrap"><button class="crumb" id="crumb" title="Switch repository"><span class="ci">📁</span><span id="crumbName"></span></button> <button class="crumb hidden" id="ghCrumb" title="Open this repository on GitHub"><span class="ci">⎇</span><span id="ghName"></span></button> <span class="mode-note" id="modeNote"></span></div>
       <div class="composer">
         <div id="banner" class="banner hidden"></div>
         <div id="attached" class="attached hidden"></div>
@@ -1731,6 +1733,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     show($("stopBtn"), viewingRun() && !typing);
     show($("sendBtn"), !viewingRun() || typing);
     $("sendBtn").disabled = !S || (!!S.root && !S.initialized && !inDraft) || busy || !!(P && P.unavailable) || notReadyNoRoot;
+    // Which of the two things a message becomes: a planning chat (no files touched) or a coding task in the open project.
+    var planning = inDraft || !(S && S.root);
+    var mn = $("modeNote"); clear(mn);
+    if (S) {
+      mn.appendChild(el("b", { text: planning ? "Planning chat" : "Coding task" }));
+      mn.appendChild(document.createTextNode(planning ? " · talks it through, reads links, searches the web; changes no files" : " · can read and edit files in " + S.name + " and run checks"));
+    }
     $("leadTog").checked = !!(S && S.lead);
     input.placeholder = activeSuggestion() || (view && view.taskId ? "Ask for a follow-up or a change…" : S && S.root ? "Describe a task…" : "What do you want to build? Let's talk it through…");
     $("hint").textContent = !S ? "" : viewingRun() && typing ? "Enter to send — the agent gets it before its next step" : P && P.unavailable ? P.unavailable : notReadyNoRoot ? ((R[S.selection.provider] && R[S.selection.provider].detail) || "not signed in — pick a model that's ready") : !S.root ? "Enter to send · No folder needed yet — we'll create one when you're ready" : "Enter to send · Shift+Enter for a new line";
