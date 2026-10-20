@@ -939,7 +939,7 @@ const fs = require("fs");
 const f = ${JSON.stringify(join(dir, "replies.json"))}, c = ${JSON.stringify(join(dir, "count"))};
 const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
 fs.appendFileSync(${JSON.stringify(join(dir, "resumes.log"))}, (process.argv.includes("--resume") ? "resume" : "fresh") + "\\n");
-fs.appendFileSync(${JSON.stringify(join(dir, "args.log"))}, process.argv.slice(2).join(" ").slice(0, 600) + "\\n");
+fs.appendFileSync(${JSON.stringify(join(dir, "args.log"))}, process.argv.slice(2).join(" ").slice(-1200) + "\\n");
 fs.appendFileSync(${JSON.stringify(join(dir, "models.log"))}, (process.argv[process.argv.indexOf("--model") + 1] || "?") + "\\n");
 fs.appendFileSync(${JSON.stringify(join(dir, "efforts.log"))}, (process.argv[process.argv.indexOf("--effort") + 1] || "?") + "\\n");
 const r = JSON.parse(fs.readFileSync(f, "utf8")); const text = r[Math.min(n, r.length - 1)];
@@ -6570,6 +6570,31 @@ describe("planning chat: a read-only copy of a linked repository, explored with 
       await planningReply(a.taskId, "on codex now", call, "m", "low", undefined, undefined, undefined, undefined, { canRead: false });
       assert.equal(seen[3].readDir, undefined, "a provider that cannot be fenced in gets no file tools");
     } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+describe("coding tasks: links in the message are read and sent with it", () => {
+  const html = (s) => ({ status: 200, headers: { "content-type": "text/html" }, body: Buffer.from(`<html><title>T</title><body><p>${s}</p></body></html>`) });
+  async function run(readLinks) {
+    const { readEvents } = await dist("memory.js");
+    const { root, p } = tinyRepo();
+    const fake = fakeClaude([JSON.stringify({ action: "done", summary: "ok" })]);
+    try {
+      const r = await runTask(p, "what does https://example.com/page say?", { claudeBin: fake.bin, boss: false, persistent: false, maxSteps: 3, readLinks, linkTransport: async () => html("PAGE_FACT_42") });
+      const events = readEvents(p, r.taskId);
+      const notes = events.filter((e) => e.type === "tool_result").map((e) => e.summary).join(" | ");
+      const parts = events.filter((e) => e.type === "model_call").flatMap((e) => e.meta?.context?.parts ?? []);
+      return { parts, notes };
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  }
+
+  test("with readLinks the page text goes in the first prompt, labelled as web content; without it nothing is fetched", async () => {
+    const on = await run(true);
+    assert.ok(on.parts.some((x) => x.kind === "links" && x.tokens > 0), "the pages are itemised as their own part of the first prompt: " + JSON.stringify(on.parts));
+    assert.match(on.notes, /link https:\/\/example\.com\/page: /);
+    const off = await run(false);
+    assert.ok(!off.parts.some((x) => x.kind === "links"), "nothing fetched without the option");
+    assert.doesNotMatch(off.notes, /link https/);
   });
 });
 

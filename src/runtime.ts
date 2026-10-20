@@ -24,6 +24,7 @@ import { runHook } from "./hooks.js";
 import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
 import { termsOf } from "./terms.js";
+import { readLinks } from "./linkreader.js";
 import { estimateTokens, sha1, sh, shortId, isGitInternal, isGitConfigInclude, isNarrowbitOwn, isSecretFile, realRel, sourceText, visible } from "./util.js";
 import { verify } from "./verify.js";
 
@@ -533,6 +534,10 @@ export interface RuntimeOptions {
    * JSON mode. Claude (on unless false): answer through a structured-output tool call (`--json-schema`), which removed
    * tool-call markup and looping replies (history entry 64). */
   jsonActions?: boolean;
+  /** Fetch the public web pages linked in each message and send them with it (linkreader.ts). The app turns it on. */
+  readLinks?: boolean;
+  /** Tests only: stands in for the network when reading links. */
+  linkTransport?: import("./linkreader.js").Transport;
   /** Effort per tier, overriding `effort` for that tier's calls (e.g. { explore: "low" }: the cheap reading phase thinks less).
    * Claude's hidden thinking is ~2/3 of its output tokens; measured in bench.ts before it is used anywhere by default. */
   effortByTier?: Partial<Record<"explore" | "execute" | "escalate", string>>;
@@ -839,7 +844,15 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const sentBefore = new Set<string>(prior.flatMap((e) => (Array.isArray(e.meta?.mentionKeys) ? (e.meta!.mentionKeys as string[]) : [])));
   const resolvedMentions = resolveMentions(p, parseMentions(taskText));
   const mentionKey = (r: { path: string | null; content: string | null }) => `${r.path}:${sha1(r.content ?? "")}`;
-  const mentionBlock = renderMentions(resolvedMentions.filter((r) => r.content === null || !sentBefore.has(mentionKey(r))));
+  // Links in the message (public web only, see linkreader.ts): the model cannot browse, so Narrowbit fetches them and puts the
+  // page text, labelled as web content and never instructions, ahead of the task like an @ mention.
+  const linkedPages = opts.readLinks ? await readLinks(taskText, opts.linkTransport) : null;
+  if (linkedPages?.results.length) {
+    appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: linkedPages.results.map((r) => `link ${r.url}: ${r.ok ? r.note ?? "read" : `not read (${r.note ?? "failed"})`}`).join("\n") });
+  }
+  const mentionsOnly = renderMentions(resolvedMentions.filter((r) => r.content === null || !sentBefore.has(mentionKey(r))));
+  const linkBlock = linkedPages?.block ? linkedPages.block + "\n\n" : "";
+  const mentionBlock = mentionsOnly + linkBlock;
   if (resolvedMentions.length) {
     const missed = resolvedMentions.filter((r) => r.content === null).map((r) => `@${r.token}`);
     appendEvent(p, taskId, {
@@ -883,11 +896,12 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // tokens are on the call itself.
   type Part = { kind: string; label: string; tokens: number };
   const part = (kind: string, label: string, text: string): Part => ({ kind, label, tokens: estimateTokens(text) });
+  const mentionParts = [...(mentionsOnly ? [part("mentions", "files mentioned with @", mentionsOnly)] : []), ...(linkBlock ? [part("links", "web pages linked in your message", linkBlock)] : [])];
   let nextParts: Part[] = [];
   const scoutBlock = scoutReport ? `Research report from a scout who has already read the code (unverified; trust the code over it, and read a file yourself before editing it):\n${scoutReport}\n\n` : "";
   const memoryBlock = opts.memoryInject && opts.memoryInject !== "path" && !continuing ? digestForFirstPrompt(p, taskText, opts.memoryInject) : "";
   let nextPrompt = `Task: ${taskText}\n\n${mentionBlock}${memoryBlock ? memoryBlock + "\n\n" : ""}${plan ? renderPlanForWorker(plan) + "\n\n" : ""}${scoutBlock}Respond with your first action as JSON.`;
-  nextParts = [part("task", "your request", taskText), ...(mentionBlock ? [part("mentions", "files mentioned with @", mentionBlock)] : []), ...(memoryBlock ? [part("memory", "project notes (experimental)", memoryBlock)] : []), ...(plan ? [part("plan", "the lead's plan", renderPlanForWorker(plan))] : []), ...(scoutReport ? [part("scout", "the scout's research report", scoutReport)] : []), part("instructions", "Narrowbit's instructions (sent once per session)", systemPrompt)];
+  nextParts = [part("task", "your request", taskText), ...mentionParts, ...(memoryBlock ? [part("memory", "project notes (experimental)", memoryBlock)] : []), ...(plan ? [part("plan", "the lead's plan", renderPlanForWorker(plan))] : []), ...(scoutReport ? [part("scout", "the scout's research report", scoutReport)] : []), part("instructions", "Narrowbit's instructions (sent once per session)", systemPrompt)];
   // callModel's costUsd is Claude Code's CUMULATIVE cost for the whole resumed session, not a
   // per-call charge (confirmed by direct measurement: it strictly increases call over call, unlike
   // every other usage field, which the Anthropic API reports per-request). Track the running total
@@ -914,10 +928,10 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       freshSessionPending = false;
       cumulativeCost = Number(last?.meta?.sessionCost ?? 0);
       nextPrompt = `Follow-up request from the user: ${taskText}\n\n${mentionBlock}The earlier work is already in the files. Respond with your next action as JSON.`;
-      nextParts = [part("task", "your follow-up", taskText), ...(mentionBlock ? [part("mentions", "files mentioned with @", mentionBlock)] : [])];
+      nextParts = [part("task", "your follow-up", taskText), ...mentionParts];
     } else {
       const digest = digestWithMemory(p, taskId, cfg.budget.initial);
-      nextParts = [part("task", "your follow-up", taskText), ...(mentionBlock ? [part("mentions", "files mentioned with @", mentionBlock)] : []), part("digest", "summary of the earlier work", digest), part("instructions", "Narrowbit's instructions", systemPrompt)];
+      nextParts = [part("task", "your follow-up", taskText), ...mentionParts, part("digest", "summary of the earlier work", digest), part("instructions", "Narrowbit's instructions", systemPrompt)];
       nextPrompt = `You are continuing an earlier task (original goal: ${goal}). Progress so far:\n\n${digest}\n\nNew request from the user: ${taskText}\n\n${mentionBlock}Don\'t explore the project again: the files, notes and memory above are what the earlier work already established. Use grep/search to find the specific part you need, and read only that. Use read/grep/search for anything you need in full. Respond with your next action as JSON.`;
     }
   }

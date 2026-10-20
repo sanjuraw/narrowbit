@@ -594,6 +594,7 @@ export function startUi(opts: UiOptions) {
       reviewOnly,
       planApproval,
       continueTask: continueTask ?? undefined,
+      readLinks: true,
       attachments,
       isolate: isolate || !!(continueTask && readIsolated(p, continueTask)),
       onEvent: (event) => {
