@@ -2,6 +2,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync, lstatSync, readlinkSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { describe, loadSchedules, runDue, runSchedule, saveSchedules } from "./schedule.js";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { dirname, basename, join, relative, resolve } from "node:path";
@@ -921,6 +922,22 @@ export function startUi(opts: UiOptions) {
           }
           return json(res, 200, { message: r.message, state: state() });
         }
+        case "/api/schedules": {
+          // The schedules you set up with `narrowbit schedule add`, with when they next run and what the last run did.
+          return json(res, 200, { schedules: loadSchedules().map((x) => ({ id: x.id, name: x.name, when: describe(x), project: basename(x.root), enabled: x.enabled, lastRunAt: x.lastRunAt ?? null, lastOutcome: x.lastOutcome ?? null, lastTaskId: x.lastTaskId ?? null })) });
+        }
+        case "/api/schedules/run": {
+          // "Run now": starts it in the background (a separate copy; check the result in the task list).
+          const x = loadSchedules().find((y) => y.id === String(body.id ?? ""));
+          if (!x) return json(res, 404, { error: "no such schedule" });
+          void runSchedule(x).then((r) => {
+            const list = loadSchedules();
+            const t = list.find((y) => y.id === x.id);
+            if (t) { t.lastRunAt = new Date().toISOString(); t.lastOutcome = r.outcome; if (r.taskId) t.lastTaskId = r.taskId; saveSchedules(list); }
+            broadcast({ type: "log", line: `${x.name}: finished (${r.outcome})` });
+          });
+          return json(res, 200, { started: true });
+        }
         case "/api/preview/probe": {
           // Which common dev-server ports on this machine are answering (loopback only, a quarter-second each): the preview
           // pane offers them as one-click choices. The app never starts anything for this; you (or the agent, with your approval) do.
@@ -1321,6 +1338,13 @@ export function startUi(opts: UiOptions) {
     } catch { /* an unparseable address is refused by the handler */ }
     als.run(winFor(id), () => { void handler(req, res); });
   });
+
+  // While the app is open it also runs scheduled tasks that are due (schedule.ts); a lock keeps this and the OS timer from both running one.
+  const scheduleTimer = setInterval(() => {
+    runDue(new Date(), runSchedule, (title, body) => broadcast({ type: "log", line: `${title}: ${body}` })).catch(() => {});
+  }, 5 * 60_000);
+  scheduleTimer.unref();
+  server.once("close", () => clearInterval(scheduleTimer));
 
   server.listen(opts.port, "127.0.0.1", () => {
     const port = (server.address() as { port: number }).port;

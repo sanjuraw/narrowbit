@@ -6121,3 +6121,99 @@ describe("hooks: commands of your own around the agent's edits and the end of a 
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+describe("scheduled tasks: a task of your own on a timer", () => {
+  async function withHome(fn) {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-sch-")));
+    const old = process.env.HOME;
+    process.env.HOME = home;
+    try { await fn(home); } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  }
+  const at = (y, mo, d, h, mi) => new Date(y, mo - 1, d, h, mi, 0, 0);   // local time, as the schedule uses
+  const proj = () => { const { root } = tinyRepo(); return root; };
+
+  test("the most recent scheduled time is found for hourly, daily, weekday and weekly schedules", async () => {
+    const { lastOccurrence } = await dist("schedule.js");
+    const eq = (a, b) => assert.equal(a.getTime(), b.getTime(), `${a} vs ${b}`);
+    eq(lastOccurrence({ every: "day", at: "02:00" }, at(2026, 10, 20, 10, 0)), at(2026, 10, 20, 2, 0));
+    eq(lastOccurrence({ every: "day", at: "02:00" }, at(2026, 10, 20, 1, 0)), at(2026, 10, 19, 2, 0));
+    eq(lastOccurrence({ every: "weekday", at: "02:00" }, at(2026, 10, 19, 1, 0)), at(2026, 10, 16, 2, 0));   // Monday 01:00 -> Friday
+    eq(lastOccurrence({ every: "weekday", at: "02:00" }, at(2026, 10, 18, 12, 0)), at(2026, 10, 16, 2, 0));  // Sunday -> Friday
+    eq(lastOccurrence({ every: "week", at: "02:00", day: 1 }, at(2026, 10, 21, 9, 0)), at(2026, 10, 19, 2, 0)); // Wednesday -> Monday
+    eq(lastOccurrence({ every: "hour", at: "30" }, at(2026, 10, 20, 10, 10)), at(2026, 10, 20, 9, 30));
+    eq(lastOccurrence({ every: "hour", at: "30" }, at(2026, 10, 20, 10, 40)), at(2026, 10, 20, 10, 30));
+  });
+
+  test("a schedule validates what it is given, does not run for a time before it was made, runs once per occurrence, and is skipped when off", async () => {
+    const { addSchedule, isDue, loadSchedules, saveSchedules } = await dist("schedule.js");
+    await withHome(async () => {
+      const root = proj();
+      const ok = { name: "nightly", root, task: "Run the tests and fix what failed", every: "day", at: "02:00" };
+      for (const bad of [{ name: "" }, { task: " " }, { every: "monthly" }, { at: "25:00" }, { every: "hour", at: "75" }, { every: "week", day: "someday" }, { root: "/nonexistent" }])
+        assert.throws(() => addSchedule({ ...ok, ...bad }), Error, JSON.stringify(bad));
+      const created = at(2026, 10, 20, 10, 0);
+      const s = addSchedule(ok, created);
+      assert.throws(() => addSchedule(ok, created), /already a schedule named/);
+      assert.equal(isDue(s, at(2026, 10, 20, 11, 0)), false, "its 02:00 today already passed before it was made");
+      assert.equal(isDue(s, at(2026, 10, 21, 2, 1)), true, "the next 02:00 has come");
+      const list = loadSchedules();
+      list[0].lastRunAt = at(2026, 10, 21, 2, 1).toISOString();
+      saveSchedules(list);
+      assert.equal(isDue(loadSchedules()[0], at(2026, 10, 21, 9, 0)), false, "already ran for that occurrence");
+      assert.equal(isDue(loadSchedules()[0], at(2026, 10, 22, 2, 5)), true, "and again the day after");
+      list[0].enabled = false; saveSchedules(list);
+      assert.equal(isDue(loadSchedules()[0], at(2026, 10, 25, 2, 5)), false, "off");
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+
+  test("run-due runs what is due once, records the result, tells the user, and a second run-due at the same time does not start it again", async () => {
+    const { addSchedule, runDue, loadSchedules, schedulesFile } = await dist("schedule.js");
+    await withHome(async (home) => {
+      const root = proj();
+      const created = at(2026, 10, 20, 10, 0);
+      addSchedule({ name: "nightly", root, task: "fix tests", every: "day", at: "02:00" }, created);
+      addSchedule({ name: "weekly", root, task: "audit", every: "week", at: "03:00", day: "mon" }, created);
+      const calls = [], notes = [];
+      const run = async (s) => { calls.push(s.name); return { outcome: "done", taskId: "rt-fake-1" }; };
+      const now = at(2026, 10, 21, 2, 30);   // Wednesday: nightly is due, weekly (Monday) is not
+      const r1 = await runDue(now, run, (t, b) => notes.push([t, b]));
+      assert.deepEqual(r1.ran, ["nightly"]);
+      assert.deepEqual(calls, ["nightly"]);
+      const s = loadSchedules().find((x) => x.name === "nightly");
+      assert.equal(s.lastOutcome, "done"); assert.equal(s.lastTaskId, "rt-fake-1");
+      assert.match(notes[0][0], /nightly/); assert.match(notes[0][1], /finished \(done\)/);
+      assert.deepEqual((await runDue(now, run)).ran, [], "the same occurrence is not run again");
+      // a run-due that finds another one still working leaves at once
+      writeFileSync(join(home, ".narrowbit", "schedules.lock"), "");
+      const later = at(2026, 10, 22, 2, 30);
+      const locked = await runDue(later, run);
+      assert.deepEqual(locked.ran, []); assert.match(locked.skipped[0], /already working/);
+      assert.equal(calls.length, 1);
+      assert.equal(statSync(schedulesFile()).mode & 0o777, 0o600, "the schedules file is private");
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+
+  test("the launchd job calls run-due every ten minutes, and the schedule command adds, lists, disables and removes", async () => {
+    const { plistText } = await dist("schedule.js");
+    const t = plistText("/usr/local/bin/node", "/Users/a & b/Narrowbit/bin/narrowbit.js", "/tmp/l.log");
+    assert.match(t, /<string>schedule<\/string><string>run-due<\/string>/);
+    assert.match(t, /<key>StartInterval<\/key><integer>600<\/integer>/);
+    assert.match(t, /a &amp; b/, "paths are escaped");
+    await withHome(async (home) => {
+      const root = proj();
+      const nb = (...a) => spawnSync(process.execPath, [BIN, ...a], { cwd: root, encoding: "utf8", env: { ...process.env, HOME: home } });
+      const add = nb("schedule", "add", "nightly", "--task", "Run the tests and fix what failed", "--every", "day", "--at", "02:00");
+      assert.equal(add.status, 0, add.stderr);
+      assert.match(nb("schedule").stdout, /nightly — every day at 02:00/);
+      assert.equal(nb("schedule", "add", "x", "--every", "day").status, 2, "no task: refused");
+      assert.equal(nb("schedule", "disable", "nightly").status, 0);
+      assert.match(nb("schedule", "list").stdout, /\(off\)/);
+      assert.match(nb("schedule", "run-due").stdout, /nothing due/);
+      assert.equal(nb("schedule", "remove", "nightly").status, 0);
+      assert.match(nb("schedule").stdout, /no schedules/);
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+});

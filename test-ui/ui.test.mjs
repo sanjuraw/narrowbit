@@ -1949,6 +1949,44 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { page.close(); }
   });
 
+  test("the settings drawer lists scheduled tasks with their last result and runs one now; with none it shows how to add one", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const reply = (j) => ({ ok: true, status: 200, json: async () => j, text: async () => JSON.stringify(j) });
+    let list = [];
+    const started = [];
+    const page = await openPage(app.url, { route: (u, o) => {
+      if (u.endsWith("/api/schedules")) return reply({ schedules: list });
+      if (u.endsWith("/api/schedules/run")) { started.push(JSON.parse(o.body).id); return reply({ started: true }); }
+      return null;
+    } });
+    try {
+      await page.until(() => page.$("settingsBtn"), "the settings button");
+      page.$("settingsBtn").click();
+      await page.until(() => /narrowbit schedule add/.test(page.$("schedList").textContent), "the empty schedule list with the command to add one");
+      list = [{ id: "sc-abc123", name: "nightly", when: "nightly — every day at 02:00", project: "demo", enabled: true, lastRunAt: new Date().toISOString(), lastOutcome: "done", lastTaskId: "rt-1" }];
+      page.$("closeDrawer").click();
+      page.$("settingsBtn").click();
+      await page.until(() => /demo/.test(page.$("schedList").textContent), "the schedule (not the empty hint, which also says nightly)");
+      assert.match(page.$("schedList").textContent, /demo/);
+      assert.match(page.$("schedList").textContent, /done/);
+      [...page.$("schedList").querySelectorAll("button")].find((b) => b.textContent === "Run now").click();
+      await page.until(() => started.length === 1, "the run-now request");
+      assert.deepEqual(started, ["sc-abc123"]);
+      await new Promise((r) => setTimeout(r, 300));
+    } finally { page.close(); }
+  });
+
+  test("the schedules endpoints need the app token, list what is saved, and refuse an unknown id", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const post = (h, path, b) => fetch(`${app.base}${path}`, { method: "POST", headers: h, body: JSON.stringify(b) });
+    assert.equal((await post({ "content-type": "application/json" }, "/api/schedules", {})).status, 401);
+    assert.equal((await post({ "content-type": "application/json" }, "/api/schedules/run", { id: "x" })).status, 401);
+    const list = await (await post(H, "/api/schedules", {})).json();
+    assert.ok(Array.isArray(list.schedules));
+    assert.equal((await post(H, "/api/schedules/run", { id: "sc-nope" })).status, 404);
+  });
+
   test("an approval answer that did not go through gives the buttons back, says so, and sends again on the next click", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });

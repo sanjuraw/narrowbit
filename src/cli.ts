@@ -1,4 +1,7 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { attachmentKind } from "./attachments.js";
@@ -33,6 +36,7 @@ import { Tasks, type TaskRecord } from "./tasks.js";
 import { fmtNum, launcherPage, now, sh, visible, writeProjectFile, stateText } from "./util.js";
 import { verify, verifyRecord } from "./verify.js";
 import { configuredHooks, HOOK_NAMES, type HookName } from "./hooks.js";
+import { addSchedule, describe, loadSchedules, plistText, runDue, runSchedule, saveSchedules, scheduleLogDir } from "./schedule.js";
 import { redactCommand } from "./redact.js";
 import { covered, editsSince, type Grant } from "./approvals.js";
 import { trustConfig, trustRepo, untrustedForUnattended, untrustedReason } from "./trust.js";
@@ -63,7 +67,7 @@ function parseArgs(argv: string[]): Args {
 
 const VALUE_FLAGS = new Set([
   "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "rerank-weight", "rerank-top", "skip",
-  "max-steps", "attach", "scout", "memory-inject", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description", "env",
+  "max-steps", "task", "every", "at", "day", "attach", "scout", "memory-inject", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description", "env",
 ]);
 
 const HELP = `narrowbit — a local, context-managed coding agent
@@ -142,6 +146,7 @@ const HELP = `narrowbit — a local, context-managed coding agent
 
   narrowbit train [--commits 150] [--skip N]   learn ranking weights from this repo's history (local, no model calls)
   narrowbit eval [--commits 40] [--rerank]   offline selection benchmark over git history (--rerank A/Bs a hosted decision model)
+  narrowbit schedule [add|list|remove|run|run-due|install|uninstall]   tasks of your own on a timer (separate copy, checks only)
   narrowbit hooks [set|clear <afterEdit|afterTask> "<command>"]   commands of your own that run after each edit / when a task ends
   narrowbit benchmark init            write a benchmark task template (benchmark.json)
   narrowbit benchmark run <file> [--only id,..] [--arms native,narrowbit] [--dry-run]
@@ -722,6 +727,74 @@ export async function main(argv: string[]): Promise<number> {
         out(`  ${pr.padEnd(11)} ${src === "env" ? `set (from $${info.keyEnv})` : src === "file" ? "set (saved)" : "not set"}${!src && info.keyUrl ? `   — get one at ${info.keyUrl}` : ""}`);
       }
       return 0;
+    }
+    case "schedule": {
+      // Tasks of your own on a timer; see schedule.ts. Every run is unattended, in a separate copy, checks and read-only commands only.
+      const sub = pos[0];
+      const find = (key: string | undefined) => loadSchedules().find((x) => x.id === key || x.name === key);
+      if (!sub || sub === "list") {
+        const list = loadSchedules();
+        if (!list.length) out("no schedules. Example: narrowbit schedule add nightly --task \"Run the tests and fix what failed\" --every day --at 02:00");
+        for (const x of list) out(`${x.id}  ${describe(x)}\n      ${x.root}\n      ${x.lastRunAt ? `last run ${x.lastRunAt}${x.lastOutcome ? ` — ${x.lastOutcome}` : ""}${x.lastTaskId ? ` (${x.lastTaskId})` : ""}` : "never run"}`);
+        return 0;
+      }
+      if (sub === "add") {
+        try {
+          const x = addSchedule({ name: pos[1] ?? "", root: resolve(strFlag(args, "root") ?? p.root), task: strFlag(args, "task") ?? "", every: strFlag(args, "every") ?? "", at: strFlag(args, "at"), day: strFlag(args, "day") });
+          out(`added: ${describe(x)}\nIt only runs while something calls "narrowbit schedule run-due" on a timer: "narrowbit schedule install" sets that up (macOS), and the app does it while it is open.`);
+          return 0;
+        } catch (e: any) {
+          process.stderr.write(`narrowbit: ${e.message}\n`);
+          return 2;
+        }
+      }
+      if (sub === "remove" || sub === "enable" || sub === "disable") {
+        const x = find(pos[1]);
+        if (!x) { process.stderr.write(`no schedule "${pos[1] ?? ""}" (see: narrowbit schedule list)\n`); return 2; }
+        const list = loadSchedules();
+        if (sub === "remove") saveSchedules(list.filter((y) => y.id !== x.id));
+        else { list.find((y) => y.id === x.id)!.enabled = sub === "enable"; saveSchedules(list); }
+        out(`${sub === "remove" ? "removed" : `${sub}d`}: ${x.name}`);
+        return 0;
+      }
+      if (sub === "run-due" || sub === "run") {
+        const notify = (title: string, body: string) => { try { spawnSync("osascript", ["-e", `display notification ${JSON.stringify(body)} with title ${JSON.stringify(title)}`], { timeout: 5000 }); } catch { /* no desktop session */ } };
+        if (sub === "run") {
+          const x = find(pos[1]);
+          if (!x) { process.stderr.write(`no schedule "${pos[1] ?? ""}"\n`); return 2; }
+          const r = await runSchedule(x);
+          const list = loadSchedules();
+          const t = list.find((y) => y.id === x.id);
+          if (t) { t.lastRunAt = new Date().toISOString(); t.lastOutcome = r.outcome; if (r.taskId) t.lastTaskId = r.taskId; saveSchedules(list); }
+          out(`${x.name}: ${r.outcome}${r.taskId ? ` (${r.taskId})` : ""}`);
+          return 0;
+        }
+        const r = await runDue(new Date(), runSchedule, notify);
+        out(r.ran.length ? `ran: ${r.ran.join(", ")}` : r.skipped.length ? r.skipped.join("; ") : "nothing due");
+        return 0;
+      }
+      if (sub === "install" || sub === "uninstall") {
+        const plist = join(homedir(), "Library", "LaunchAgents", "dev.narrowbit.schedule.plist");
+        const uid = String(process.getuid?.() ?? 501);
+        if (sub === "uninstall") {
+          if (!process.env.NARROWBIT_NO_LAUNCHCTL) spawnSync("launchctl", ["bootout", `gui/${uid}`, plist]);
+          rmSync(plist, { force: true });
+          out("removed the timer (your schedules are kept)");
+          return 0;
+        }
+        mkdirSync(dirname(plist), { recursive: true });
+        writeFileSync(plist, plistText(process.execPath, resolve(dirname(fileURLToPath(import.meta.url)), "..", "bin", "narrowbit.js"), join(scheduleLogDir(), "launchd.log")));
+        mkdirSync(scheduleLogDir(), { recursive: true });
+        if (!process.env.NARROWBIT_NO_LAUNCHCTL) {
+          spawnSync("launchctl", ["bootout", `gui/${uid}`, plist]);
+          const r = spawnSync("launchctl", ["bootstrap", `gui/${uid}`, plist], { encoding: "utf8" });
+          if (r.status !== 0) { process.stderr.write(`wrote ${plist} but launchctl refused it: ${(r.stderr || "").trim()}\n`); return 1; }
+        }
+        out(`installed: a timer checks every 10 minutes (${plist}). Remove it with: narrowbit schedule uninstall`);
+        return 0;
+      }
+      process.stderr.write("usage: narrowbit schedule [list | add <name> --task \"...\" --every hour|day|weekday|week [--at 02:00] [--day mon] [--root <dir>] | remove|enable|disable <name> | run <name> | run-due | install | uninstall]\n");
+      return 2;
     }
     case "hooks": {
       // Commands of your own that run after each applied edit (afterEdit) and when a task ends (afterTask); see hooks.ts.

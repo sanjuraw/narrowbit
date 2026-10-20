@@ -147,6 +147,7 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; display: inline-block; }
 .chap-wrap { position: relative; } .chap-list { position: absolute; top: 28px; right: 0; z-index: 20; min-width: 230px; max-width: 360px; max-height: 60vh; overflow: auto; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 4px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
 .chap-list button { display: block; width: 100%; text-align: left; border: 0; background: transparent; color: var(--text); padding: 5px 9px; border-radius: 7px; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .chap-list button:hover { background: var(--panel); }
+.sched-row { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); } .sched-row:first-child { border-top: 0; }
 .side-tasks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 2px; } .side-lbl { color: var(--muted); font-size: 12px; } .side-chip { font-size: 12px; padding: 3px 9px; border-radius: 12px; } .o-done { color: var(--ok); } .o-blocked, .o-error { color: var(--bad); } .o-stopped, .o-unfinished, .o-max_steps { color: var(--warn); } .o-running { color: var(--accent); }
 .side-foot { border-top: 1px solid var(--line); padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
 .side-foot .settings { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 6px 6px; text-align: left; border-radius: 8px; width: 100%; }
@@ -617,6 +618,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
     <h3>GitHub<small>Where "Push" sends your commits, and who it counts as</small></h3>
     <div id="githubBox" class="muted" style="font-size:12.5px;padding:4px 0 14px"></div>
+    <h3>Scheduled tasks<small>Tasks of your own on a timer. Each run works in a separate copy and only runs the project's checks.</small></h3>
+    <div id="schedList" class="muted" style="font-size:12.5px;padding:4px 0 14px"></div>
     <h3>Connectors<small>MCP servers the agent can call out to — GitHub, Slack, anything with an MCP server</small></h3>
     <div id="connectorsList"></div>
     <div class="connector-form">
@@ -1380,7 +1383,20 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     execute: ["2", "Execute — edits and verifies", "var(--t-execute)"],
     escalate: ["3", "Lead — plans, reviews, takes over when stuck", "var(--t-escalate)"]
   };
-  function openDrawer() { show($("drawer"), true); show($("scrim"), true); }
+  // The schedules made with "narrowbit schedule add" (or any someone else's tool wrote): their time, their last result, and "Run now".
+  function loadSchedules() {
+    api("/api/schedules", {}).then(function (r) {
+      var box = clear($("schedList"));
+      if (!r.schedules.length) { box.appendChild(el("div", { text: "None yet. Add one in a terminal, for example:" })); box.appendChild(el("code", { cls: "mono", text: 'narrowbit schedule add nightly --task "Run the tests and fix what failed" --every day --at 02:00' })); return; }
+      r.schedules.forEach(function (x) {
+        var last = x.lastRunAt ? "last run " + ago(x.lastRunAt) + (x.lastOutcome ? " — " + x.lastOutcome : "") : "not run yet";
+        box.appendChild(el("div", { cls: "sched-row" },
+          el("div", { style: "flex:1;min-width:0" }, el("strong", { text: x.name }), el("div", { text: x.when + " · " + x.project }), el("div", { cls: "muted", text: last })),
+          el("button", { cls: "ghost", title: "Run it now, in a separate copy", onclick: function (e) { var b = e.currentTarget; b.disabled = true; api("/api/schedules/run", { id: x.id }).then(function () { showToast(x.name + " started — see the task list when it finishes"); }).catch(function (er) { banner("bad", er.message); }).then(function () { b.disabled = false; }); } }, "Run now")));
+      });
+    }).catch(function () { /* the list is a convenience */ });
+  }
+  function openDrawer() { show($("drawer"), true); show($("scrim"), true); loadSchedules(); }
   function closeDrawer() { show($("drawer"), false); show($("scrim"), false); }
   $("settingsBtn").onclick = function () { openDrawer(); loadGithub(); }; $("modelChip").onclick = function () { openDrawer(); loadGithub(); };
   $("closeDrawer").onclick = closeDrawer; $("scrim").onclick = function () { closeDrawer(); closeSide(); };
