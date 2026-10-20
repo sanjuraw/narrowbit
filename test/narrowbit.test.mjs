@@ -6426,5 +6426,21 @@ describe("planning chat: a model that cannot resume its session still gets the e
       assert.ok(shown.endsWith("THE_END"), "the reply is not cut at 300 characters");
     } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
   });
+
+  test("the planning chat charges each call only what it added to Claude's running total", async () => {
+    const { planningReply, draftsPaths } = await dist("planning.js");
+    const { readEvents } = await dist("memory.js");
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-plan-")));
+    const old = process.env.HOME; process.env.HOME = home;
+    try {
+      const totals = [0.10, 0.25, 0.30, 0.05];
+      let n = 0;
+      const call = async () => ({ text: "x", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: totals[n++], turns: 1, isError: false });
+      const a = await planningReply(undefined, "one", call, "m", "low");
+      for (const m of ["two", "three", "four"]) await planningReply(a.taskId, m, call, "m", "low");
+      const costs = readEvents(draftsPaths(), a.taskId).filter((e) => e.type === "model_call").map((e) => Math.round(e.tokens.costUsd * 100) / 100);
+      assert.deepEqual(costs, [0.10, 0.15, 0.05, 0.05], "0.30 -> 0.05 is a restart: that call's own cost");
+    } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  });
 });
 

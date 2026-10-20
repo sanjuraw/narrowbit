@@ -85,12 +85,17 @@ export async function planningReply(
     resume,
     claudeBin,
   });
+  // Claude reports the running total of its process, not the cost of this call; charge only what this call added
+  // (a lower total means a new process started, so that total is the call's own cost).
+  const lastCum = [...prior].reverse().find((e) => e.type === "model_call" && typeof e.meta?.cumCost === "number")?.meta?.cumCost as number | undefined;
+  const total = res.costUsd ?? 0;
+  const callCost = lastCum !== undefined && total >= lastCum ? total - lastCum : total;
   appendEvent(p, id, {
     actor: "model",
     type: "model_call",
     summary: res.isError ? `planning: model call failed${res.errorMessage ? ` — ${res.errorMessage.slice(0, 200)}` : ""}` : `done: ${res.text.slice(0, 30000)}`,
-    tokens: { model, role: "planning-chat", inputTokens: res.usage.input, cacheCreationTokens: res.usage.cacheCreate, cacheReadTokens: res.usage.cacheRead, outputTokens: res.usage.output, costUsd: res.costUsd ?? 0 },
-    meta: { sessionId: res.sessionId ?? sessionId },
+    tokens: { model, role: "planning-chat", inputTokens: res.usage.input, cacheCreationTokens: res.usage.cacheCreate, cacheReadTokens: res.usage.cacheRead, outputTokens: res.usage.output, costUsd: callCost },
+    meta: { sessionId: res.sessionId ?? sessionId, cumCost: total },
   });
   if (res.isError) return { taskId: id, text: "", isError: true, errorMessage: res.errorMessage };
   appendEvent(p, id, { actor: "system", type: "decision", summary: "outcome: done", meta: { outcome: "done", summary: res.text.slice(0, 1500) } });
