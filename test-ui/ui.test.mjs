@@ -383,6 +383,22 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     await page.until(() => page.w.document.querySelector(".final"), "the reopened draft's reply");
   });
 
+  test("a chat saved with only the start of a reply on its reply event shows the longer text from its outcome event", async () => {
+    const { readdirSync, readFileSync, writeFileSync } = await import("node:fs");
+    const root = join(home, ".narrowbit", "drafts", ".narrowbit", "runtime");
+    const dir = readdirSync(root).map((d) => join(root, d, "events.jsonl")).find((f) => /CLI tool/.test(readFileSync(f, "utf8")));
+    const rows = readFileSync(dir, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const call = rows.find((e) => e.type === "model_call" && e.summary.startsWith("done: "));
+    const full = call.summary.slice(6);
+    call.summary = "done: " + full.slice(0, 10);
+    rows.find((e) => e.type === "decision" && e.meta?.outcome === "done").meta.summary = full;
+    writeFileSync(dir, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const sess = [...page.w.document.querySelectorAll("#sessions .sess")].find((x) => /CLI tool/.test(x.textContent));
+    page.$("newBtn").click();
+    sess.click();
+    await page.until(() => page.w.document.querySelector(".final")?.textContent === full, "the full text from the outcome event");
+  });
+
   test("'Choose a folder' turns the draft into a real local git repo — no GitHub involved — and seeds the first task", async () => {
     const target = join(home, "Projects", "cli-tool-test");
     page.$("cpbarOpen").click();

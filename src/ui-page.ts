@@ -2199,7 +2199,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       // event's own summary — so replaying a draft must render it here, unlike a normal task's model_call.
       if (e.actor === "model" && e.summary.indexOf("done: ") === 0) {
         var draftAnswer = e.summary.slice(6);
-        add(el("div", { cls: "final-wrap" }, el("div", { cls: "final" }, rich(draftAnswer))));
+        var draftEl = el("div", { cls: "final" }, rich(draftAnswer));
+        view.lastDraft = { el: draftEl, text: draftAnswer };
+        add(el("div", { cls: "final-wrap" }, draftEl));
       }
       return;
     }
@@ -2280,6 +2282,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     }
     if (e.type === "blocker" && e.actor === "model") { add(el("div", { cls: "final-wrap" }, el("div", { cls: "blocked-tag", text: "Couldn't finish" }), el("div", { cls: "final" }, rich(String(e.summary).replace(/^Blocked:\s*/i, ""))))); return; }
     if (e.type === "decision" && typeof m.outcome === "string") {
+      // Chats saved before the log kept whole replies have only the first 300 characters on the reply event; the outcome
+      // event carries up to 1500, so show that when it is the same text, longer.
+      if (view.lastDraft && typeof m.summary === "string" && m.summary.length > view.lastDraft.text.length && m.summary.indexOf(view.lastDraft.text) === 0) {
+        view.lastDraft.el.textContent = "";
+        view.lastDraft.el.appendChild(rich(m.summary));
+      }
+      view.lastDraft = null;
       view.working = null; placeWorking();
       var LBL = { done: "Done", blocked: "Blocked", error: "Error", stopped: "Stopped", max_steps: "Step budget reached" };
       var line = el("div", { cls: "outcome" },
