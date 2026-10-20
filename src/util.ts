@@ -89,10 +89,6 @@ export function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r(?!\n)/g, "");
 }
 
-export function clamp(n: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, n));
-}
-
 /**
  * Files the repository's own git config pulls in (`[include] path = …`, `[includeIf …]`, and anything those include).
  * They are config: a filter or other program named there is run by git exactly as if it were in .git/config, so the
@@ -337,4 +333,10 @@ export function killWithGrace(child: ChildProcess, graceMs = 2000): void {
   }, graceMs);
   t.unref();
   child.once("close", () => clearTimeout(t));
+}
+
+/** Claude reports the running total of its process, not the cost of one call: what this call added to it. A lower total means a
+ * new process started, so that total is the call's own cost. */
+export function costDelta(total: number, previous: number | undefined): number {
+  return previous !== undefined && total >= previous ? total - previous : total;
 }

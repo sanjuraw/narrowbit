@@ -24,7 +24,7 @@ import { readLines } from "./package.js";
 import { grepText, searchText } from "./query.js";
 import { termsOf } from "./terms.js";
 import { readLinks } from "./linkreader.js";
-import { estimateTokens, sha1, sh, shortId, isGitInternal, isGitConfigInclude, isNarrowbitOwn, isSecretFile, realRel, sourceText, visible } from "./util.js";
+import { costDelta, estimateTokens, sha1, sh, shortId, isGitInternal, isGitConfigInclude, isNarrowbitOwn, isSecretFile, realRel, sourceText, visible } from "./util.js";
 import { verify } from "./verify.js";
 
 /**
@@ -1054,7 +1054,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     // codex-cli.ts) — adopt whatever it actually used so the next call's --resume targets it.
     if (res.sessionId) sessionId = res.sessionId;
     const totalCost = res.costUsd ?? cumulativeCost;
-    const callCost = Math.max(0, totalCost - cumulativeCost);
+    const callCost = costDelta(totalCost, cumulativeCost);
     cumulativeCost = totalCost;
     appendEvent(p, taskId, {
       actor: "model",

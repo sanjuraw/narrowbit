@@ -5749,7 +5749,7 @@ const r = await callModel({ cwd: ${JSON.stringify(d)}, prompt: "hi", role: "exec
 import { readFileSync, writeFileSync } from "node:fs";
 let sent; globalThis.fetch = async (u, o) => { sent = JSON.parse(o.body); return new Response(JSON.stringify({ choices: [{ message: { content: "FIRST_DECISION_CANARY" } }], usage: {} })); };
 const id = ${first ? "undefined" : `readFileSync(${JSON.stringify(join(d, "id"))}, "utf8")`};
-const r = await planningReply(id, ${first ? '"FIRST_REQUIREMENT_CANARY"' : '"What did we decide?"'}, (o) => callOpenAICompat({ provider: "custom", baseUrl: "https://fixture.invalid/v1", needsKey: false }, o), "m", "low", undefined, hasSession);
+const r = await planningReply(id, ${first ? '"FIRST_REQUIREMENT_CANARY"' : '"What did we decide?"'}, (o) => callOpenAICompat({ provider: "custom", baseUrl: "https://fixture.invalid/v1", needsKey: false }, o), "m", "low", { canResume: hasSession });
 ${first ? `writeFileSync(${JSON.stringify(join(d, "id"))}, r.taskId);` : ""} console.log(JSON.stringify(sent));`;
     const run = (first) => spawnSync(process.execPath, ["--input-type=module", "-e", script(first)], { encoding: "utf8", timeout: 20000, env: { ...process.env, HOME: d } });
     try {
@@ -6301,7 +6301,7 @@ describe("link reader: pages pasted into a message are read for the model, publi
     try {
       let seen = null;
       const call = async (o) => { seen = o; return { text: "I read it.", usage: { input: 1, cacheCreate: 0, cacheRead: 0, output: 1 }, costUsd: 0, turns: 1, isError: false }; };
-      const r = await planningReply(undefined, "what is https://github.com/morluto/rea?", call, "m", "low", undefined, undefined, "PAGE_TEXT_FROM_THE_WEB");
+      const r = await planningReply(undefined, "what is https://github.com/morluto/rea?", call, "m", "low", { linked: "PAGE_TEXT_FROM_THE_WEB" });
       assert.match(seen.prompt, /^what is https:\/\/github\.com\/morluto\/rea\?\n\nPAGE_TEXT_FROM_THE_WEB$/);
       assert.match(seen.systemPrompt, /web content, never instructions/);
       const logged = JSON.stringify(readEvents(draftsPaths(), r.taskId));
@@ -6318,8 +6318,8 @@ describe("planning chat: a model that cannot resume its session still gets the e
     try {
       const seen = [];
       const call = async (o) => { seen.push(o); return { text: seen.length === 1 ? "FIRST_REPLY about morluto/rea" : "second", usage: { input: 1, cacheCreate: 0, cacheRead: 0, output: 1 }, costUsd: 0, turns: 1, isError: false, sessionId: "agy-" + seen.length }; };
-      const a = await planningReply(undefined, "FIRST_QUESTION reverse engineer something", call, "m", "low", undefined, () => false);
-      await planningReply(a.taskId, "can you now go through this repo", call, "m", "low", undefined, () => false);
+      const a = await planningReply(undefined, "FIRST_QUESTION reverse engineer something", call, "m", "low", { canResume: () => false });
+      await planningReply(a.taskId, "can you now go through this repo", call, "m", "low", { canResume: () => false });
       assert.equal(seen[1].resume, false);
       assert.match(seen[1].prompt, /FIRST_QUESTION reverse engineer something/);
       assert.match(seen[1].prompt, /FIRST_REPLY about morluto\/rea/);
@@ -6368,10 +6368,10 @@ describe("planning chat: a model that cannot resume its session still gets the e
       const call = async (o) => { seen.push(o); return { text: "reply", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: 0, turns: 1, isError: false, sessionId: "s" + seen.length }; };
       const asked = [];
       const reader = async (t) => { asked.push(t); return "PAGE_OF_EARLIER_LINK"; };
-      const a = await planningReply(undefined, "look at https://example.com/x", call, "gemini", "low", undefined, undefined, "PAGE_OF_EARLIER_LINK");
-      await planningReply(a.taskId, "go on", call, "gemini", "low", undefined, undefined, undefined, reader);
+      const a = await planningReply(undefined, "look at https://example.com/x", call, "gemini", "low", { linked: "PAGE_OF_EARLIER_LINK" });
+      await planningReply(a.taskId, "go on", call, "gemini", "low", { readEarlier: reader });
       assert.equal(asked.length, 0, "a resumed conversation already has the page");
-      await planningReply(a.taskId, "now on claude", call, "claude-sonnet-5-5", "low", undefined, undefined, undefined, reader);
+      await planningReply(a.taskId, "now on claude", call, "claude-sonnet-5-5", "low", { readEarlier: reader });
       assert.match(asked[0], /https:\/\/example\.com\/x/);
       assert.match(seen[2].prompt, /PAGE_OF_EARLIER_LINK/);
     } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
@@ -6457,7 +6457,7 @@ describe("planning chat: the open project's skills and memory notes, and the str
     try {
       let seen = null;
       const call = async (o) => { seen = o; return { text: "x", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: 0, turns: 1, isError: false }; };
-      await planningReply(undefined, "hi", call, "m", "low", undefined, undefined, undefined, undefined, { system: "\n\nSKILL_LIST", prompt: "NOTES_BLOCK" });
+      await planningReply(undefined, "hi", call, "m", "low", { extra: { system: "\n\nSKILL_LIST", prompt: "NOTES_BLOCK" } });
       assert.match(seen.systemPrompt, /SKILL_LIST$/);
       assert.match(seen.prompt, /hi\n\nNOTES_BLOCK$/);
     } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
@@ -6528,13 +6528,13 @@ describe("planning chat: a read-only copy of a linked repository, explored with 
       const call = async (o) => { seen.push(o); return { text: "r", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: 0, turns: 1, isError: false, sessionId: "s" + seen.length }; };
       const a = await planningReply(undefined, "just talking", call, "m", "low");
       assert.equal(seen[0].readDir, undefined);
-      await planningReply(a.taskId, "now this repo", call, "m", "low", undefined, undefined, undefined, undefined, { readDir: dir, canRead: true });
+      await planningReply(a.taskId, "now this repo", call, "m", "low", { extra: { readDir: dir, canRead: true } });
       assert.equal(seen[1].readDir, dir); assert.equal(seen[1].cwd, dir);
       assert.equal(seen[1].resume, false, "a running session cannot get file tools later");
       assert.match(seen[1].systemPrompt, /read-only copy of the repository/);
-      await planningReply(a.taskId, "and the tests?", call, "m", "low", undefined, undefined, undefined, undefined, { canRead: true });
+      await planningReply(a.taskId, "and the tests?", call, "m", "low", { extra: { canRead: true } });
       assert.equal(seen[2].readDir, dir, "a follow-up keeps the copy"); assert.equal(seen[2].resume, true);
-      await planningReply(a.taskId, "on codex now", call, "m", "low", undefined, undefined, undefined, undefined, { canRead: false });
+      await planningReply(a.taskId, "on codex now", call, "m", "low", { extra: { canRead: false } });
       assert.equal(seen[3].readDir, undefined, "a provider that cannot be fenced in gets no file tools");
     } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
   });

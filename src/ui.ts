@@ -900,7 +900,12 @@ export function startUi(opts: UiOptions) {
               else hit.x.note = `${hit.x.note ?? ""}; could not copy it for exploring (${c.error})`;
             }
           }
-          const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.escalate || sel.tiers.execute, sel.effort, undefined, resolveEndpoint(sel.provider, ga) ? hasSession : sel.provider === "antigravity" ? () => false : undefined, linked.block || undefined, async (earlierText) => (await readLinks(earlierText)).block, { ...planningContext(win().root, task), readDir, canRead });
+          const r = await planningReply(continueTask, task, providerCallFor(sel.provider, ga), sel.tiers.escalate || sel.tiers.execute, sel.effort, {
+            canResume: resolveEndpoint(sel.provider, ga) ? hasSession : sel.provider === "antigravity" ? () => false : undefined,
+            linked: linked.block || undefined,
+            readEarlier: async (earlierText) => (await readLinks(earlierText)).block,
+            extra: { ...planningContext(win().root, task), readDir, canRead },
+          });
           const links = linked.results.map((x) => ({ url: x.url, ok: x.ok, note: x.note }));
           if (r.isError) return json(res, 400, { error: r.errorMessage ?? "the model call failed", taskId: r.taskId });
           return json(res, 200, { taskId: r.taskId, reply: r.text, links, notes: win().root ? r.notes ?? [] : [] });

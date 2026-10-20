@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { paths, type Paths } from "./config.js";
 import { appendEvent, fold, readEvents } from "./events.js";
 import { initProject } from "./project.js";
-import { gitArgs } from "./util.js";
+import { costDelta, gitArgs } from "./util.js";
 import type { ModelCallOptions, ModelCallResult } from "./providers/claude-cli.js";
 
 /**
@@ -54,6 +54,25 @@ export function splitNotes(reply: string): { text: string; notes: { type: string
   return { text: kept.join("\n").replace(/\s+$/, ""), notes };
 }
 
+export interface PlanningOptions {
+  claudeBin?: string;
+  /** For providers that keep the conversation in this process's memory: false = that session is gone (the app restarted). */
+  canResume?: (sessionId: string) => boolean;
+  /** Text of pages the user linked, already fetched (linkreader.ts); sent to the model after the message, and not saved in the log. */
+  linked?: string;
+  /** When the conversation is replayed (the model could not resume), reads the links in the earlier messages again: the page text is not kept in the log. */
+  readEarlier?: (earlierUserText: string) => Promise<string>;
+  /** What the open project adds (planningcontext.ts): `system` joins the instructions of a new session, `prompt` goes with this message. */
+  extra?: {
+    system?: string;
+    prompt?: string;
+    /** a read-only copy of a linked repository (repocopy.ts) */
+    readDir?: string;
+    /** whether this provider can read it (Claude and Antigravity can, fenced to that folder) */
+    canRead?: boolean;
+  };
+}
+
 /** One turn of a planning conversation: appends the user's message, calls the model, appends and returns its reply. */
 export async function planningReply(
   taskId: string | undefined,
@@ -61,16 +80,9 @@ export async function planningReply(
   call: (o: ModelCallOptions) => Promise<ModelCallResult>,
   model: string,
   effort: string,
-  claudeBin?: string,
-  /** For providers that keep the conversation in this process's memory: false = that session is gone (the app restarted). */
-  canResume?: (sessionId: string) => boolean,
-  /** Text of pages the user linked, already fetched (linkreader.ts); sent to the model after the message, and not saved in the log. */
-  linked?: string,
-  /** When the conversation is replayed (the model could not resume), reads the links in the earlier messages again: the page text is not kept in the log. */
-  readEarlier?: (earlierUserText: string) => Promise<string>,
-  /** What the open project adds (planningcontext.ts): `system` joins the instructions of a new session, `prompt` goes with this message. */
-  extra?: { system?: string; prompt?: string; /** a read-only copy of a linked repository (repocopy.ts) */ readDir?: string; /** whether this provider can read it (Claude and Antigravity can, fenced to that folder) */ canRead?: boolean },
+  opts: PlanningOptions = {},
 ): Promise<PlanningReply> {
+  const { claudeBin, canResume, linked, readEarlier, extra } = opts;
   const p = draftsPaths();
   const id = taskId ?? `pl-${randomUUID().slice(0, 8)}`;
   const prior = readEvents(p, id);
@@ -111,11 +123,9 @@ export async function planningReply(
     resume,
     claudeBin,
   });
-  // Claude reports the running total of its process, not the cost of this call; charge only what this call added
-  // (a lower total means a new process started, so that total is the call's own cost).
   const lastCum = [...prior].reverse().find((e) => e.type === "model_call" && typeof e.meta?.cumCost === "number")?.meta?.cumCost as number | undefined;
   const total = res.costUsd ?? 0;
-  const callCost = lastCum !== undefined && total >= lastCum ? total - lastCum : total;
+  const callCost = costDelta(total, lastCum);
   const { text: replyText, notes } = splitNotes(res.text); // the log and the page get the reply without its NOTE lines
   appendEvent(p, id, {
     actor: "model",
@@ -137,11 +147,6 @@ export function draftDigest(taskId: string): string {
     .filter((e) => e.type === "decision" && (e.actor === "user" || (e.actor === "model" && e.summary.startsWith("done: "))))
     .map((e) => (e.actor === "user" ? `User: ${e.summary}` : `Assistant: ${e.summary.slice(6, 2006)}`));
   return turns.join("\n\n");
-}
-
-export function draftGoal(taskId: string): string | null {
-  const state = fold(taskId, readEvents(draftsPaths(), taskId));
-  return state.goal ?? null;
 }
 
 /**
