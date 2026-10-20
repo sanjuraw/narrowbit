@@ -639,7 +639,7 @@ describe("app page with a folder open", () => {
     const pg = await openPage(app.url);
     try {
       const row = await pg.until(() => [...pg.w.document.querySelectorAll("#sessions .sess-row")].find((r) => /My renamed chat/.test(r.textContent)), "the renamed chat");
-      assert.deepEqual([...row.querySelectorAll(".sess-acts button")].map((b) => b.title), ["Rename", "Delete"]);
+      assert.deepEqual([...row.querySelectorAll(".sess-acts button")].map((b) => b.title), ["Open beside this conversation", "Rename", "Delete"]);
       row.querySelector('[title="Delete"]').click();
       assert.match(pg.$("sessions").textContent, /Delete this chat\?/);
       const cancel = [...pg.$("sessions").querySelectorAll("button")].find((b) => b.textContent === "Cancel");
@@ -980,8 +980,10 @@ describe("layout rules that broke before (checked in the page's own CSS)", () =>
   test("every local response carries the security headers and a strict content-security-policy", async () => {
     const res = await fetch(app.url);
     assert.equal(res.headers.get("x-content-type-options"), "nosniff");
-    assert.equal(res.headers.get("x-frame-options"), "DENY");
+    // The page may be framed by the app itself (split view) and by nobody else; every data response refuses framing outright.
+    assert.equal(res.headers.get("x-frame-options"), "SAMEORIGIN");
     assert.match(res.headers.get("content-security-policy"), /default-src 'self'/);
+    assert.match(res.headers.get("content-security-policy"), /frame-ancestors 'self'/);
   });
 
   test("API calls without the launch token are refused", async () => {
@@ -1804,7 +1806,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     } finally { listener.close(); }
     const page = await fetch(app.url);
     const csp = page.headers.get("content-security-policy");
-    assert.match(csp, /frame-src http:\/\/localhost:\* http:\/\/127\.0\.0\.1:\*(;|$)/);
+    assert.match(csp, /frame-src 'self' http:\/\/localhost:\* http:\/\/127\.0\.0\.1:\*(;|$)/);
     assert.doesNotMatch(csp, /frame-src[^;]*(https?:\/\/\*|\*\.|example)/);
   });
 
@@ -1839,6 +1841,74 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
       assert.match(other.w.sessionStorage.getItem("nb.win") || "", /^[a-z0-9]{12}$/);
       await new Promise((r) => setTimeout(r, 300));
     } finally { other.close(); }
+  });
+
+  test("split view: a second conversation in a frame beside this one, with its own id and no sidebar; opening a session beside it names that session; Preview and split exclude each other", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const reply = (j) => ({ ok: true, status: 200, json: async () => j, text: async () => JSON.stringify(j) });
+    const page = await openPage(app.url, { route: (u) => (u.endsWith("/api/preview/probe") ? reply({ ports: [] }) : null) });
+    try {
+      await page.until(() => page.visible(page.$("splitBtn")), "the split button for an open project");
+      assert.ok(!page.$("app").classList.contains("split"));
+      page.$("splitBtn").click();
+      assert.ok(page.$("app").classList.contains("split"));
+      const frame = page.$("splitPane").querySelector("iframe");
+      const u = new URL(frame.getAttribute("src"), "http://x");
+      assert.equal(u.searchParams.get("t"), app.token);
+      assert.equal(u.searchParams.get("pane"), "1");
+      assert.equal(u.searchParams.get("fresh"), "1", "its own window id, so its own project and conversation");
+      assert.equal(u.searchParams.get("project"), repo);
+      assert.equal(u.searchParams.get("open"), null, "a blank second conversation");
+      // a session row can open beside: the frame is replaced by one that names the session
+      page.w.__nb.view().taskId = null;
+      page.$("splitBtn").click();
+      assert.ok(!page.$("app").classList.contains("split"), "the button toggles it off");
+      assert.equal(page.$("splitPane").children.length, 0, "and the frame is gone (its event stream stops)");
+      // Preview and split never share the right-hand side
+      page.$("splitBtn").click();
+      page.$("prevBtn").click();
+      assert.ok(!page.$("app").classList.contains("split") && page.$("app").classList.contains("prev-open"));
+      page.$("splitBtn").click();
+      assert.ok(page.$("app").classList.contains("split") && !page.$("app").classList.contains("prev-open"));
+      // the pane's own close button asks the page around it to close the split
+      page.w.dispatchEvent(new page.w.MessageEvent("message", { data: { type: "nb-close-split" }, origin: new URL(app.base).origin }));
+      assert.ok(!page.$("app").classList.contains("split"));
+      page.w.dispatchEvent(new page.w.MessageEvent("message", { data: { type: "nb-close-split" }, origin: "http://evil.test" }));
+      page.$("splitBtn").click();
+      page.w.dispatchEvent(new page.w.MessageEvent("message", { data: { type: "nb-close-split" }, origin: "http://evil.test" }));
+      assert.ok(page.$("app").classList.contains("split"), "a message from another origin is ignored");
+      await new Promise((r) => setTimeout(r, 300));
+    } finally { page.close(); }
+    // the page loaded as a pane: no sidebar or side controls, no notifications of its own, one close button
+    const pane = await openPage(`${app.url}&pane=1&fresh=1&project=${encodeURIComponent(repo)}`);
+    try {
+      await pane.until(() => pane.w.document.body.classList.contains("pane"), "pane mode");
+      await pane.until(() => pane.$("crumbName").textContent && !/Choose a folder/.test(pane.$("crumbName").textContent), "the pane's project");
+      const hiddenNow = (id) => pane.$(id).classList.contains("hidden") || pane.w.getComputedStyle(pane.$(id)).display === "none";
+      for (const id of ["splitBtn", "winBtn", "prevBtn", "menuBtn", "themeBtn"]) assert.ok(hiddenNow(id), `${id} is not offered inside a pane`);
+      // (jsdom does not apply !important across rules, so the sidebar rule is checked in the page's own style text; it was also checked in a real browser)
+      const css = [...pane.w.document.querySelectorAll("style")].map((x) => x.textContent).join("\n");
+      assert.match(css, /body\.pane \.app > aside[^{]*\{ display: none !important/, "no sidebar in a pane");
+      assert.match(css, /body\.pane #paneClose \{ display: inline-flex; \}/, "a way to close the pane");
+      const shown = [];
+      pane.w.Notification = class { constructor(t, o) { shown.push([t, o.body]); } };
+      pane.w.Notification.permission = "granted";
+      Object.defineProperty(pane.w.document, "hidden", { configurable: true, get: () => true });
+      pane.w.__nb.stream({ type: "approval", id: "p1", task: "rt-elsewhere", command: "npm test" });
+      assert.deepEqual(shown, [], "the page around the pane notifies; the pane does not (that would be two notices)");
+      await new Promise((r) => setTimeout(r, 300));
+    } finally { pane.close(); }
+  });
+
+  test("the app page can be framed only by the app itself; other responses still refuse framing", async () => {
+    const page = await fetch(app.url);
+    assert.equal(page.headers.get("x-frame-options"), "SAMEORIGIN");
+    const csp = page.headers.get("content-security-policy");
+    assert.match(csp, /frame-ancestors 'self'/);
+    assert.match(csp, /frame-src 'self' http:\/\/localhost:\* http:\/\/127\.0\.0\.1:\*/);
+    const api = await fetch(`${app.base}/api/state`, { headers: { "x-narrowbit-token": app.token } });
+    assert.equal(api.headers.get("x-frame-options"), "DENY", "data responses are never framed");
   });
 
   test("an approval answer that did not go through gives the buttons back, says so, and sends again on the next click", async () => {

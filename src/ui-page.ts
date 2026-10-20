@@ -74,6 +74,15 @@ kbd { font: 11px var(--mono); border: 1px solid var(--line-2); border-bottom-wid
 
 .app { display: grid; grid-template-columns: 264px minmax(0, 1fr); height: 100vh; }
 .app.prev-open { grid-template-columns: 264px minmax(0, 1fr) minmax(320px, 42%); }
+.app.split { grid-template-columns: 264px minmax(0, 1fr) minmax(0, 1fr); }
+.split-pane { display: none; min-width: 0; border-left: 1px solid var(--line); }
+.app.split .split-pane { display: block; }
+.split-frame { width: 100%; height: 100%; border: 0; background: var(--bg); }
+/* The second conversation is this same page in a frame of its own: no sidebar, no side panes, one way out. */
+body.pane .app { grid-template-columns: 1fr; }
+body.pane .app > aside, body.pane #menuBtn, body.pane #themeBtn, body.pane #winBtn, body.pane #splitBtn, body.pane #prevBtn, body.pane #updBar { display: none !important; }
+#paneClose { display: none; } body.pane #paneClose { display: inline-flex; }
+.sess-split { border: 0; background: transparent; color: var(--faint); padding: 3px 6px; border-radius: 6px; font-size: 12px; }
 .prev-pane { display: none; flex-direction: column; min-width: 0; border-left: 1px solid var(--line); background: var(--bg); }
 .app.prev-open .prev-pane { display: flex; }
 .prev-bar { display: flex; gap: 6px; align-items: center; padding: 8px; border-bottom: 1px solid var(--line); }
@@ -489,6 +498,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <button class="pill warn hidden" id="prFixPill" title="Start a task to fix the failing checks">Fix failing checks</button>
       <button class="pill hidden" id="prevBtn" title="Show your running app beside the chat">Preview</button>
       <button class="pill hidden" id="publishPill" title="Create a GitHub repository for this project">Publish to GitHub</button>
+      <button class="ghost hidden" id="splitBtn" aria-label="Split view" title="Show a second conversation beside this one">◫</button>
+      <button class="ghost" id="paneClose" aria-label="Close this pane" title="Close this pane">✕</button>
       <button class="ghost hidden" id="winBtn" aria-label="Open in a new window" title="Open this project in a new window, to work on two tasks side by side">⧉</button>
       <button class="ghost" id="themeBtn" aria-label="Theme"></button>
     </div>
@@ -549,6 +560,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       <div class="hint" id="hint">Enter to send · Shift+Enter for a new line</div>
     </div>
   </main>
+
+  <aside class="split-pane" id="splitPane" aria-label="Second conversation"></aside>
 
   <aside class="prev-pane" id="prevPane" aria-label="Preview">
     <div class="prev-bar">
@@ -708,7 +721,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   var T = new URLSearchParams(location.search).get("t") || "";
   // This window's own id (kept across reloads of it, not shared with other windows or tabs): the server keeps one open
   // project per window, so two windows can show two conversations side by side.
-  var qs = new URLSearchParams(location.search), wantProject = qs.get("project"), fresh = qs.has("fresh");
+  var qs = new URLSearchParams(location.search), wantProject = qs.get("project"), wantOpen = qs.get("open"), fresh = qs.has("fresh"), isPane = qs.has("pane");
   var W = ""; try { W = fresh ? "" : (sessionStorage.getItem("nb.win") || ""); } catch (e) { /* storage blocked */ }
   if (!W) { W = Array.prototype.map.call(crypto.getRandomValues(new Uint8Array(12)), function (b) { return (b % 36).toString(36); }).join(""); try { sessionStorage.setItem("nb.win", W); } catch (e) { /* storage blocked */ } }
   var native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.narrowbit;
@@ -716,6 +729,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   // "Needs your OK" and "finished" notices. The Mac app shows them itself; in a browser they use the web Notification API,
   // only while this tab is in the background, after you allowed it (asked once, when you start your first task).
   function notify(type, text) {
+    if (isPane) return;   // the page around this pane already shows them; two would be two notices for one event
     if (native) { native.postMessage({ type: type, text: text }); return; }
     var N = window.Notification;
     if (!N || N.permission !== "granted" || !document.hidden) return;
@@ -850,8 +864,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     // A local-only project (created via "Choose a folder", never touched GitHub) has no remote at all —
     // offer to publish one instead of just hiding both pills with no way forward.
     show($("publishPill"), !!(S && S.root && S.git && S.git.isRepo && r && !r.hasRemote));
-    show($("prevBtn"), !!(S && S.root));
-    show($("winBtn"), !!(S && S.root));
+    show($("prevBtn"), !!(S && S.root) && !isPane);
+    show($("winBtn"), !!(S && S.root) && !isPane);
+    show($("splitBtn"), !!(S && S.root) && !isPane);
     var key = S && S.root && r && r.repoName ? S.root + "|" + (S.git && S.git.branch) + "|" + r.ahead : "";
     if (key !== prKey) { prKey = key; loadPr(); }
     if (!S || !S.root || !r || !r.hasRemote || !r.ahead) { show(b, false); return; }
@@ -897,6 +912,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     try { localStorage.setItem("nb.preview", href); } catch (e) { /* private mode */ }
   }
   function openPreview() {
+    closeSplit();
     $("app").classList.add("prev-open");
     api("/api/preview/probe", {}).then(function (r) {
       var box = $("prevPorts"); box.textContent = "";
@@ -916,6 +932,24 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   // The current branch's pull request: open one (two clicks, like Push), see its checks at a glance, and turn failing
   // checks into a task. Asked of GitHub when the project, branch or unpushed count changes, and on a click.
   var prInfo = null, prArm = null, prKey = null;
+  // Split view: a second conversation beside this one, inside this window. It is this same page in a frame (so it has its own id,
+  // project and conversation on the server) without its sidebar; the frame is the app's own address, which the page policy allows.
+  function splitUrl(openId) {
+    return "/?t=" + encodeURIComponent(T) + "&pane=1&fresh=1&project=" + encodeURIComponent(S.root) + (openId ? "&open=" + encodeURIComponent(openId) : "");
+  }
+  function closeSplit() { $("app").classList.remove("split"); clear($("splitPane")); }
+  function openSplit(openId) {
+    if (!S || !S.root || isPane) return;
+    $("app").classList.remove("prev-open");
+    var f = document.createElement("iframe");
+    f.className = "split-frame"; f.setAttribute("title", "Second conversation");
+    f.src = splitUrl(openId);
+    clear($("splitPane")).appendChild(f);
+    $("app").classList.add("split");
+  }
+  $("splitBtn").onclick = function () { if ($("app").classList.contains("split")) closeSplit(); else openSplit(null); };
+  $("paneClose").onclick = function () { if (window.parent !== window) window.parent.postMessage({ type: "nb-close-split" }, location.origin); };
+  window.addEventListener("message", function (e) { if (e.origin === location.origin && e.data && e.data.type === "nb-close-split" && !isPane) closeSplit(); });
   // A second window on the same project: each window keeps its own conversation and project, so two tasks can be watched side by side.
   $("winBtn").onclick = function () {
     if (!S || !S.root) return;
@@ -1030,10 +1064,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       var row = el("div", { cls: "sess-row" }, b);
       // Rename/delete act on whatever project is currently open — only offered for a row that's actually
       // in it, so a click can never silently rename or delete a session in some other project.
-      if (!live && sameProject && r.project !== "Planning") {
-        row.appendChild(el("div", { cls: "sess-acts" },
-          el("button", { title: "Rename", "aria-label": "Rename", onclick: function (e) { e.stopPropagation(); renameSession(r, row, b); } }, "✎"),
-          el("button", { cls: "danger", title: "Delete", "aria-label": "Delete", onclick: function (e) { e.stopPropagation(); confirmDelete(r, row, b); } }, "🗑")));
+      if (sameProject && r.project !== "Planning") {
+        var acts = el("div", { cls: "sess-acts" }, el("button", { cls: "sess-split", title: "Open beside this conversation", "aria-label": "Open beside", onclick: function (e) { e.stopPropagation(); openSplit(r.id); } }, "◫"));
+        if (!live) {
+          acts.appendChild(el("button", { title: "Rename", "aria-label": "Rename", onclick: function (e) { e.stopPropagation(); renameSession(r, row, b); } }, "✎"));
+          acts.appendChild(el("button", { cls: "danger", title: "Delete", "aria-label": "Delete", onclick: function (e) { e.stopPropagation(); confirmDelete(r, row, b); } }, "🗑"));
+        }
+        row.appendChild(acts);
       }
       box.appendChild(row);
     });
@@ -2582,7 +2619,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     if (trust) body.trust = true;
     if (confirmCreate) body.confirmCreate = true;
     if (S && !S.root && view && view.taskId) body.taskId = view.taskId;
-    api("/api/repo", body).then(function (st) {
+    return api("/api/repo", body).then(function (st) {
       if (es) { es.close(); es = null; }
       draft = null; S = null; modelLists = {};
       var seed = st.seedTask;
@@ -2730,8 +2767,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
   // A window opened with "Open in new window" names the project it should show; strip that from the address so a reload
   // of this window (which keeps its own project) doesn't switch back to it later.
-  if (wantProject || fresh) { try { history.replaceState(null, "", "/?t=" + encodeURIComponent(T)); } catch (e) { /* not essential */ } }
-  load().then(function () { if (wantProject && S && S.root !== wantProject) openRepo(wantProject); });
+  if (isPane) document.body.classList.add("pane");
+  if (wantProject || fresh || isPane || wantOpen) { try { history.replaceState(null, "", "/?t=" + encodeURIComponent(T)); } catch (e) { /* not essential */ } }
+  load().then(function () {
+    var opening = wantProject && S && S.root !== wantProject ? openRepo(wantProject) : Promise.resolve();
+    // A pane (or window) opened on a particular conversation shows it once the project is there.
+    return opening.then(function () { if (wantOpen && S && S.root) openSession(wantOpen); });
+  });
 })();
 </script>
 </body>

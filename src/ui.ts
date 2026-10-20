@@ -671,7 +671,7 @@ export function startUi(opts: UiOptions) {
       const port = (server.address() as { port: number }).port;
       if (req.headers.host !== `127.0.0.1:${port}` && req.headers.host !== `localhost:${port}`) return json(res, 403, { error: "bad host" });
       if (req.method === "GET" && url.pathname === "/") {
-        res.writeHead(200, { ...SEC_HEADERS, "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-src http://localhost:* http://127.0.0.1:*" });
+        res.writeHead(200, { ...SEC_HEADERS, "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-src 'self' http://localhost:* http://127.0.0.1:*; frame-ancestors 'self'", "x-frame-options": "SAMEORIGIN" });
         return res.end(uiPage());
       }
       if (req.method === "GET" && url.pathname === "/oauth/callback") {
