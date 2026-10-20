@@ -5924,7 +5924,7 @@ describe("installer: a command that npm linked somewhere off PATH is reported, n
   const INSTALL = join(dirname(new URL(import.meta.url).pathname), "..", "scripts", "install.sh");
   const repoRoot = join(dirname(new URL(import.meta.url).pathname), "..");
 
-  function run({ onPath, other }) {
+  function run({ onPath, other, linux }) {
     const base = realpathSync(mkdtempSync(join(tmpdir(), "nb-inst-")));
     const copy = join(base, "Narrowbit");
     const prefix = join(base, "prefix");
@@ -5941,6 +5941,11 @@ esac
 exit 0
 `, { mode: 0o755 });
     if (other) writeFileSync(join(otherBin, "narrowbit"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    // Not a Mac (what CI runs on): `uname` says Linux and there is no Xcode tooling.
+    if (linux) {
+      writeFileSync(join(fakeBin, "uname"), `#!/bin/sh\nif [ "$1" = "-s" ]; then echo Linux; else exec /usr/bin/uname "$@"; fi\n`, { mode: 0o755 });
+      writeFileSync(join(fakeBin, "xcode-select"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    }
     // the machine's own PATH minus any folder that already holds a narrowbit command (this one may have a real install)
     const clean = (process.env.PATH ?? "").split(":").filter((d) => d && !existsSync(join(d, "narrowbit"))).join(":");
     const path = [fakeBin, other ? otherBin : "", onPath ? prefix + "/bin" : "", clean].filter(Boolean).join(":");
@@ -5962,6 +5967,12 @@ exit 0
     const shadowed = run({ onPath: true, other: true });
     assert.equal(shadowed.status, 0);
     assert.match(shadowed.out, /another narrowbit is first on your PATH/);
+  });
+  test("off macOS it does not ask for the Xcode tools or build the app, and still installs the command", () => {
+    const r = run({ onPath: true, linux: true });
+    assert.equal(r.status, 0, r.out.slice(-500));
+    assert.match(r.out, /not needed off macOS/);
+    assert.doesNotMatch(r.out, /Click Install/);
   });
 });
 

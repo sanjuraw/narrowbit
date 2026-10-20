@@ -40,13 +40,15 @@ node_ok() {
   node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=13)?0:1)'
 }
 
-[ "$(uname -s)" = Darwin ] || { echo "Narrowbit's app is macOS-only (the CLI needs Node 22.13+ on any OS)." >&2; }
+IS_MAC=0
+if [ "$(uname -s)" = Darwin ]; then IS_MAC=1; else echo "Narrowbit's app is macOS-only (the CLI needs Node 22.13+ on any OS)." >&2; APP=0; fi
 
 say "Checking prerequisites"
 MISSING=()
-if xcode-select -p >/dev/null 2>&1; then ok "Xcode Command Line Tools (git, Swift)"; else bad "Xcode Command Line Tools"; MISSING+=(clt); fi
+if [ "$IS_MAC" = 0 ]; then ok "Xcode Command Line Tools (not needed off macOS)"
+elif xcode-select -p >/dev/null 2>&1; then ok "Xcode Command Line Tools (git, Swift)"; else bad "Xcode Command Line Tools"; MISSING+=(clt); fi
 if node_ok; then ok "Node $(node -v) (needs 22.13+)"; else bad "Node 22.13 or newer"; MISSING+=(node); fi
-if command -v git >/dev/null 2>&1 && xcode-select -p >/dev/null 2>&1; then ok "git"; else bad "git (comes with the Command Line Tools)"; fi
+if command -v git >/dev/null 2>&1 && { [ "$IS_MAC" = 0 ] || xcode-select -p >/dev/null 2>&1; }; then ok "git"; else bad "git (on a Mac it comes with the Command Line Tools)"; fi
 command -v claude >/dev/null 2>&1 && ok "Claude Code CLI" || echo "  - Claude Code CLI not found (optional: Codex, a local model or a free API key also work)"
 command -v codex >/dev/null 2>&1 && ok "Codex CLI" || echo "  - Codex CLI not found (optional)"
 command -v brew >/dev/null 2>&1 && ok "Homebrew" || echo "  - Homebrew not found (only needed to install Node)"
