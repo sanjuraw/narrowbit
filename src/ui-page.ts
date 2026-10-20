@@ -145,6 +145,8 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .sess .st span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sess .sm { font-size: 11.5px; color: var(--faint); padding-left: 14px; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; display: inline-block; }
+.chap-wrap { position: relative; } .chap-list { position: absolute; top: 28px; right: 0; z-index: 20; min-width: 230px; max-width: 360px; max-height: 60vh; overflow: auto; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 4px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+.chap-list button { display: block; width: 100%; text-align: left; border: 0; background: transparent; color: var(--text); padding: 5px 9px; border-radius: 7px; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .chap-list button:hover { background: var(--panel); }
 .side-tasks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 2px; } .side-lbl { color: var(--muted); font-size: 12px; } .side-chip { font-size: 12px; padding: 3px 9px; border-radius: 12px; } .o-done { color: var(--ok); } .o-blocked, .o-error { color: var(--bad); } .o-stopped, .o-unfinished, .o-max_steps { color: var(--warn); } .o-running { color: var(--accent); }
 .side-foot { border-top: 1px solid var(--line); padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
 .side-foot .settings { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 6px 6px; text-align: left; border-radius: 8px; width: 100%; }
@@ -491,6 +493,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <div class="topbar" id="topbar">
       <button class="ghost" id="menuBtn" aria-label="Show sidebar" title="Show sidebar (Cmd/Ctrl+B)">⇥</button>
       <span class="title" id="title"></span>
+      <span class="chap-wrap"><button class="pill hidden" id="chapBtn" title="Jump to a part of this conversation" aria-haspopup="true"></button><div class="chap-list hidden" id="chapList" role="menu"></div></span>
       <button class="pill hidden" id="planMini"></button>
       <span class="pill hidden" id="treePill"></span>
       <button class="pill warn hidden" id="pushPill" title="Push your commits to the remote"></button>
@@ -1828,7 +1831,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   // ---------- conversation view ----------
   function resetView(taskId) {
     view = { taskId: taskId, seen: {}, step: null, plan: null, tokens: 0, cost: 0, segTokens: 0, segCost: 0, segSteps: 0, segStart: null, approvals: {}, pendingNew: false, working: null, finished: {} };
-    clear($("items")); clearChanges();
+    clear($("items")); clearChanges(); resetChapters();
     // No folder open at all (planning drafts, or just closed a project) has no "initialized" concept —
     // only a freshly created-but-uninitialized project should hide this in favor of the setup card. A
     // missing project's folder hides it in favor of missingCard instead, same reasoning.
@@ -1951,7 +1954,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       iconBtn("again", "Edit and send again", function () { input.value = text; autosize(); input.focus(); input.setSelectionRange(text.length, text.length); }),
       iconBtn("fork", isFirst ? "Start a new task from this" : "Branch the conversation from here (everything before this message, in a new conversation)", function () { branchFrom(text, eventId, isFirst); }));
   }
-  function add(node, force) { follow(function () { $("items").appendChild(node); }, force); placeWorking(); return node; }
+  var lastAdded = null;   // what the latest add() drew (chapters need it: a finished task folds its steps away, so counting children is not enough)
+  function add(node, force) { lastAdded = node; follow(function () { $("items").appendChild(node); }, force); placeWorking(); return node; }
   function setWorking(text) { if (!view) return; view.working = text; placeWorking(); }
   function placeWorking() {
     var old = $("workingRow"); if (old) old.remove();
@@ -2115,7 +2119,45 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     mini.onclick = function () { view.plan.node.scrollIntoView({ behavior: "smooth", block: "start" }); };
   }
 
+  // Chapters: a long conversation gets a list of its parts (what you asked, the plan, each file edited, the checks, the result)
+  // to jump between. A part is whatever the event just drew; nothing is added to the log itself.
+  var chapters = [];
+  function resetChapters() { chapters = []; show($("chapBtn"), false); show($("chapList"), false); }
+  function chapterLabel(e) {
+    var m = e.meta || {};
+    if (e.type === "decision" && e.actor === "user" && !m.midTask) return "You: " + String(m.goal || m.followUp || "").replace(/\s+/g, " ").slice(0, 38);
+    if (e.type === "plan") return "Plan";
+    if (e.type === "tool_call" && m.action === "edit" && m.path) {
+      var seenEdit = chapters.some(function (c) { return c.key === "edit:" + m.path; });
+      return seenEdit ? null : "Edit " + String(m.path).split("/").pop();
+    }
+    if (e.type === "tool_call" && m.action === "verify") return "Checks";
+    if (e.type === "decision" && typeof m.outcome === "string") return ({ done: "Done", blocked: "Blocked", error: "Error", stopped: "Stopped", max_steps: "Step budget reached" })[m.outcome] || m.outcome;
+    return null;
+  }
+  function renderChapters() {
+    var list = clear($("chapList"));
+    chapters.forEach(function (c) {
+      list.appendChild(el("button", { role: "menuitem", title: c.label, onclick: function () { show($("chapList"), false); if (c.node && c.node.scrollIntoView) c.node.scrollIntoView({ block: "start", behavior: "smooth" }); } }, c.label));
+    });
+    var b = $("chapBtn");
+    b.textContent = "☰ " + chapters.length;
+    show(b, chapters.length >= 5);   // short conversations don't need a table of contents
+  }
+  $("chapBtn").onclick = function () { show($("chapList"), $("chapList").classList.contains("hidden")); };
+  document.addEventListener("click", function (e) { if (!e.target.closest || !e.target.closest(".chap-wrap")) show($("chapList"), false); });
   function renderEvent(e, replay) {
+    lastAdded = null;
+    renderEventInner(e, replay);
+    var drawn = lastAdded;
+    var label = view && drawn ? chapterLabel(e) : null;
+    if (label) {
+      var key = e.type === "tool_call" && e.meta && e.meta.action === "edit" ? "edit:" + e.meta.path : null;
+      chapters.push({ label: label, node: drawn, key: key });
+      renderChapters();
+    }
+  }
+  function renderEventInner(e, replay) {
     if (!view || view.seen[e.id]) return;
     view.seen[e.id] = true;
     var m = e.meta || {};

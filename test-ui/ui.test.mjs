@@ -1911,6 +1911,44 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     assert.equal(api.headers.get("x-frame-options"), "DENY", "data responses are never framed");
   });
 
+  test("a long conversation gets a chapter list (asks, plan, each file edited once, checks, result) that scrolls to the part; a short one does not", async () => {
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
+    const page = await openPage(app.url);
+    try {
+      await page.until(() => page.w.__nb && page.w.__nb.view(), "the page's conversation view");
+      const nb = page.w.__nb, doc = page.w.document;
+      const v = nb.view(); v.taskId = "rt-chap"; v.pendingNew = false;
+      let n = 0;
+      const ev = (type, actor, summary, meta = {}) => nb.stream({ type: "event", run: "x", event: { id: "c" + ++n, taskId: "rt-chap", at: new Date().toISOString(), actor, type, summary, meta } });
+      const scrolled = [];
+      page.w.Element.prototype.scrollIntoView = function () { scrolled.push(this.textContent.slice(0, 20)); };
+      ev("decision", "user", "go", { goal: "Fix the   parser so trailing commas   survive" });
+      ev("plan", "model", "plan", { steps: [{ text: "read it", status: "pending" }, { text: "fix it", status: "pending" }] });
+      ev("tool_call", "model", "read a.txt", { action: "read", path: "a.txt" });
+      assert.ok(!page.visible(page.$("chapBtn")), "three parts: no table of contents yet");
+      ev("tool_call", "model", "edit util.js", { action: "edit", path: "src/util.js" });
+      ev("tool_call", "model", "edit util.js again", { action: "edit", path: "src/util.js" });
+      ev("tool_call", "model", "edit other.js", { action: "edit", path: "src/other.js" });
+      ev("tool_call", "model", "verify", { action: "verify" });
+      ev("decision", "system", "outcome: done", { outcome: "done", summary: "fixed" });
+      await page.until(() => page.visible(page.$("chapBtn")), "the chapters button");
+      const labels = [...page.$("chapList").querySelectorAll("button")].map((b) => b.textContent);
+      assert.deepEqual(labels, ["You: Fix the parser so trailing commas surv", "Plan", "Edit util.js", "Edit other.js", "Checks", "Done"], "one entry per part; a file edited twice is one chapter");
+      assert.match(page.$("chapBtn").textContent, /6/);
+      assert.ok(page.$("chapList").classList.contains("hidden"));
+      page.$("chapBtn").click();
+      assert.ok(!page.$("chapList").classList.contains("hidden"), "the button opens the list");
+      page.$("chapList").querySelectorAll("button")[2].click();
+      assert.equal(scrolled.length, 1, "choosing a chapter scrolls to it");
+      assert.ok(page.$("chapList").classList.contains("hidden"), "and closes the list");
+      page.$("chapBtn").click();
+      doc.body.click();
+      assert.ok(page.$("chapList").classList.contains("hidden"), "a click elsewhere closes it");
+      await new Promise((r) => setTimeout(r, 800));
+    } finally { page.close(); }
+  });
+
   test("an approval answer that did not go through gives the buttons back, says so, and sends again on the next click", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });
