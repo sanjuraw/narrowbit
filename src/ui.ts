@@ -312,6 +312,13 @@ export interface UiOptions {
   onListening: (url: string) => void;
 }
 
+const CLAUDE_FONTS: Record<string, string> = {
+  "sans.ttf": "AnthropicSans-Romans-Variable-25x258.ttf",
+  "sans-italic.ttf": "AnthropicSans-Italics-Variable-25x258.ttf",
+  "serif.ttf": "AnthropicSerif-Romans-Variable-25x258.ttf",
+  "serif-italic.ttf": "AnthropicSerif-Italics-Variable-25x258.ttf",
+};
+
 export function startUi(opts: UiOptions) {
   const token = randomBytes(24).toString("hex");
   const initialRoot: string | null = opts.root && existsSync(opts.root) ? repoRootOf(opts.root) : (loadRecent()[0] ?? null);
@@ -675,6 +682,15 @@ export function startUi(opts: UiOptions) {
       if (req.method === "GET" && url.pathname === "/") {
         res.writeHead(200, { ...SEC_HEADERS, "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-src 'self' http://localhost:* http://127.0.0.1:*; frame-ancestors 'self'", "x-frame-options": "SAMEORIGIN" });
         return res.end(uiPage());
+      }
+      // Claude's own typefaces, read from the user's installed Claude app when it is there (nothing is copied into
+      // Narrowbit); without them the page falls back to the system fonts.
+      if (req.method === "GET" && url.pathname.startsWith("/fonts/")) {
+        const file = CLAUDE_FONTS[url.pathname.slice(7)];
+        const abs = file ? join("/Applications/Claude.app/Contents/Resources/fonts", file) : "";
+        if (!abs || !existsSync(abs)) { res.writeHead(404, SEC_HEADERS); return res.end(); }
+        res.writeHead(200, { ...SEC_HEADERS, "content-type": "font/ttf", "cache-control": "max-age=86400" });
+        return res.end(readFileSync(abs));
       }
       if (req.method === "GET" && url.pathname === "/oauth/callback") {
         // The user's browser returns here after signing in. No app token (the browser has none): the one-time

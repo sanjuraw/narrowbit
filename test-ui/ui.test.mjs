@@ -1810,6 +1810,18 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     assert.doesNotMatch(csp, /frame-src[^;]*(https?:\/\/\*|\*\.|example)/);
   });
 
+  test("Claude's fonts are served from the installed Claude app when present, only by fixed names, and the page asks for them", async () => {
+    const has = (await import("node:fs")).existsSync("/Applications/Claude.app/Contents/Resources/fonts/AnthropicSerif-Romans-Variable-25x258.ttf");
+    const r = await fetch(`${app.base}/fonts/serif.ttf`);
+    assert.equal(r.status, has ? 200 : 404);
+    if (has) assert.ok((await r.arrayBuffer()).byteLength > 10000);
+    assert.equal((await fetch(`${app.base}/fonts/..%2f..%2fetc%2fpasswd`)).status, 404);
+    assert.equal((await fetch(`${app.base}/fonts/other.ttf`)).status, 404);
+    const html = await (await fetch(app.url)).text();
+    assert.match(html, /font-family: "Anthropic Serif"; src: url\(\/fonts\/serif\.ttf\)/);
+    assert.match(html, /\.final \{[^}]*font-size: 16px/);
+  });
+
   test("every request names this window; 'Open in new window' opens another with its own id on the same project", async () => {
     const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
     await fetch(`${app.base}/api/repo`, { method: "POST", headers: H, body: JSON.stringify({ path: repo }) });

@@ -27,7 +27,8 @@ const PAGE = String.raw`<!doctype html>
   --add-bg: #e7f3ea; --add-fg: #1d6337; --del-bg: #fbeaea; --del-fg: #9f2a2a;
   --shadow: 0 1px 2px rgba(31,30,27,.06), 0 4px 16px rgba(31,30,27,.06);
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
-  --serif: ui-serif, "New York", Georgia, serif;
+  --serif: "Anthropic Serif", ui-serif, "New York", Georgia, serif;
+  --sans: "Anthropic Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -50,8 +51,12 @@ const PAGE = String.raw`<!doctype html>
   --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.25);
 }
 * { box-sizing: border-box; }
+@font-face { font-family: "Anthropic Sans"; src: url(/fonts/sans.ttf); font-weight: 100 900; font-style: normal; }
+@font-face { font-family: "Anthropic Sans"; src: url(/fonts/sans-italic.ttf); font-weight: 100 900; font-style: italic; }
+@font-face { font-family: "Anthropic Serif"; src: url(/fonts/serif.ttf); font-weight: 100 900; font-style: normal; }
+@font-face { font-family: "Anthropic Serif"; src: url(/fonts/serif-italic.ttf); font-weight: 100 900; font-style: italic; }
 html, body { height: 100%; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; overflow: hidden; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; overflow: hidden; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 12px; }
 button:hover:not(:disabled) { background: var(--panel-2); }
@@ -203,8 +208,8 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .msg-actions button:hover { background: var(--panel-2); color: var(--text); }
 .msg-actions svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .msg-user .bubble { background: var(--panel-2); border-radius: 14px; padding: 10px 14px; max-width: 85%; white-space: pre-wrap; word-break: break-word; }
-.narr { margin: 12px 0 4px; font-family: var(--serif); font-size: 15.5px; line-height: 1.55; }
-.final { margin: 16px 0 6px; font-family: var(--serif); font-size: 15.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.narr { margin: 12px 0 4px; font-family: var(--serif); font-size: 16px; line-height: 1.6; }
+.final { margin: 16px 0 6px; font-family: var(--serif); font-size: 16px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
 .final code, .narr code, .bubble code, .plan code, .review code { font-family: var(--mono); font-size: .85em; background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
 .work { margin: 8px 0 4px; }
 .work > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); padding: 3px 8px 3px 4px; border-radius: 8px; user-select: none; }
