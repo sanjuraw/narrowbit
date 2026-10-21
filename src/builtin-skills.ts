@@ -70,4 +70,100 @@ Finish with the tests and type check passing, and a short summary of what moved 
 
 Your final message IS the explanation, so write all of it there. Start with what the code is for and where it sits in the project, then trace the main path step by step (entry point, what calls what, where data is read and written). Refer to files and line numbers so I can follow along. Point out the non-obvious parts: hidden assumptions, surprising behaviour, and anything that looks fragile or wrong. Say plainly what you did not read or are unsure about instead of guessing.`,
   },
+  {
+    name: "Plan a project",
+    description: "Turn an idea into a short plan: who it is for, the riskiest assumptions, phases, and a cheap test for each risk",
+    builtin: true,
+    body: `Help plan the idea described below. Talk it through; change no files.
+
+1. Pin down what you can't assume. Ask at most three questions, only the ones that would change the plan: who it is for, what they would pay or do, and the person's budget, time and skills. If the message already answers them, don't ask.
+2. Say what you are assuming, in two or three lines, so the person can correct you.
+3. List the five biggest risks for this idea (not generic ones), and for each one a cheap way to test it in days, not months. Put the test that could kill the idea first.
+4. Give a phased plan: what to build first, what to leave out, and how the person will know each phase worked.
+5. Use what you can reach. If a link was pasted or a search tool is available, check the facts that matter (prices, competitors, rules) and say where each came from. Mark anything from memory as such.
+
+Finish with the plan in under a page, the three decisions the person has to make next, and, when something was clearly settled, a "NOTE (decision): ..." line for it.`,
+  },
+  {
+    name: "Research a repository",
+    description: "Read a repository properly and report what it is and how it works, naming the files read and what could not be read",
+    builtin: true,
+    body: `Research the repository named below and report what it is and how it works. Read only; change nothing.
+
+1. Start from the README and the manifest (package.json, pyproject.toml or similar), then the folder listing. Say what the project is for in a sentence.
+2. Find the entry points (main files, the command line, the server start) and follow one real path through the code from entry to result.
+3. Read the files that answer the question asked, not just their names. Open the tests and the docs folder when they exist; they say what the authors consider important.
+4. Don't guess. If a file was too large to read fully, was cut off, or can't be opened, say so, and say what that leaves unknown.
+
+Finish with: what it is, how the main path works (with file names), the parts that matter for the question asked, and a plain list of the files you read and the ones you did not.`,
+  },
+  {
+    name: "Add a feature",
+    description: "Add a feature by copying how the project already does something similar, with tests, then run the checks",
+    builtin: true,
+    body: `Add the feature described below.
+
+1. Find the nearest thing the project already does (a similar command, page, endpoint or option) and read it end to end: where it is declared, where it is handled, how it is tested. Copy its pattern and naming rather than inventing a new one.
+2. If the request is unclear in a way that changes what you build, ask one short question first; otherwise state your assumption and go on.
+3. Make the smallest change that delivers the feature. Don't add settings, layers or options nobody asked for, and don't touch unrelated code.
+4. Write the tests in the project's own style: the main use, one edge case, and one failure. Confirm a new test fails without your change.
+5. Run the project's tests and type check, and fix what you broke. Update the README or docs if the feature is something people will use.
+
+Finish with: what you added and where, the pattern you followed, how you checked it, and anything you chose not to do.`,
+  },
+  {
+    name: "Fix a failing CI run",
+    description: "Read the failing CI log, reproduce the failure locally, fix the real cause, and say what could not be reproduced",
+    builtin: true,
+    body: `Fix the failing automated check (CI) described below. If no run is named, look at the most recent failed run on this branch (for GitHub: gh run list, then gh run view --log-failed); if you can't reach it, ask for the log.
+
+1. Read the failing step's log and find the first real error, not the noise after it. Note the operating system, the tool versions and any environment difference from this machine.
+2. Reproduce it here. Run the same command the CI runs. If it passes here, the difference is the environment (another operating system, missing tool, timing, a file that is only on your machine): find that difference instead of guessing.
+3. Fix the cause. Don't skip, loosen or delete the failing check, and don't add a retry unless the failure is truly flaky, and then say so.
+4. Run the project's checks again, and then say what remains unproven (for example: it can only be confirmed by the next CI run).
+
+Finish with: the first error line, the cause in a sentence, what you changed, what you ran to check it, and whether it needs a CI run to be sure.`,
+  },
+  {
+    name: "Write a pull request",
+    description: "Write a clear pull request title and description (and commit message) from the actual change",
+    builtin: true,
+    body: `Write the pull request text for the change described below. If none is named, use the uncommitted changes or the commits since the base branch (git diff, git log). Don't commit or push anything.
+
+1. Read the whole diff first, including the tests, so you describe what changed and not what the branch is called.
+2. Title: one line, in plain words, saying what a user or developer will notice. No ticket-speak.
+3. Description, short: why the change is needed, what it does, how it was checked (the commands you ran and their result), and anything the reviewer should look at closely or that was left out on purpose.
+4. Call out user-visible changes and anything risky (migrations, config, changed defaults) on their own lines.
+5. Also give the commit message in the same plain style, if it hasn't been committed yet.
+
+Finish with the title and description, ready to paste. Don't claim a test passed unless you ran it.`,
+  },
+  {
+    name: "Update dependencies",
+    description: "Update packages one at a time, run the checks after each, and keep only the updates that pass",
+    builtin: true,
+    body: `Update the project's dependencies as described below. If no package is named, find what is outdated (npm outdated, pip list --outdated or the project's equivalent) and work through it.
+
+1. Run the tests and type check first so you know the starting state. If they already fail, say so and stop here.
+2. Update one package at a time (group only packages that must move together). Read its changelog for breaking changes before a major version.
+3. After each update, run the install, the type check and the tests. If something breaks, fix the code if the fix is small and obvious; otherwise undo that update and note why.
+4. Never update everything at once, never edit a lockfile by hand, and don't add new packages.
+5. Check the security warnings (npm audit or the equivalent) before and after, and report the difference.
+
+Finish with: what was updated (old to new version), what was left and why, the check results, and any breaking change a person should know about.`,
+  },
+  {
+    name: "Write documentation",
+    description: "Write or fix a README or doc from the code itself, and say what could not be verified",
+    builtin: true,
+    body: `Write or fix the documentation described below. If none is named, check whether the README matches the code.
+
+1. Read the code and the current docs side by side. The code is the truth: find places where the docs are wrong, out of date or missing something people need first (what it is, how to install it, how to run it, one real example).
+2. Run what you document: the install steps, the commands and the examples. If a step fails or can't be run here, don't write it as if it works; mark it or ask.
+3. Write for someone who has never seen the project: plain words, short sentences, the most useful thing first, an example before a reference table. Keep the existing tone and structure unless it is the problem.
+4. Don't invent features, options or numbers. Every claim should be something you saw in the code or ran.
+5. Make only the changes the request needs; don't rewrite sections that are fine.
+
+Finish with: what you changed, what you checked by running it, and what you could not verify.`,
+  },
 ];
