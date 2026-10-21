@@ -67,7 +67,7 @@ function parseArgs(argv: string[]): Args {
 
 const VALUE_FLAGS = new Set([
   "budget", "root", "reason", "attempt", "result", "files", "note", "commits", "only", "arms", "run", "error-file", "limit", "tags", "baseline", "treatment", "ref", "skip",
-  "max-steps", "task", "every", "at", "day", "attach", "scout", "memory-inject", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description", "env",
+  "max-steps", "task", "every", "at", "day", "attach", "scout", "model", "effort", "claude-bin", "compact-threshold", "provider", "explore", "execute", "escalate", "port", "key-env", "continue", "skill", "description", "env",
 ]);
 
 const HELP = `narrowbit — a local, context-managed coding agent
@@ -101,7 +101,6 @@ const HELP = `narrowbit — a local, context-managed coding agent
       [--review-only]         skip the plan call, still review the diff before "done" (cheaper than full lead mode)
       [--approve-plan]        with lead mode, ask you to approve the plan (or ask for changes) before work starts
       [--attach a.png,b.pdf] show the model images or PDFs (sent on the first call only)
-      [--test-first]       refuse the first source edit until a check has failed (or a test was edited)
       [--isolate]          work in a separate git worktree; your folder changes only when you run: narrowbit apply <task>
       [--boss] [--continue <task-id>]      lead mode (off by default: measured worse for typical tasks):
       model 3 plans first and reviews the diff before "done"; --continue sends a follow-up to an earlier task
@@ -578,11 +577,9 @@ export async function main(argv: string[]): Promise<number> {
         permissionMode: args.flags["allow-checks"] ? "checks" : "ask",
         ask,
         isolate: !!args.flags.isolate,
-        testFirst: !!args.flags["test-first"],
         maxSteps,
         boss: args.flags["boss"] ? true : (cfg.agent?.boss ?? false),
         reviewOnly: !!args.flags["review-only"],
-        memoryInject: ["top", "top-fresh", "path"].includes(String(args.flags["memory-inject"])) ? (args.flags["memory-inject"] as "top" | "top-fresh" | "path") : undefined, // experimental
         planApproval: !!args.flags["approve-plan"],
         continueTask: strFlag(args, "continue"),
         provider: sel.provider,

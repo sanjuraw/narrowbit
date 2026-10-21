@@ -67,10 +67,6 @@ export interface BenchArm {
    * {input, cacheRead, output, turns, tools}). Provider key comes from `keyProvider` via keys.ts, passed as an
    * environment variable and never logged. Used to compare against other harnesses (e.g. DeepSeek Harness). */
   external?: { command: string[]; keyProvider?: string; keyEnv?: string; env?: Record<string, string> };
-  /** runtime arm only: test-first gate (see RuntimeOptions.testFirst). */
-  testFirst?: boolean;
-  /** runtime arm only: effort per tier, e.g. { explore: "low" } (see RuntimeOptions.effortByTier). */
-  effortByTier?: { explore?: string; execute?: string; escalate?: string };
   /** runtime arm only: context size that triggers compaction (see RuntimeOptions.compactThreshold). */
   compactThreshold?: number;
   /** runtime arm only: research in a separate conversation first (see RuntimeOptions.scout). */
@@ -320,7 +316,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
             };
           } else if (arm.runtime) {
             log(`${tag}: running narrowbit's own loop…`);
-            const runOpts = { leadModel: arm.leadModel as any, reviewer: arm.reviewer as any, scout: arm.scout as any, compactThreshold: arm.compactThreshold, testFirst: arm.testFirst, effortByTier: arm.effortByTier, jsonActions: arm.jsonActions, effort: arm.effort, provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss, reviewOnly: arm.reviewOnly };
+            const runOpts = { leadModel: arm.leadModel as any, reviewer: arm.reviewer as any, scout: arm.scout as any, compactThreshold: arm.compactThreshold, jsonActions: arm.jsonActions, effort: arm.effort, provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss, reviewOnly: arm.reviewOnly };
             let result = await runTask(wp, t.prompt, runOpts);
             // A usage limit is not a wrong answer. Wait for the reset and continue the same task (same worktree, same log),
             // so a long unattended run survives a plan's 5-hour window instead of recording a string of bogus failures.

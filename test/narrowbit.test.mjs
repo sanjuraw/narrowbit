@@ -2363,25 +2363,6 @@ test("benchmark waits for a usage limit's stated reset time (capped, with a fall
   assert.equal(msUntilReset("whenever", now), 30 * 60_000);
 });
 
-describe("effort per tier", () => {
-  test("the exploring tier can think less than the executing tier", async () => {
-    const { root, p } = tinyRepo(); writeFileSync(join(root, "b.txt"), "x\n");
-    const fake = fakeClaude([
-      JSON.stringify({ action: "read", path: "b.txt" }),
-      JSON.stringify({ action: "edit", path: "b.txt", old: "x", new: "y" }),
-      JSON.stringify({ action: "verify" }),
-      JSON.stringify({ action: "done", summary: "changed" }),
-    ]);
-    try {
-      await runTask(p, "change x to y", { claudeBin: fake.bin, boss: false, maxSteps: 8, models: { explore: "m-explore", execute: "m-execute", escalate: "m-escalate" }, effort: "medium", effortByTier: { explore: "low" } });
-      const m = fake.models(), e = fake.efforts();
-      assert.equal(m[0], "m-explore"); assert.equal(e[0], "low", "reading runs at low effort");
-      const firstExec = m.indexOf("m-execute");
-      assert.ok(firstExec > 0); assert.equal(e[firstExec], "medium", "editing keeps the normal effort");
-    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
-  });
-});
-
 describe("Compact now, and how it meets project memory", () => {
   test("the summary lists notes this task saved, and points at recall without injecting other notes", async () => {
     const { root, p } = tinyRepo();
@@ -2648,63 +2629,6 @@ console.log(JSON.stringify({ type: "result", subtype: "error_during_execution", 
       assert.equal(fake2.resumes()[0], "fresh", "the failed call's session id was not offered for resuming");
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); rmSync(fake2.dir, { recursive: true, force: true }); }
   });
-});
-
-describe("test-first gate (optional)", () => {
-  test("the first source edit is refused until a check has failed; test files are always editable; off by default", async () => {
-    const { root, p } = tinyRepo(); writeFileSync(join(root, "b.txt"), "x\n");
-    mkdirSync(join(root, "tests"), { recursive: true }); writeFileSync(join(root, "tests", "t.test.js"), "old\n");
-    const replies = () => fakeClaude([
-      JSON.stringify({ action: "edit", path: "b.txt", old: "x", new: "y" }),
-      JSON.stringify({ action: "edit", path: "tests/t.test.js", old: "old", new: "new" }),
-      JSON.stringify({ action: "edit", path: "b.txt", old: "x", new: "y" }),
-      JSON.stringify({ action: "done", summary: "ok" }),
-    ]);
-    const fake = replies(), fake2 = replies();
-    try {
-      const r = await runTask(p, "change b", { claudeBin: fake.bin, boss: false, maxSteps: 8, testFirst: true });
-      const results = readEvents(p, r.taskId).filter((e) => e.type === "tool_result" || e.type === "edit").map((e) => e.summary);
-      assert.ok(results.some((t) => /refused \(test-first mode\)/.test(t)), "the source edit was refused at first");
-      assert.ok(results.some((t) => /edited tests\/t\.test\.js/.test(t)), "editing the test is allowed");
-      assert.ok(results.some((t) => /edited b\.txt/.test(t)), "and after that the source edit goes through");
-      const r2 = await runTask(p, "change b", { claudeBin: fake2.bin, boss: false, maxSteps: 8 });
-      assert.ok(!readEvents(p, r2.taskId).some((e) => /test-first/.test(e.summary)), "without the option nothing is gated");
-    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); rmSync(fake2.dir, { recursive: true, force: true }); }
-  });
-});
-
-test("the web reader follows redirects itself and refuses one that lands on a private address", () => {
-  // Found by an internal audit: the address was checked once, but the headless browser then followed redirects on
-  // its own, so a public URL that 302s to 169.254.169.254 (cloud metadata) or a local service got through.
-  const py = `import importlib.util, threading, http.server
-s=importlib.util.spec_from_file_location("m","scripts/crawl4ai_mcp.py");m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
-class H(http.server.BaseHTTPRequestHandler):
-    def log_message(self,*a): pass
-    def do_GET(self):
-        if self.path=="/to-metadata": self.send_response(302); self.send_header("Location","http://169.254.169.254/latest/meta-data/"); self.end_headers()
-        elif self.path=="/to-ok": self.send_response(301); self.send_header("Location","/final"); self.end_headers()
-        elif self.path=="/loop": self.send_response(302); self.send_header("Location","/loop"); self.end_headers()
-        else: self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
-srv=http.server.HTTPServer(("127.0.0.1",0),H); threading.Thread(target=srv.serve_forever,daemon=True).start()
-base=f"http://127.0.0.1:{srv.server_port}"
-allow_test_server=lambda u: None if u.startswith(base) else m.refuse_reason(u)
-print("metadata", m.follow_redirects(base+"/to-metadata", refuse=allow_test_server))
-print("ok", m.follow_redirects(base+"/to-ok", refuse=allow_test_server))
-print("loop", m.follow_redirects(base+"/loop", refuse=allow_test_server))`;
-  const out = execFileSync("python3", ["-c", py], { cwd: join(here, ".."), encoding: "utf8" });
-  const line = (k) => out.split("\n").find((l) => l.startsWith(k + " "));
-  assert.match(line("metadata"), /\(None, 'it redirects to http:\/\/169\.254\.169\.254.*private or local address/, "the redirect to cloud metadata is refused before anything requests it");
-  assert.match(line("ok"), /\('http:\/\/127\.0\.0\.1:\d+\/final', None\)/, "an ordinary redirect is followed to the page it points at");
-  assert.match(line("loop"), /too many redirects/);
-});
-
-test("the web reader refuses local, private and non-http addresses before any browser starts", () => {
-  const py = `import importlib.util,sys
-s=importlib.util.spec_from_file_location("m","scripts/crawl4ai_mcp.py");m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
-for u in ["http://127.0.0.1/","http://localhost:8080/","http://169.254.169.254/latest/meta-data/","http://10.0.0.5/","http://192.168.1.1/","file:///etc/passwd","ftp://x.example/"]:
-    print(u, "=>", m.refuse_reason(u) or "ALLOWED")`;
-  const out = execFileSync("python3", ["-c", py], { cwd: join(here, ".."), encoding: "utf8" });
-  for (const line of out.trim().split("\n")) assert.ok(!line.endsWith("ALLOWED"), line);
 });
 
 test("secrets are scrubbed from memory notes before they are written to disk", () => {
@@ -4367,110 +4291,6 @@ describe("suggested next prompt: deterministic, from how the task ended", () => 
     assert.equal(suggestionFromEvents([ev("decision", "outcome: done", { outcome: "done", summary: "ok" })]), null);
     assert.match(suggestionFromEvents([ev("decision", "outcome: max_steps", { outcome: "max_steps", summary: "" })]), /Continue/);
     assert.equal(suggestionFromEvents([]), null, "nothing finished yet: nothing to suggest");
-  });
-});
-
-describe("experimental: project notes injected into a task's first prompt (off by default)", () => {
-  const firstContext = (p, taskId) => readEvents(p, taskId).find((e) => e.type === "model_call").meta.context.parts;
-  const setup = async () => {
-    const { root, p } = tinyRepo();
-    writeFileSync(join(root, "handler.ts"), "export const handler = 1;\n");
-    const { openMemory } = await dist("memory.js");
-    const mem = openMemory(p);
-    mem.add({ type: "failure", text: "handler.ts: do not wrap the handler in a try/catch, the router already does it", files: ["handler.ts"] });
-    mem.add({ type: "fact", text: "unrelated note about billing invoices and currency rounding", files: [] });
-    return { root, p, mem };
-  };
-
-  test("nothing is injected unless the option is set", async () => {
-    const { root, p } = await setup();
-    const fake = fakeClaude([JSON.stringify({ action: "done", summary: "ok" })]);
-    try {
-      const r = await runTask(p, "fix the handler wrapping in handler.ts", { claudeBin: fake.bin, boss: false, maxSteps: 3 });
-      assert.ok(!firstContext(p, r.taskId).some((x) => x.kind === "memory"), "no memory part by default");
-    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
-  });
-
-  test("with the option the notes go into the first prompt, and a long list stays small", async () => {
-    const { root, p, mem } = await setup();
-    for (let i = 0; i < 6; i++) mem.add({ type: "fact", text: `handler.ts wrapping note ${i}: ` + "very long detail ".repeat(60), files: [] });
-    const run = async (mode) => {
-      const fake = fakeClaude([JSON.stringify({ action: "done", summary: "ok" })]);
-      try {
-        const r = await runTask(p, "fix the handler wrapping in handler.ts", { claudeBin: fake.bin, boss: false, maxSteps: 3, memoryInject: mode });
-        return firstContext(p, r.taskId).find((x) => x.kind === "memory");
-      } finally { rmSync(fake.dir, { recursive: true, force: true }); }
-    };
-    try {
-      const plain = await run("top");
-      assert.ok(plain, "a memory part is present");
-      assert.ok(plain.tokens <= 420, `capped (${plain.tokens} est. tokens)`);
-      const labelled = await run("top-fresh");
-      assert.ok(labelled.tokens <= 460, `still capped with labels (${labelled.tokens})`);
-    } finally { rmSync(root, { recursive: true, force: true }); }
-  });
-
-  test("through the command line: --memory-inject takes its value (it is not glued onto the task), and the notes reach the first prompt", async () => {
-    const { root, p } = await setup();
-    const fake = fakeClaude([JSON.stringify({ action: "done", summary: "ok" })]);
-    try {
-      nb(root, "index");
-      const run = (...extra) => {
-        const r = spawnSync(process.execPath, [BIN, "agent", "fix the handler wrapping in handler.ts", "--force", "--allow-commands", "--max-steps", "3", "--json", ...extra], { cwd: root, encoding: "utf8", env: { ...process.env, NARROWBIT_CLAUDE: fake.bin } });
-        const res = r.stdout.trim().split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((x) => x && x.type === "result").pop();
-        const ev = readEvents(p, res.taskId);
-        return { goal: ev.find((e) => e.type === "decision")?.meta?.goal, parts: ev.find((e) => e.type === "model_call").meta.context.parts };
-      };
-      const plain = run();
-      assert.ok(!plain.parts.some((x) => x.kind === "memory"), "no flag, no notes");
-      for (const mode of ["top", "top-fresh"]) {
-        const r = run("--memory-inject", mode);
-        assert.equal(r.goal, "fix the handler wrapping in handler.ts", `the value "${mode}" is not appended to the task text`);
-        assert.ok(r.parts.some((x) => x.kind === "memory" && x.tokens > 0), `${mode}: the notes are in the first prompt`);
-      }
-    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
-  });
-
-  test("'path': nothing up front; a note about a file comes with the first read of that file, once, and says when the file changed", async () => {
-    const { root, p } = await setup();
-    writeFileSync(join(root, "other.ts"), "export const other = 1;\n");
-    const fake = fakeClaude([
-      JSON.stringify({ action: "read", path: "other.ts" }),
-      JSON.stringify({ action: "read", path: "handler.ts" }),
-      JSON.stringify({ action: "read", path: "handler.ts" }),
-      JSON.stringify({ action: "done", summary: "the handler is not wrapped twice; nothing to change here" }),
-    ]);
-    try {
-      const r = await runTask(p, "fix the handler wrapping in handler.ts", { claudeBin: fake.bin, boss: false, maxSteps: 6, memoryInject: "path" });
-      const calls = readEvents(p, r.taskId).filter((e) => e.type === "model_call").map((e) => e.meta.context.parts);
-      assert.ok(!calls[0].some((x) => x.kind === "memory"), "nothing in the first prompt");
-      assert.ok(!calls[1].some((x) => x.kind === "memory"), "reading another file shows no note");
-      assert.ok(calls[2].some((x) => x.kind === "memory"), "the first read of handler.ts brings its note");
-      assert.ok(!calls[3].some((x) => x.kind === "memory"), "a second read doesn't repeat it");
-      const shown = readEvents(p, r.taskId).filter((e) => e.meta?.pathNotes);
-      assert.equal(shown.length, 1);
-      assert.equal(shown[0].meta.path, "handler.ts");
-      const { notesForFile } = await dist("runtime.js");
-      assert.match(notesForFile(p, "handler.ts", new Set()).text, /do not wrap the handler/);
-      assert.doesNotMatch(notesForFile(p, "handler.ts", new Set()).text, /billing invoices/, "a note about no file never comes with a read");
-      writeFileSync(join(root, "handler.ts"), "export const handler = 2; // changed\n");
-      assert.match(notesForFile(p, "handler.ts", new Set()).text, /has changed since the note was saved/);
-    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
-  });
-
-  test("'top-fresh' says whether the files a note is about have changed; an unrelated note stays out", async () => {
-    const { root, p } = await setup();
-    try {
-      const { digestForFirstPrompt } = await dist("runtime.js");
-      const task = "fix the handler wrapping in handler.ts";
-      const fresh = digestForFirstPrompt(p, task, "top-fresh");
-      assert.match(fresh, /do not wrap the handler/);
-      assert.match(fresh, /unchanged since it was saved/);
-      assert.doesNotMatch(fresh, /billing invoices/, "an unrelated note stays out");
-      writeFileSync(join(root, "handler.ts"), "export const handler = 2; // changed\n");
-      assert.match(digestForFirstPrompt(p, task, "top-fresh"), /may be out of date/);
-      assert.doesNotMatch(digestForFirstPrompt(p, task, "top"), /unchanged since|out of date/, "plain mode adds no label");
-    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
 

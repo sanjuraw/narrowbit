@@ -514,10 +514,6 @@ export interface RuntimeOptions {
   boss?: boolean;
   /** Skip the up-front plan call but still run the diff review before "done" (see the `boss` doc above). Useful with
    * `reviewer` set to a different model/provider: a cheap second opinion without the plan call's extra cost. */
-  /** Experimental, off by default (the memory token experiment): put the most relevant project notes into a new task's first
-   * prompt, at most about 350 tokens. "top-fresh" also says, per note, whether the files it is about have changed since it was
-   * saved ("you can rely on it" / "may be out of date"). Nothing here is measured to save tokens yet. */
-  memoryInject?: "top" | "top-fresh" | "path";
   reviewOnly?: boolean;
   /** Put the lead's plan to the user before work starts (via `ask`): Approve, or Ask for changes, then one
    * revision. Needs `boss` and `ask`; a no-op otherwise (nobody to ask, or there's no plan to show). */
@@ -533,12 +529,6 @@ export interface RuntimeOptions {
   readLinks?: boolean;
   /** Tests only: stands in for the network when reading links. */
   linkTransport?: import("./linkreader.js").Transport;
-  /** Effort per tier, overriding `effort` for that tier's calls (e.g. { explore: "low" }: the cheap reading phase thinks less).
-   * Claude's hidden thinking is ~2/3 of its output tokens; measured in bench.ts before it is used anywhere by default. */
-  effortByTier?: Partial<Record<"explore" | "execute" | "escalate", string>>;
-  /** Test-first gate (idea from ECC's TDD hook): the first edit to a non-test file is refused until a check has been run and
-   * has failed (a red test), or a test file has been edited first. Off by default; measured in bench.ts. */
-  testFirst?: boolean;
   /** Polled before each model call's follow-up: return true to compact now (the app's "Compact now" button). */
   compactNow?: () => boolean;
   /** Messages the user sent while the task was working: taken (and cleared) before each model call, and checked before "done". */
@@ -563,57 +553,6 @@ export interface RuntimeResult {
   actionCounts: Record<string, number>;
   /** How many times the session was retired and restarted with a deterministic summary. */
   compactions: number;
-}
-
-/**
- * `memoryInject: "path"`: the notes about one file, shown once each, attached to the agent's first read of that file
- * (like a path-scoped rule) instead of being guessed from the task's words up front. At most two per read, each cut short;
- * a note whose file changed since it was saved says so.
- */
-export function notesForFile(p: Paths, file: string, shown: Set<string>): { text: string; ids: string[] } {
-  let mem;
-  try {
-    mem = openMemory(p);
-  } catch {
-    return { text: "", ids: [] };
-  }
-  const hits = mem.load().filter((e) => e.status === "active" && !shown.has(e.id) && (e.files ?? []).includes(file)).slice(-2);
-  if (!hits.length) return { text: "", ids: [] };
-  const lines = hits.map((e) => {
-    shown.add(e.id);
-    const stale = mem.staleFilesOf(e).length ? " [this file has changed since the note was saved: check before relying on it]" : "";
-    return `- (${e.type}) ${e.text.slice(0, 600)}${e.text.length > 600 ? "…" : ""}${stale}`;
-  });
-  return { text: `Notes saved from earlier work on ${file}:\n${lines.join("\n")}`, ids: hits.map((e) => e.id) };
-}
-
-/**
- * The notes injected into a new task's first prompt when `memoryInject` is on: the one or two most relevant to the task text,
- * each cut short, about 200 tokens in all. Only notes that actually match the task (a score above zero) go in.
- */
-export function digestForFirstPrompt(p: Paths, taskText: string, mode: "top" | "top-fresh"): string {
-  let mem;
-  try {
-    mem = openMemory(p);
-  } catch {
-    return "";
-  }
-  const lines: string[] = [];
-  let used = 0;
-  for (const h of mem.relevant(termsOf(taskText), [], 2)) {
-    if (h.score <= 0) continue;
-    let label = "";
-    if (mode === "top-fresh" && h.entry.fileHashes?.length) {
-      label = mem.staleFilesOf(h.entry).length
-        ? " [the files it is about have changed since it was saved: it may be out of date, check before relying on it]"
-        : " [the files it is about are unchanged since it was saved: you can rely on it without re-reading them]";
-    }
-    const line = `- (${h.entry.type}) ${h.entry.text.slice(0, 600)}${h.entry.text.length > 600 ? "…" : ""}${label}`;
-    if (used + line.length > 1300) break;
-    lines.push(line);
-    used += line.length;
-  }
-  return lines.length ? `Notes saved from earlier work on this project:\n${lines.join("\n")}` : "";
 }
 
 /** One discovery call per configured connector, in parallel, at task start only (not per turn).
@@ -736,7 +675,6 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // Repo-relative paths this task has edited, so an approval can say when a command's own definition changed.
   const progress = progressFeed(opts.onProgress);
   const editedPaths = new Set<string>();
-  const notesShown = new Set<string>();
   // Every applied edit, in order (a path can repeat): what an approver needs to tell whether the agent has changed anything
   // since a remembered "allow" was given.
   const editLog: string[] = [];
@@ -894,9 +832,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const mentionParts = [...(mentionsOnly ? [part("mentions", "files mentioned with @", mentionsOnly)] : []), ...(linkBlock ? [part("links", "web pages linked in your message", linkBlock)] : [])];
   let nextParts: Part[] = [];
   const scoutBlock = scoutReport ? `Research report from a scout who has already read the code (unverified; trust the code over it, and read a file yourself before editing it):\n${scoutReport}\n\n` : "";
-  const memoryBlock = opts.memoryInject && opts.memoryInject !== "path" && !continuing ? digestForFirstPrompt(p, taskText, opts.memoryInject) : "";
-  let nextPrompt = `Task: ${taskText}\n\n${mentionBlock}${memoryBlock ? memoryBlock + "\n\n" : ""}${plan ? renderPlanForWorker(plan) + "\n\n" : ""}${scoutBlock}Respond with your first action as JSON.`;
-  nextParts = [part("task", "your request", taskText), ...mentionParts, ...(memoryBlock ? [part("memory", "project notes (experimental)", memoryBlock)] : []), ...(plan ? [part("plan", "the lead's plan", renderPlanForWorker(plan))] : []), ...(scoutReport ? [part("scout", "the scout's research report", scoutReport)] : []), part("instructions", "Narrowbit's instructions (sent once per session)", systemPrompt)];
+  let nextPrompt = `Task: ${taskText}\n\n${mentionBlock}${plan ? renderPlanForWorker(plan) + "\n\n" : ""}${scoutBlock}Respond with your first action as JSON.`;
+  nextParts = [part("task", "your request", taskText), ...mentionParts, ...(plan ? [part("plan", "the lead's plan", renderPlanForWorker(plan))] : []), ...(scoutReport ? [part("scout", "the scout's research report", scoutReport)] : []), part("instructions", "Narrowbit's instructions (sent once per session)", systemPrompt)];
   // callModel's costUsd is Claude Code's CUMULATIVE cost for the whole resumed session, not a
   // per-call charge (confirmed by direct measurement: it strictly increases call over call, unlike
   // every other usage field, which the Anthropic API reports per-request). Track the running total
@@ -933,7 +870,6 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   }
   let reviews = 0;
   const asks = { n: 0 };
-  const gate = { testFirst: !!opts.testFirst, sawRed: false };
   // Tokens the provider adds to every request on its own (its CLI's instructions and tool definitions), measured on the
   // first call of each session. Compaction is about the size of *our* conversation, so this part doesn't count toward it.
   let providerOverhead = 0;
@@ -969,7 +905,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       systemPrompt: freshSessionPending ? systemPrompt : undefined,
       prompt: nextPrompt,
       model: turnModel,
-      effort: opts.effortByTier?.[tierName] ?? effort,
+      effort,
       role,
       claudeBin: opts.claudeBin,
       sessionId,
@@ -1101,7 +1037,6 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
     // unexecuted rather than compounding a mistake the model hasn't seen yet.
     const batchResults: string[] = [];
     const batchLabels: string[] = [];
-    const batchNotes: string[] = [];
     let stopReason: string | null = null;
     let doneRejected: string | null = null;
     let rejectedPart: Part | null = null;
@@ -1200,7 +1135,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       let resultText: string;
       const scriptsBefore = decision.action === "run" || decision.action === "verify" ? scriptFileFingerprint(p.root) : null;
       try {
-        resultText = await executeAction(p, taskId, decision, approveWithContext, opts.ask, asks, gate, opts.signal, progress?.output);
+        resultText = await executeAction(p, taskId, decision, approveWithContext, opts.ask, asks, opts.signal, progress?.output);
       } catch (e: any) {
         resultText = `error: ${String(e?.message ?? e).slice(0, 300)}`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: resultText });
@@ -1216,15 +1151,6 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
         for (const f of scriptsBefore.keys()) if (!after.has(f)) { editedPaths.add(f); editLog.push(f); }
       }
       log(`      → ${resultText.split("\n")[0].slice(0, 100)}`);
-      if (opts.memoryInject === "path" && decision.action === "read" && decision.path && resultText.startsWith("read ")) {
-        const rel = relative(p.root, resolve(p.root, String(decision.path))).split("\\").join("/");
-        const notes = notesForFile(p, rel, notesShown);
-        if (notes.text) {
-          resultText += `\n\n${notes.text}`;
-          batchNotes.push(notes.text);
-          appendEvent(p, taskId, { actor: "system", type: "decision", summary: `showed ${notes.ids.length} saved note(s) about ${rel}`, meta: { pathNotes: notes.ids, path: rel } });
-        }
-      }
       batchResults.push(`${tag}${resultText}`);
       batchLabels.push(`${decision.action}${decision.path ? ` ${decision.path}` : decision.server ? ` ${decision.server}.${decision.tool}` : decision.command ? ` ${redactCommand(decision.command).slice(0, 60)}` : decision.query ? ` "${decision.query.slice(0, 40)}"` : decision.pattern ? ` "${decision.pattern.slice(0, 40)}"` : ""}`);
       // executeAction returns "edited <path>" only when the file was actually written; a refused
@@ -1264,8 +1190,6 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       // compress.ts's "$ cmd  (exit N; …)" head line.
       const checkFailed =
         (decision.action === "verify" && resultText.startsWith("VERIFICATION FAILED")) || (decision.action === "run" && /^\$ .*\(exit [1-9]/.test(resultText));
-      if (checkFailed) gate.sawRed = true;
-      if (decision.action === "edit" && /(\.test\.|\.spec\.|__tests__\/|(^|\/)tests?\/|_test\.)/.test(String(decision.path ?? "")) && resultText.startsWith("edited ")) gate.sawRed = true;
       if (decision.action === "edit") checksSinceEdit = 0;
       else if (checkFailed) checksSinceEdit++;
       lastCheckFailed = checkFailed;
@@ -1306,7 +1230,6 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       : "";
 
     const resultParts: Part[] = batchResults.map((r, i) => part("result", batchLabels[i] ?? "result", r));
-    for (const n of batchNotes) resultParts.push(part("memory", "project notes about a file just read (experimental)", n));
     if (stopNote) resultParts.push(part("note", "the batch stopped early", stopNote));
     if (nudge) resultParts.push(part("nudge", "stall guard: stop re-running the check", nudge));
     if (readOnlyNudge) resultParts.push(part("nudge", "reminder to start editing", readOnlyNudge));
@@ -1364,7 +1287,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
 export { digestWithMemory };
 
 /** Executes one action and returns the (capped) result text to feed back as the next turn's prompt. */
-async function executeAction(p: Paths, taskId: string, d: Decision, approve?: RuntimeOptions["approve"], ask?: RuntimeOptions["ask"], asks?: { n: number }, gate?: { testFirst: boolean; sawRed: boolean }, signal?: AbortSignal, onOutput?: (command: string, text: string) => void): Promise<string> {
+async function executeAction(p: Paths, taskId: string, d: Decision, approve?: RuntimeOptions["approve"], ask?: RuntimeOptions["ask"], asks?: { n: number }, signal?: AbortSignal, onOutput?: (command: string, text: string) => void): Promise<string> {
   switch (d.action) {
     case "ask": {
       const question = String(d.question ?? "").trim();
@@ -1458,12 +1381,6 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       const abs = safeAbsPath(p, path);
       const oldText = d.old ?? "";
       const newText = d.new ?? "";
-      const isTestPath = /(\.test\.|\.spec\.|__tests__\/|(^|\/)tests?\/|_test\.)/.test(path);
-      if (gate?.testFirst && !gate.sawRed && !isTestPath) {
-        const text = `edit ${path}: refused (test-first mode) — no check has failed yet. Run "verify" (or the failing test) first and confirm it fails, or write the failing test, then make this edit.`;
-        appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path, testFirst: true } });
-        return text;
-      }
       // Judged by what the path really is, not how it's spelled: a symlink (to the file, or to a directory above it)
       // would otherwise reach .narrowbit/config.json — where the agent could change provider routing — or the ignore file.
       const realOfAbs = abs ? realRel(p.root, abs) : null;
