@@ -6484,3 +6484,21 @@ describe("Mac app installer: where the app goes", () => {
   });
 });
 
+describe("how Narrowbit writes to the user", () => {
+  test("the coding instructions and the planning chat both ask for plain, short writing without headings, tables or bold everywhere", async () => {
+    const { SYSTEM_INSTRUCTIONS } = await dist("runtime.js");
+    assert.match(SYSTEM_INSTRUCTIONS, /How to write what the user reads/);
+    assert.match(SYSTEM_INSTRUCTIONS, /No headings, no tables, no emoji/);
+    assert.match(SYSTEM_INSTRUCTIONS, /two to five sentences, not a report/);
+    const { planningReply } = await dist("planning.js");
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-plan-")));
+    const old = process.env.HOME; process.env.HOME = home;
+    try {
+      let seen = null;
+      await planningReply(undefined, "hi", async (o) => { seen = o; return { text: "x", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: 0, turns: 1, isError: false }; }, "m", "low");
+      assert.match(seen.systemPrompt, /Write the way a good colleague talks/);
+      assert.match(seen.systemPrompt, /don't use tables, emoji or bold everywhere/);
+    } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
