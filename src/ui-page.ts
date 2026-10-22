@@ -2666,6 +2666,17 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
               box.appendChild(ul);
               box.appendChild(el("button", { text: "Commit anyway (I've checked)", onclick: function () { doCommit(true); } }));
               banner("warn", box);
+            } else if (e.status === 409 && e.data && e.data.error === "identity") {
+              var ibox = el("div");
+              ibox.appendChild(el("strong", { text: "Git needs your name and email to record a commit." }));
+              ibox.appendChild(el("div", { text: "They are kept in this project only; your Mac's own git settings are not changed." }));
+              var nm = el("input", { type: "text", placeholder: "Your name", "aria-label": "Your name" });
+              var em = el("input", { type: "text", placeholder: "you@example.com", "aria-label": "Your email" });
+              ibox.appendChild(nm); ibox.appendChild(em);
+              ibox.appendChild(el("button", { text: "Save and commit", onclick: function () {
+                api("/api/git/identity", { name: nm.value, email: em.value }).then(function () { banner("", null); doCommit(force); }).catch(function (err) { banner("bad", err.message); });
+              } }));
+              banner("warn", ibox);
             } else if (e.status === 409 && e.data && e.data.error === "hooks") {
               var hbox = el("div");
               hbox.appendChild(el("strong", { text: "This commit changes git hook files — commit paused." }));

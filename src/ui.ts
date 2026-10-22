@@ -1076,6 +1076,19 @@ export function startUi(opts: UiOptions) {
           }
           return json(res, 200, state());
         }
+        case "/api/git/identity": {
+          // Saved in this project's own git settings, never in the Mac's global ones.
+          if (!win().root) return json(res, 400, { error: "no repository open" });
+          const name = String(body.name ?? "").trim();
+          const email = String(body.email ?? "").trim();
+          if (!name || name.length > 100 || /[\r\n<>]/.test(name) || name.startsWith("-")) return json(res, 400, { error: "enter your name" });
+          if (!/^[^\s@<>-][^\s@<>]*@[^\s@<>]+\.[^\s@<>]+$/.test(email) || email.length > 200) return json(res, 400, { error: "enter a valid email address" });
+          for (const [k, v] of [["user.name", name], ["user.email", email]]) {
+            const r = sh("git", ["config", "--local", k, v], cur());
+            if (r.code !== 0) return json(res, 500, { error: (r.stderr || r.stdout).trim() || "git config failed" });
+          }
+          return json(res, 200, { ok: true });
+        }
         case "/api/memory/remove": {
           if (!win().root) return json(res, 400, { error: "no repository open" });
           // Marked resolved, not deleted: the note stays on disk (and in the vault) but is never recalled again.
@@ -1341,6 +1354,8 @@ export function startUi(opts: UiOptions) {
           const hooksPath = sh("git", ["config", "--get", "core.hooksPath"], cur()).stdout.trim() || undefined;
           const hookFiles = files.filter((f) => isHookFile(f, hooksPath));
           if (hookFiles.length && body.hooksOk !== true) return json(res, 409, { error: "hooks", files: hookFiles.slice(0, 8) });
+          // git refuses to commit without a name and email (a new Mac often has neither); ask for them instead of showing git's error.
+          if (!sh("git", ["config", "user.email"], cur()).stdout.trim() || !sh("git", ["config", "user.name"], cur()).stdout.trim()) return json(res, 409, { error: "identity" });
           const add = sh("git", ["add", "-A", "--", ...files], cur());
           if (add.code !== 0) return json(res, 500, { error: add.stderr.trim() || "git add failed" });
           // Commit exactly the files shown on the Changes card (as they are on disk, which is what was scanned above) —

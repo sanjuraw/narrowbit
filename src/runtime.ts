@@ -939,9 +939,15 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       // A reply that ran away (the same lines over and over, history entry 55) may have been saved into the session, and
       // resuming it would resend the junk every turn: continue in a new session seeded with the progress so far.
       const ranAway = /ran away/.test(res.errorMessage ?? "");
-      if (ranAway && !freshSessionPending) {
+      // Gemini (Antigravity) sometimes answers with an empty function call; the failed turn stays in the conversation, so
+      // every retry on it fails the same way. A new conversation seeded with the progress so far gets past it.
+      const malformed = /improperly formatted function call|Malformed function call/i.test(res.errorMessage ?? "");
+      if ((ranAway || malformed) && !freshSessionPending) {
         const digest = digestWithMemory(p, taskId, cfg.budget.initial);
-        callOpts.prompt = `Your previous reply got stuck repeating the same lines and was cut off, so this continues in a new conversation. Reply with JSON actions only, never tool-call markup such as <invoke>. Don't re-explore: rely on the progress below.\n\n${digest}\n\nThe input for the step that was in progress:\n${callOpts.prompt}`;
+        const why = ranAway
+          ? "Your previous reply got stuck repeating the same lines and was cut off, so this continues in a new conversation. Reply with JSON actions only, never tool-call markup such as <invoke>."
+          : "Your previous reply could not be processed (the model reported a malformed function call), so this continues in a new conversation. Reply with JSON actions only, never a function call or tool-call markup.";
+        callOpts.prompt = `${why} Don't re-explore: rely on the progress below.\n\n${digest}\n\nThe input for the step that was in progress:\n${callOpts.prompt}`;
         callOpts.systemPrompt = systemPrompt;
         callOpts.resume = false;
         freshSessionPending = true;

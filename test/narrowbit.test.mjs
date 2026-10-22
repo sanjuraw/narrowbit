@@ -4620,6 +4620,40 @@ else go(args[args.length - 1]);
   });
 });
 
+describe("a malformed function call from the model", () => {
+  test("the retry starts a new conversation from the task's progress instead of repeating the same doomed call", async () => {
+    const { root, p } = tinyRepo();
+    const dir = mkdtempSync(join(tmpdir(), "nb-malformed-"));
+    const bin = join(dir, "claude");
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require("fs");
+const args = process.argv.slice(2);
+const c = ${JSON.stringify(join(dir, "count"))};
+const n = fs.existsSync(c) ? Number(fs.readFileSync(c, "utf8")) : 0; fs.writeFileSync(c, String(n + 1));
+const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+const out = (o) => console.log(JSON.stringify(o));
+const go = (prompt) => {
+  fs.appendFileSync(${JSON.stringify(join(dir, "calls.log"))}, JSON.stringify({ resume: args.includes("--resume"), prompt: String(prompt).slice(0, 400) }) + "\\n");
+  out({ type: "system", subtype: "init" });
+  const answer = (text) => { out({ type: "assistant", message: { id: "m" + n, content: [{ type: "text", text }], usage } }); out({ type: "result", subtype: "success", is_error: false, result: text, usage, total_cost_usd: 0, num_turns: 1, session_id: "s" + n }); process.exit(0); };
+  if (n === 0) answer(${JSON.stringify(JSON.stringify({ action: "read", path: "a.txt" }))});
+  else if (n === 1) { out({ type: "result", subtype: "error_during_execution", is_error: true, result: "Your previous response contained an improperly formatted function call: Malformed function call: Failed to parse function call: Function call is empty - no input to parse. Retries remaining: 2", usage, total_cost_usd: 0, num_turns: 0, session_id: "s1" }); process.exit(0); }
+  else answer(${JSON.stringify(JSON.stringify({ action: "done", summary: "a.txt says hello" }))});
+};
+if (args.includes("--input-format")) require("readline").createInterface({ input: process.stdin }).once("line", (l) => go(JSON.parse(l).message.content));
+else go(args[args.length - 1]);
+`, { mode: 0o755 });
+    try {
+      const r = await runTask(p, "what does a.txt say", { claudeBin: bin, boss: false, maxSteps: 5 });
+      assert.equal(r.outcome, "done");
+      const calls = readFileSync(join(dir, "calls.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      assert.equal(calls[1].resume, true, "the failing call was a resumed turn");
+      assert.equal(calls[2].resume, false, "the retry started a new conversation");
+      assert.match(calls[2].prompt, /malformed function call/);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
 describe("verify runs its checks side by side", () => {
   test("typecheck, lint and tests run at the same time; approvals are still asked one by one, in order; the report keeps its order", async () => {
     const { root, p } = tinyRepo();

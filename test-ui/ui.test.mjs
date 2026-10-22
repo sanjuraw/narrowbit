@@ -935,6 +935,31 @@ describe("app page with a folder open", () => {
     assert.ok(Array.isArray((await res.json()).connectors));
   });
 
+  test("without a git name and email the commit asks for them, saves them in this project only, and then commits", async () => {
+    const git = (...a) => execFileSync("git", a, { cwd: repo, env: { ...process.env, HOME: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdio: ["ignore", "pipe", "ignore"] }).toString();
+    const had = { name: git("config", "--local", "user.name").trim(), email: git("config", "--local", "user.email").trim() };
+    git("config", "--local", "--unset-all", "user.name"); git("config", "--local", "--unset-all", "user.email");
+    try {
+      writeFileSync(join(repo, "who.txt"), "someone\n");
+      const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+      const post = (path, body) => fetch(`${app.base}${path}`, { method: "POST", headers: H, body: JSON.stringify(body) });
+      const paused = await post("/api/commit", { message: "add who" });
+      assert.equal(paused.status, 409);
+      assert.equal((await paused.json()).error, "identity", "asks instead of showing git's raw error");
+      assert.equal((await post("/api/git/identity", { name: "", email: "a@b.co" })).status, 400);
+      assert.equal((await post("/api/git/identity", { name: "Sam", email: "not-an-email" })).status, 400);
+      assert.equal((await post("/api/git/identity", { name: "-x", email: "a@b.co" })).status, 400, "a name that looks like an option is refused");
+      assert.equal((await post("/api/git/identity", { name: "Sam Test", email: "sam@example.com" })).status, 200);
+      assert.equal(git("config", "--local", "user.email").trim(), "sam@example.com", "saved in the project's own git settings");
+      assert.ok(!existsSync(join(home, ".gitconfig")) || !/Sam|sam@example/.test(readFileSync(join(home, ".gitconfig"), "utf8")), "the Mac's global git settings were not touched");
+      assert.equal((await post("/api/commit", { message: "add who" })).status, 200);
+      assert.match(git("log", "-1", "--format=%an <%ae>"), /Sam Test <sam@example\.com>/);
+    } finally {
+      if (had.name) git("config", "--local", "user.name", had.name);
+      if (had.email) git("config", "--local", "user.email", had.email);
+    }
+  });
+
   test("commit is paused when the change contains a secret, and goes through with the override", async () => {
     writeFileSync(join(repo, "leak.js"), 'const k = "ghp_' + "z".repeat(36) + '";\n'); // narrowbit-audit-ignore: fake
     const post = (body) => fetch(`${app.base}/api/commit`, { method: "POST", headers: { "x-narrowbit-token": app.token, "content-type": "application/json" }, body: JSON.stringify(body) });
