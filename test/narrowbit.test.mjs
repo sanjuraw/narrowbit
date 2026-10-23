@@ -6490,6 +6490,12 @@ describe("how Narrowbit writes to the user", () => {
     assert.match(SYSTEM_INSTRUCTIONS, /How to write what the user reads/);
     assert.match(SYSTEM_INSTRUCTIONS, /No headings, no tables, no emoji/);
     assert.match(SYSTEM_INSTRUCTIONS, /two to five sentences, not a report/);
+    assert.match(SYSTEM_INSTRUCTIONS, /Write for someone who does not code/);
+    assert.match(SYSTEM_INSTRUCTIONS, /Leave file names, function and variable names, settings paths, commands and test counts out/);
+    assert.doesNotMatch(SYSTEM_INSTRUCTIONS, /put file names and commands in backticks/, "it no longer invites file names");
+    assert.match(SYSTEM_INSTRUCTIONS, /one short sentence in everyday words, and give two to four options of a few plain words each/);
+    assert.match(SYSTEM_INSTRUCTIONS, /put your recommended option first/);
+    assert.match(SYSTEM_INSTRUCTIONS, /<one short, plain question a person who does not code can answer>/);
     const { planningReply } = await dist("planning.js");
     const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-plan-")));
     const old = process.env.HOME; process.env.HOME = home;
@@ -6498,6 +6504,8 @@ describe("how Narrowbit writes to the user", () => {
       await planningReply(undefined, "hi", async (o) => { seen = o; return { text: "x", usage: { input: 0, cacheCreate: 0, cacheRead: 0, output: 0 }, costUsd: 0, turns: 1, isError: false }; }, "m", "low");
       assert.match(seen.systemPrompt, /Write the way a good colleague talks/);
       assert.match(seen.systemPrompt, /don't use tables, emoji or bold everywhere/);
+      assert.match(seen.systemPrompt, /leave out file names, code, commands and technical terms unless they asked or need them/);
+      assert.match(seen.systemPrompt, /one short sentence in everyday words, and if you offer choices, give two to four short plain options with your recommendation first/);
     } finally { process.env.HOME = old; rmSync(home, { recursive: true, force: true }); }
   });
 });
