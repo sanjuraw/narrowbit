@@ -166,4 +166,18 @@ Finish with: what was updated (old to new version), what was left and why, the c
 
 Finish with: what you changed, what you checked by running it, and what you could not verify.`,
   },
+  {
+    name: "Careful changes",
+    description: "For risky or unclear work: say your assumptions, keep the change small, touch only what was asked, and define how you will check it",
+    builtin: true,
+    body: `Do the work described below carefully. The aim is a small change that is easy to review and does exactly what was asked.
+
+1. Think first. Say in a few lines what you take the request to mean and what you are assuming. If the request could reasonably mean two different things, or something important is unclear, ask one short question before you start. If a simpler way exists than the one asked for, say so before doing it.
+2. Decide how you will know it worked. Turn the request into a check you can run (a test that fails now and passes after, or an existing test that must keep passing), and say what it is.
+3. Make the smallest change that does the job. No extra features, options or flexibility nobody asked for, and nothing written for a case that cannot happen. If it could be shorter, make it shorter.
+4. Touch only what you must. Don't tidy, rename or reformat nearby code, and match the style already there. If you notice an unrelated problem, mention it at the end instead of fixing it. Remove only the leftovers your own change created.
+5. Run the check. If it fails, fix your change or undo it; don't loosen the check.
+
+Finish with: what you assumed, what you changed and why, how you checked it, and any unrelated problems you noticed but left alone.`,
+  },
 ];

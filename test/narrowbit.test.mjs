@@ -468,12 +468,12 @@ describe("skills (reusable task templates)", () => {
 
   test("every project starts with the built-in skills, each with real instructions", () => {
     const names = listSkills(p).filter((s) => s.builtin).map((s) => s.name);
-    for (const n of ["Bug fix", "Code review", "Write tests", "Refactor", "Explain this code", "Security review", "Plan a project", "Research a repository", "Add a feature", "Fix a failing CI run", "Write a pull request", "Update dependencies", "Write documentation"]) assert.ok(names.includes(n), `missing ${n}: ${names.join()}`);
+    for (const n of ["Bug fix", "Code review", "Write tests", "Refactor", "Explain this code", "Security review", "Plan a project", "Research a repository", "Add a feature", "Fix a failing CI run", "Write a pull request", "Update dependencies", "Write documentation", "Careful changes"]) assert.ok(names.includes(n), `missing ${n}: ${names.join()}`);
     for (const s of listSkills(p).filter((x) => x.builtin)) assert.ok(s.body.length > 300 && s.description, `${s.name} looks empty`);
     assert.match(getSkill(p, "Bug fix").body, /never in the tests/);
 
     assert.equal(new Set(names).size, names.length, "names are unique");
-    for (const x of listSkills(p).filter((k) => k.builtin && ["Plan a project", "Research a repository", "Add a feature", "Fix a failing CI run", "Write a pull request", "Update dependencies", "Write documentation"].includes(k.name))) {
+    for (const x of listSkills(p).filter((k) => k.builtin && ["Plan a project", "Research a repository", "Add a feature", "Fix a failing CI run", "Write a pull request", "Update dependencies", "Write documentation", "Careful changes"].includes(k.name))) {
       assert.match(x.body, /\nFinish with/, `${x.name} says what the final message holds`);
       assert.ok(x.body.length < 2200, `${x.name} stays short (a skill costs tokens every time it is used)`);
     }

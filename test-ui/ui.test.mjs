@@ -837,9 +837,9 @@ describe("app page with a folder open", () => {
 
   test("every project lists the built-in skills, without a delete button; user skills get one", async () => {
     const rows = () => [...page.w.document.querySelectorAll("#skillsList .skill-row")];
-    await page.until(() => rows().length >= 13, "built-in skills");
+    await page.until(() => rows().length >= 14, "built-in skills");
     const names = rows().map((r) => r.querySelector(".skill").textContent);
-    for (const n of ["Bug fix", "Code review", "Write tests", "Refactor", "Explain this code", "Security review", "Plan a project", "Research a repository", "Add a feature", "Fix a failing CI run", "Write a pull request", "Update dependencies", "Write documentation"]) assert.ok(names.includes(n), `missing ${n}: ${names}`);
+    for (const n of ["Bug fix", "Code review", "Write tests", "Refactor", "Explain this code", "Security review", "Plan a project", "Research a repository", "Add a feature", "Fix a failing CI run", "Write a pull request", "Update dependencies", "Write documentation", "Careful changes"]) assert.ok(names.includes(n), `missing ${n}: ${names}`);
     assert.equal(rows().filter((r) => r.querySelector(".skill-del")).length, 0, "built-ins can't be deleted from the UI");
 
     // Create a user skill through the real modal, then remove it again.
