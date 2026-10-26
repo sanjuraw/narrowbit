@@ -14,6 +14,7 @@ import { Tasks } from "./tasks.js";
 import { mcpServerConfig } from "./claude.js";
 import { fold, readEvents } from "./events.js";
 import { runTask } from "./runtime.js";
+import { getSkill } from "./skills.js";
 import { classifyModelError } from "./errors.js";
 import { sh, shortId, now } from "./util.js";
 import { getKey } from "./keys.js";
@@ -60,6 +61,8 @@ export interface BenchArm {
    * through the subscription CLI adapter (providers/claude-cli.ts), tool-free. Mutually exclusive
    * with narrowbit/mcpOnly; `args`/`appendSystemPrompt` are ignored for this arm. */
   runtime?: boolean;
+  /** runtime arm only: put a built-in or project skill in front of every task, as `narrowbit agent --skill` does. */
+  skill?: string;
   /** runtime arm only: cap on loop steps (default 20). */
   runtimeMaxSteps?: number;
   /** An external agent program instead of any Narrowbit loop: `command` is run in the task worktree with these
@@ -90,6 +93,14 @@ export interface BenchArm {
   args?: string[];
   /** Extra system prompt text (e.g. a "context hygiene" baseline arm). */
   appendSystemPrompt?: string;
+}
+
+/** The task text an arm sends: with `skill` set, the skill's instructions first, then the task (the same shape as `agent --skill`). */
+export function promptWithSkill(p: Paths, arm: { skill?: string }, prompt: string): string {
+  if (!arm.skill) return prompt;
+  const sk = getSkill(p, arm.skill);
+  if (!sk) throw new Error(`benchmark arm names a skill that does not exist: ${arm.skill}`);
+  return `${sk.body}\n\n${prompt}`;
 }
 
 export interface BenchFile {
@@ -317,7 +328,7 @@ export async function runBenchmark(p: Paths, file: string, opts: { only?: string
           } else if (arm.runtime) {
             log(`${tag}: running narrowbit's own loop…`);
             const runOpts = { leadModel: arm.leadModel as any, reviewer: arm.reviewer as any, scout: arm.scout as any, compactThreshold: arm.compactThreshold, jsonActions: arm.jsonActions, effort: arm.effort, provider: arm.provider as any, model: arm.tiers ? undefined : spec.model, models: arm.tiers, maxSteps: arm.runtimeMaxSteps ?? 20, claudeBin, boss: arm.boss, reviewOnly: arm.reviewOnly };
-            let result = await runTask(wp, t.prompt, runOpts);
+            let result = await runTask(wp, promptWithSkill(wp, arm, t.prompt), runOpts);
             // A usage limit is not a wrong answer. Wait for the reset and continue the same task (same worktree, same log),
             // so a long unattended run survives a plan's 5-hour window instead of recording a string of bogus failures.
             for (let wait = 0; wait < 6 && result.outcome === "error" && classifyModelError(result.summary).kind === "limit"; wait++) {

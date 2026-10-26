@@ -6536,3 +6536,17 @@ describe("Antigravity: no false 'planning mode', and how to show a running app",
   });
 });
 
+describe("benchmark arm with a skill", () => {
+  test("promptWithSkill puts the skill's text before the task, leaves the task alone without one, and refuses an unknown skill", async () => {
+    const { promptWithSkill } = await dist("bench.js");
+    const { root, p } = tinyRepo();
+    try {
+      assert.equal(promptWithSkill(p, {}, "fix it"), "fix it");
+      const withSkill = promptWithSkill(p, { skill: "Careful changes" }, "fix it");
+      assert.match(withSkill, /^Do the work described below carefully/);
+      assert.ok(withSkill.endsWith("\n\nfix it"));
+      assert.throws(() => promptWithSkill(p, { skill: "No such skill" }, "x"), /does not exist/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
