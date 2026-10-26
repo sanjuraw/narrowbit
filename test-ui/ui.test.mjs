@@ -791,6 +791,16 @@ describe("app page with a folder open", () => {
     assert.match(page.$("input").value, /a\.txt/);
   });
 
+  test("the commit box starts with the latest request in the chat (cut at a word), not the chat's first message", async () => {
+    const nb = page.w.__nb, v = nb.view(), before = v.asks;
+    try {
+      v.asks = ["The Habit Tracker Opportunity: stop tracking habits and start helping people build them", "Make the main screen simpler and easier to use for a nurse who is tired after a shift."];
+      assert.equal(nb.commitMessage(), "Make the main screen simpler and easier to use for a nurse who is tired");
+      v.asks = ["Fix the title"];
+      assert.equal(nb.commitMessage(), "Fix the title");
+    } finally { v.asks = before; }
+  });
+
   test("a commit that edits a hook file is paused with a clear message, and the button sends the acknowledgement", async () => {
     const doc = page.w.document;
     const commitBox = await page.until(() => doc.querySelector(".changes .commit input, .changes .commit textarea"), "the commit message box on the Changes card");

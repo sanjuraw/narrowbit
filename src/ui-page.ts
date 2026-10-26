@@ -2468,7 +2468,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var held = view.pendingBuf || []; view.pendingBuf = null;
     held.forEach(function (h) { handleStream(h); });
   }
-  window.__nb = { stream: function (e) { handleStream(e); }, claim: claimRun, view: function () { return view; } };   // for the page tests
+  window.__nb = { stream: function (e) { handleStream(e); }, claim: claimRun, view: function () { return view; }, commitMessage: defaultCommitMessage };   // for the page tests
   function handleStream(ev) {
       if (ev.type === "start") { if (ev.continueTask) run.tasks[ev.continueTask] = true; renderComposer(); renderSessions(); return; }
       if (ev.type === "event") {
@@ -2609,8 +2609,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
         follow(function () { slot.appendChild(card); });
         return;
       }
-      var firstAsk = document.querySelector("#items .bubble");
-      var msg = el("input", { type: "text", placeholder: "Commit message", value: ($("title").textContent || (firstAsk ? firstAsk.textContent : "")).split("\n")[0].slice(0, 72) });
+      var msg = el("input", { type: "text", placeholder: "Commit message", value: defaultCommitMessage() });
       var armed = null;
       // Discard undoes this task only. The first click asks the server what that means right now and shows it —
       // exactly which files go back, which move aside, which are left alone — and only the second click acts.
@@ -2696,6 +2695,15 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       if (d.skipped && d.skipped.length) card.appendChild(el("div", { cls: "cmsg", text: "Not included (untracked before this task): " + d.skipped.join(", ") }));
       follow(function () { slot.appendChild(card); });
     }).catch(function () {});
+  }
+  // What the commit box starts with: the latest request in this chat (a long chat's title is its first message, which is
+  // usually about something else by now), cut to one short line.
+  function defaultCommitMessage() {
+    var asks = (view && view.asks) || [];
+    var firstAsk = document.querySelector("#items .bubble");
+    var line = String(asks[asks.length - 1] || $("title").textContent || (firstAsk ? firstAsk.textContent : "")).split("\n")[0];
+    if (line.length > 72) { var cut = line.slice(0, 72), sp = cut.lastIndexOf(" "); line = (sp > 40 ? cut.slice(0, sp) : cut).replace(/[\s,;:.-]+$/, ""); }
+    return line;
   }
   function finishCard(card, text) {
     Array.prototype.forEach.call(card.querySelectorAll(".cfile, .commit, .cmsg"), function (r) { r.remove(); });
