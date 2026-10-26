@@ -6495,6 +6495,9 @@ describe("how Narrowbit writes to the user", () => {
     assert.doesNotMatch(SYSTEM_INSTRUCTIONS, /put file names and commands in backticks/, "it no longer invites file names");
     assert.match(SYSTEM_INSTRUCTIONS, /one short sentence in everyday words, and give two to four options of a few plain words each/);
     assert.match(SYSTEM_INSTRUCTIONS, /put your recommended option first/);
+    assert.match(SYSTEM_INSTRUCTIONS, /design it for the person using it, not for the spec/);
+    assert.match(SYSTEM_INSTRUCTIONS, /leave out anything meant for developers \(demo or scenario buttons, test data, internal names/);
+    assert.match(SYSTEM_INSTRUCTIONS, /body text at least 16px/);
     assert.match(SYSTEM_INSTRUCTIONS, /<one short, plain question a person who does not code can answer>/);
     const { planningReply } = await dist("planning.js");
     const home = realpathSync(mkdtempSync(join(tmpdir(), "nb-plan-")));
