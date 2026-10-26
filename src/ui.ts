@@ -10,7 +10,7 @@ import { dirname, basename, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { attachmentDir, attachmentKind, saveAttachment } from "./attachments.js";
 import { suggestFiles } from "./mentions.js";
-import { ensureDirs, loadConfig, paths, saveConfig, type AgentConfig, type Paths } from "./config.js";
+import { detectVerify, ensureDirs, loadConfig, paths, saveConfig, type AgentConfig, type Paths } from "./config.js";
 import { hasSession } from "./providers/openai-compat.js";
 import { getConnector, listConnectors, publicConnector, removeConnector, saveConnector } from "./connectors.js";
 import { completeSignIn, signOut, startSignIn } from "./oauth.js";
@@ -471,6 +471,16 @@ export function startUi(opts: UiOptions) {
   };
   const effAgent = (cfg: { agent?: AgentConfig }): AgentConfig | undefined => cfg.agent ?? globalAgent();
 
+  /** Checks Narrowbit could use for this project but has not been told about: shown as a button, saved only when it is pressed. */
+  const checksOffer = (root: string, cfg: ReturnType<typeof loadConfig>): { configured: boolean; detected: string[] } => {
+    const v = cfg.verify ?? {};
+    const configured = !!(v.test || v.typecheck || v.lint || v.build || v.testFocused || v.lintFocused);
+    if (configured) return { configured, detected: [] };
+    try {
+      const d = detectVerify(root);
+      return { configured, detected: [d.test, d.typecheck, d.lint, d.build].filter((x): x is string => !!x) };
+    } catch { return { configured, detected: [] }; }
+  };
   const state = () => {
     // The open project's folder was renamed or moved outside Narrowbit (or is on a drive that's not
     // mounted right now) — root is still set, but nothing on disk backs it any more. Unlike Claude Code,
@@ -515,6 +525,7 @@ export function startUi(opts: UiOptions) {
       name: basename(cur()),
       recent: loadRecent(),
       initialized,
+      checks: checksOffer(cur(), cfg),
       writable,
       owner,
       remote: g.isRepo ? remoteInfo(cur()) : { hasRemote: false, upstream: null, ahead: 0 },
@@ -1074,6 +1085,20 @@ export function startUi(opts: UiOptions) {
           } catch (e: any) {
             return json(res, 400, { error: e.message });
           }
+          return json(res, 200, state());
+        }
+        case "/api/checks/use-detected": {
+          // The commands Narrowbit found (from package.json or pyproject.toml) become this project's checks, because the person pressed the button.
+          if (!win().root) return json(res, 400, { error: "no repository open" });
+          const p = paths(cur());
+          const cfg = loadConfig(p);
+          const offer = checksOffer(cur(), cfg);
+          if (offer.configured) return json(res, 409, { error: "this project already has checks" });
+          if (!offer.detected.length) return json(res, 400, { error: "no test commands were found in this project" });
+          cfg.verify = detectVerify(cur());
+          ensureDirs(p);
+          saveConfig(p, cfg);
+          trustConfig(p.root); // the file now holds only what was already accepted plus this explicit change
           return json(res, 200, state());
         }
         case "/api/git/identity": {

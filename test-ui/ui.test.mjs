@@ -791,6 +791,42 @@ describe("app page with a folder open", () => {
     assert.match(page.$("input").value, /a\.txt/);
   });
 
+  test("a project with tests but no configured check gets an offer; Yes saves the detected command for this project only, Not now just hides it", async () => {
+    const { readFileSync, unlinkSync } = await import("node:fs");
+    const H = { "x-narrowbit-token": app.token, "content-type": "application/json" };
+    const stateOf = async () => (await (await fetch(`${app.base}/api/state`, { headers: H })).json());
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", scripts: { test: "node --test" } }));
+    try {
+      const s0 = await stateOf();
+      assert.equal(s0.checks.configured, false);
+      assert.ok(s0.checks.detected.some((c) => /test/.test(c)), "the test command was found: " + JSON.stringify(s0.checks));
+      const hidden = await openPage(app.url);
+      try {
+        await hidden.until(() => hidden.visible(hidden.$("checksBar")), "the offer");
+        assert.match(hidden.$("checksBar").textContent, /automatic tests/);
+        hidden.$("checksNo").click();
+        assert.ok(!hidden.visible(hidden.$("checksBar")), "Not now hides it");
+        await new Promise((r) => setTimeout(r, 300));
+      } finally { hidden.close(); }
+      assert.equal((await stateOf()).checks.configured, false, "Not now saves nothing");
+      const p2 = await openPage(app.url);
+      try {
+        await p2.until(() => p2.visible(p2.$("checksBar")), "the offer on a fresh page");
+        p2.$("checksYes").click();
+        await p2.until(() => !p2.visible(p2.$("checksBar")), "the offer to go away after Yes");
+        await new Promise((r) => setTimeout(r, 300));
+      } finally { p2.close(); }
+      assert.equal((await stateOf()).checks.configured, true);
+      const cfg = JSON.parse(readFileSync(join(repo, ".narrowbit", "config.json"), "utf8"));
+      assert.ok(cfg.verify.test, "the command is saved in this project's own settings");
+      assert.equal((await fetch(`${app.base}/api/checks/use-detected`, { method: "POST", headers: H, body: "{}" })).status, 409, "it is offered only once");
+    } finally {
+      unlinkSync(join(repo, "package.json"));
+      const cfgFile = join(repo, ".narrowbit", "config.json");
+      const c = JSON.parse(readFileSync(cfgFile, "utf8")); delete c.verify; writeFileSync(cfgFile, JSON.stringify(c, null, 2) + "\n");
+    }
+  });
+
   test("the commit box starts with the latest request in the chat (cut at a word), not the chat's first message", async () => {
     const nb = page.w.__nb, v = nb.view(), before = v.asks;
     try {

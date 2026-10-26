@@ -541,6 +541,13 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
       </div>
     </div>
     <div class="composer-wrap">
+      <div class="cpbar hidden" id="checksBar">
+        <div class="cpbar-row">
+          <span>This project has automatic tests. Want Narrowbit to run them after each change, to check its own work?</span>
+          <button class="primary" id="checksYes">Yes, run them</button>
+          <button class="ghost" id="checksNo">Not now</button>
+        </div>
+      </div>
       <div class="cpbar hidden" id="createProjectBar">
         <div class="cpbar-row">
           <span>Ready to start building this for real?</span>
@@ -1746,7 +1753,17 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     input.placeholder = activeSuggestion() || (view && view.taskId ? "Ask for a follow-up or a change…" : S && S.root ? "Describe a task…" : "What do you want to build? Let's talk it through…");
     $("hint").textContent = !S ? "" : viewingRun() && typing ? "Enter to send — the agent gets it before its next step" : P && P.unavailable ? P.unavailable : notReadyNoRoot ? ((R[S.selection.provider] && R[S.selection.provider].detail) || "not signed in — pick a model that's ready") : !S.root ? "Enter to send · No folder needed yet — we'll create one when you're ready" : "Enter to send · Shift+Enter for a new line";
     if (S && S.root) show($("createProjectBar"), false);
+    // A project with tests that Narrowbit has not been told to run: offer to use them as the check (kept per project if dismissed).
+    var offer = !!(S && S.root && S.checks && !S.checks.configured && S.checks.detected.length && !checksDismissed());
+    show($("checksBar"), offer);
+    if (offer) $("checksYes").title = "Runs: " + S.checks.detected.join("   ·   ");
   }
+  function checksDismissed() { try { return localStorage.getItem("nb.checks.no:" + (S && S.root)) === "1"; } catch (e) { return false; } }
+  $("checksNo").onclick = function () { try { localStorage.setItem("nb.checks.no:" + (S && S.root), "1"); } catch (e) { /* not essential */ } renderComposer(); };
+  $("checksYes").onclick = function () {
+    $("checksYes").disabled = true;
+    api("/api/checks/use-detected", {}).then(function (st) { $("checksYes").disabled = false; apply(st); banner("", null); }).catch(function (e) { $("checksYes").disabled = false; banner("bad", e.message); });
+  };
   var attached = [];
   function renderAttached() {
     var box = $("attached"); clear(box); show(box, attached.length > 0);
