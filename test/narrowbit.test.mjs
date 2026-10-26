@@ -6510,3 +6510,26 @@ describe("how Narrowbit writes to the user", () => {
   });
 });
 
+describe("Antigravity: no false 'planning mode', and how to show a running app", () => {
+  test("the base instructions say how to start a server in the background and open it; Antigravity (and only it) is told no plan mode applies", async () => {
+    const { SYSTEM_INSTRUCTIONS } = await dist("runtime.js");
+    assert.match(SYSTEM_INSTRUCTIONS, /start any server in the background so the command returns at once/);
+    assert.match(SYSTEM_INSTRUCTIONS, /never run a server in the foreground/);
+    const { root, p } = tinyRepo();
+    const dir = mkdtempSync(join(tmpdir(), "nb-agy-"));
+    const bin = join(dir, "agy");
+    writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "$2" >> ${JSON.stringify(join(dir, "prompts.log"))}\necho ''\n`, { mode: 0o755 });
+    const fake = fakeClaude([JSON.stringify({ action: "done", summary: "ok" })]);
+    const old = process.env.NARROWBIT_AGY; process.env.NARROWBIT_AGY = bin;
+    try {
+      await runTask(p, "open the app", { provider: "antigravity", models: { explore: "m", execute: "m", escalate: "m" }, boss: false, maxSteps: 2 });
+      const sent = readFileSync(join(dir, "prompts.log"), "utf8");
+      assert.match(sent, /Ignore anything you know about a plan mode, a \/plan command/);
+      assert.match(sent, /never tell the user you are in a planning mode/);
+      await runTask(p, "open the app", { claudeBin: fake.bin, boss: false, maxSteps: 2, persistent: false });
+      const claudeArgs = readFileSync(join(fake.dir, "args.log"), "utf8");
+      assert.doesNotMatch(claudeArgs, /plan mode/, "other providers are not told about it");
+    } finally { if (old === undefined) delete process.env.NARROWBIT_AGY; else process.env.NARROWBIT_AGY = old; rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+});
+
