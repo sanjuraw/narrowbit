@@ -195,6 +195,18 @@ describe("stream-json parsing (benchmark)", () => {
   });
 });
 
+describe("detectVerify: projects that test with node --test", () => {
+  test("only the mapped test files are run, after a build when the test script builds first (a full suite took minutes per check)", () => {
+    const root = mkdtempSync(join(tmpdir(), "nb-nt-"));
+    try {
+      writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { build: "tsc", test: "npm run build && node --test test/*.test.mjs" } }));
+      assert.equal(detectVerify(root).testFocused, "npm run -s build && node --test {files}");
+      writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+      assert.equal(detectVerify(root).testFocused, "node --test {files}");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe("detectVerify: Python projects (pytest/mypy/ruff), not just package.json", () => {
   test("a project's own .venv is used, since the app runs without it activated (a bare pytest wasn't found)", () => {
     const root = mkdtempSync(join(tmpdir(), "nb-py-"));

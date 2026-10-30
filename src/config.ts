@@ -247,6 +247,9 @@ export function detectVerify(root: string): VerifyConfig {
   if (deps.vitest) v.testFocused = "npx vitest run {files}";
   else if (deps.jest || deps["ts-jest"]) v.testFocused = "npx jest {files}";
   else if (deps.mocha) v.testFocused = "npx mocha {files}";
+  // Node's own runner (`node --test`): run just the mapped test files instead of the whole suite. When the test script builds first,
+  // build first here too, because the tests may import the built output.
+  else if (scripts.test && /\bnode\b[^&|;]*--test\b/.test(scripts.test)) v.testFocused = `${scripts.build && /\bbuild\b/.test(scripts.test) ? `${run("build")} && ` : ""}node --test {files}`;
   return v;
 }
 
