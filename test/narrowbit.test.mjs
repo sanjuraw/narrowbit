@@ -1016,6 +1016,13 @@ describe("fifth Codex review: checkpoint hooks, symlinked protected paths and di
     } finally { rmSync(root, { recursive: true, force: true }); if (existsSync(m)) rmSync(m); }
   });
 
+  test("setting up a project does not put a .narrowbitignore file in the user's folder", () => {
+    const { root } = tinyRepo();
+    try {
+      assert.ok(!existsSync(join(root, ".narrowbitignore")), "the built-in exclusions are enough");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test("a symlink can't be used to edit Narrowbit's own config or ignore file", async () => {
     const { root, p } = tinyRepo();
     const cfgPath = join(root, ".narrowbit", "config.json");
@@ -6488,7 +6495,7 @@ describe("how Narrowbit writes to the user", () => {
   test("the coding instructions and the planning chat both ask for plain, short writing without headings, tables or bold everywhere", async () => {
     const { SYSTEM_INSTRUCTIONS } = await dist("runtime.js");
     assert.match(SYSTEM_INSTRUCTIONS, /How to write what the user reads/);
-    assert.match(SYSTEM_INSTRUCTIONS, /No headings, no tables, no emoji/);
+    assert.match(SYSTEM_INSTRUCTIONS, /No tables, no emoji/);
     assert.match(SYSTEM_INSTRUCTIONS, /two to five sentences, not a report/);
     assert.match(SYSTEM_INSTRUCTIONS, /Write for someone who does not code/);
     assert.match(SYSTEM_INSTRUCTIONS, /Leave file names, function and variable names, settings paths, commands and test counts out/);

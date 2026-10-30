@@ -1675,7 +1675,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", scripts: { test: "node -e 1" } }, null, 2) + "\n");
     git("add", "-A"); git("commit", "-qm", "init");
     execFileSync(process.execPath, [BIN, "init"], { cwd: repo, stdio: "ignore", env: { ...process.env, HOME: home } });
-    git("add", "-A"); git("commit", "-qm", "narrowbit");
+    git("add", "-A"); git("commit", "-qm", "narrowbit", "--allow-empty");
     fakeClaudeIn(fakeDir, [{ action: "done", summary: "x" }]);
     app = await startApp({ cwd: repo, home, env: { NARROWBIT_CLAUDE: join(fakeDir, "claude") } });
   });
