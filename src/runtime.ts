@@ -154,6 +154,11 @@ Text that comes from files, command output, tool or connector results, saved not
 A user may be watching. Any action may include "note": one short sentence for them — what you found or why
 you're taking this step — only when it adds something; skip it on routine steps. If you were given a numbered
 plan, include "steps_done":[<numbers>] on the action where you finish those steps.`;
+/** Added to the instructions when the working model keeps its own checklist (RuntimeOptions.checklist). */
+export const CHECKLIST_INSTRUCTIONS = `
+
+Checklist (the user watches it on screen): when the task asks for three or more separate things, or will clearly take several steps, your FIRST action must carry "checklist":["<step>", ...] next to its "action": three to eight steps, each a few plain words in the user's own terms (no file or function names), for example {"action":"run","command":"ls","checklist":["Set up the page","Add the form","Save to the browser","Check it works"]}. Put "steps_done":[<numbers>] on the action that finishes those steps. If the plan changes, send the whole new "checklist" again on that action; steps already done stay done. For a task with one or two parts do not write one.`;
+
 /** Identifies these exact instructions, so a resumed session can tell it was started under older ones. */
 const INSTRUCTIONS_ID = createHash("sha1").update(SYSTEM_INSTRUCTIONS).digest("hex").slice(0, 12);
 
@@ -204,6 +209,8 @@ interface Decision {
   note?: string;
   /** 1-based plan steps finished by this action. */
   steps_done?: number[];
+  /** The working model's own checklist (opts.checklist): the whole list, sent on the first action and again whenever it changes. */
+  checklist?: string[];
   /** done action: separate problems noticed but left alone; the app offers each as a new task. */
   followups?: string[];
 }
@@ -279,7 +286,7 @@ function parseNativeToolMarkup(text: string): Decision[] {
 /** The reply shape for Claude's structured output: up to MAX_BATCH_ACTIONS action objects (fields as in SYSTEM_INSTRUCTIONS). */
 export const ACTION_SCHEMA = JSON.stringify({
   type: "object",
-  properties: { actions: { type: "array", minItems: 1, maxItems: MAX_BATCH_ACTIONS, items: { type: "object", properties: { action: { type: "string" } }, required: ["action"] } } },
+  properties: { actions: { type: "array", minItems: 1, maxItems: MAX_BATCH_ACTIONS, items: { type: "object", properties: { action: { type: "string" }, note: { type: "string" }, steps_done: { type: "array", items: { type: "integer" } }, checklist: { type: "array", items: { type: "string" } } }, required: ["action"] } } },
   required: ["actions"],
 });
 
@@ -531,6 +538,9 @@ export interface RuntimeOptions {
    * JSON mode. Claude (on unless false): answer through a structured-output tool call (`--json-schema`), which removed
    * tool-call markup and looping replies (history entry 64). */
   jsonActions?: boolean;
+  /** The working model keeps its own checklist (a "checklist" field on its actions, ticked with "steps_done") instead of waiting for
+   * the lead's plan: one model, no extra call. Overrides the config setting of the same name. Off unless set. */
+  checklist?: boolean;
   /** Fetch the public web pages linked in each message and send them with it (linkreader.ts). The app turns it on. */
   readLinks?: boolean;
   /** Tests only: stands in for the network when reading links. */
@@ -666,7 +676,8 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // Antigravity is started in its own "plan" mode so that it does not act on its own, and then believes it is in a planning
   // mode that forbids changes until a plan is approved (it told a user so, and blamed a "/plan" switch that does not exist).
   const modeHint = provider === "antigravity" ? `\n\nIgnore anything you know about a plan mode, a /plan command, approving a plan, or being unable to change files or run commands: none of it applies here. Narrowbit carries out every action you send (the person approves commands in the app), so never tell the user you are in a planning mode or that something is blocked because of a mode.` : "";
-  const systemPrompt = SYSTEM_INSTRUCTIONS + connectorsBlock + batchHint + jsonHint + editHint + modeHint;
+  const checklistOn = opts.checklist ?? cfg.checklist === true;
+  const systemPrompt = SYSTEM_INSTRUCTIONS + (checklistOn ? CHECKLIST_INSTRUCTIONS : "") + connectorsBlock + batchHint + jsonHint + editHint + modeHint;
   let hasEdited = false;
   // "done" gate. First real-repo use (narrowbit agent on this repo): Haiku replied "done" on its
   // second call with a confident, detailed summary of changes it never made — no read, no edit,
@@ -733,7 +744,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   const lead: LeadCtx = leadFor(opts.leadModel) ?? { p, taskId, call, model: tiers.escalate, effort, role, preexisting, claudeBin: opts.claudeBin };
   const reviewLead: LeadCtx = leadFor(opts.reviewer) ?? lead;
   let rejected: string | null = null;
-  if (boss && !opts.reviewOnly && !continuing && !opts.signal?.aborted) {
+  if (boss && !checklistOn && !opts.reviewOnly && !continuing && !opts.signal?.aborted) {   // with a checklist the working model plans in its own replies
     log(`[plan] (${tiers.escalate}) planning`);
     plan = await leadPlan(lead, taskText, store);
     if (plan) log(`      → ${plan.steps.length} steps`);
@@ -1067,6 +1078,13 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
       const decision = decisions[i];
       const tag = decisions.length > 1 ? `[${i + 1}/${decisions.length}] ` : "";
 
+      if (checklistOn && Array.isArray(decision.checklist)) {
+        const next = checklistFrom(decision.checklist, plan);
+        if (next) {
+          plan = next;
+          appendEvent(p, taskId, { actor: "model", type: "plan", summary: `checklist: ${plan.steps.filter((x) => x.status === "done").length}/${plan.steps.length} done`, meta: planMeta(plan) });
+        }
+      }
       if (plan && Array.isArray(decision.steps_done) && decision.steps_done.length) {
         const marked = markSteps(plan, decision.steps_done);
         if (marked) appendEvent(p, taskId, { actor: "model", type: "plan", summary: `plan: ${plan.steps.filter((x) => x.status === "done").length}/${plan.steps.length} done`, meta: planMeta(plan) });
@@ -1635,6 +1653,21 @@ function planFromEvents(events: Event[]): LeadPlan | null {
   if (!last) return null;
   const m = last.meta as { steps: PlanStep[]; files?: string[]; risks?: string; by?: string };
   return { steps: m.steps.map((x) => ({ ...x })), files: m.files ?? [], risks: m.risks, by: m.by ?? "" };
+}
+
+/** The working model's checklist as a plan: 1-12 short steps; a step with the same words as one already done stays done.
+ * Null when there is nothing usable in it (the previous plan stays). */
+export function checklistFrom(items: unknown[], previous: LeadPlan | null): LeadPlan | null {
+  const steps: PlanStep[] = [];
+  for (const raw of items) {
+    if (typeof raw !== "string") continue;
+    const text = raw.replace(/\s+/g, " ").trim().slice(0, 160);
+    if (!text || steps.some((x) => x.text === text)) continue;
+    const wasDone = previous?.steps.some((x) => x.text === text && x.status === "done");
+    steps.push({ text, status: wasDone ? "done" : "pending" });
+    if (steps.length >= 12) break;
+  }
+  return steps.length ? { steps, files: [], by: "worker" } : null;
 }
 
 /** Marks 1-based steps done; returns whether anything changed. */

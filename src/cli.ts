@@ -101,6 +101,7 @@ const HELP = `narrowbit — a local, context-managed coding agent
       [--review-only]         skip the plan call, still review the diff before "done" (cheaper than full lead mode)
       [--approve-plan]        with lead mode, ask you to approve the plan (or ask for changes) before work starts
       [--attach a.png,b.pdf] show the model images or PDFs (sent on the first call only)
+      [--checklist]        the model keeps a short checklist of the steps (shown ticked off in the app) instead of a separate planning call
       [--isolate]          work in a separate git worktree; your folder changes only when you run: narrowbit apply <task>
       [--boss] [--continue <task-id>]      lead mode (off by default: measured worse for typical tasks):
       model 3 plans first and reviews the diff before "done"; --continue sends a follow-up to an earlier task
@@ -579,6 +580,7 @@ export async function main(argv: string[]): Promise<number> {
         permissionMode: args.flags["allow-checks"] ? "checks" : "ask",
         ask,
         isolate: !!args.flags.isolate,
+        checklist: args.flags.checklist ? true : undefined,
         maxSteps,
         boss: args.flags["boss"] ? true : (cfg.agent?.boss ?? false),
         reviewOnly: !!args.flags["review-only"],

@@ -31,6 +31,8 @@ export interface NarrowbitConfig {
   agent?: AgentConfig;
   /** Commands of your own that run after each applied edit and when a task ends; see hooks.ts. A shipped one runs only once accepted. */
   hooks?: { afterEdit?: string; afterTask?: string };
+  /** The working model keeps its own checklist for tasks with several parts (see CHECKLIST_INSTRUCTIONS in runtime.ts). Off by default. */
+  checklist?: boolean;
 }
 
 export interface AgentConfig {

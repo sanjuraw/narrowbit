@@ -1121,6 +1121,41 @@ describe("fifth Codex review: checkpoint hooks, symlinked protected paths and di
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  test("checklistFrom: short distinct steps, done ones stay done, junk is ignored", async () => {
+    const { checklistFrom } = await dist("runtime.js");
+    const prev = { steps: [{ text: "Add it", status: "done" }, { text: "Test it", status: "pending" }], files: [], by: "worker" };
+    const next = checklistFrom(["Add it", "  Wire   it\nup ", "Add it", "", 5, null, "x".repeat(500), "Test it"], prev);
+    assert.deepEqual(next.steps.map((x) => [x.text.slice(0, 12), x.status]), [["Add it", "done"], ["Wire it up", "pending"], ["xxxxxxxxxxxx", "pending"], ["Test it", "pending"]]);
+    assert.equal(next.steps[2].text.length, 160);
+    assert.equal(next.by, "worker");
+    assert.equal(checklistFrom(Array.from({ length: 30 }, (_, i) => "step " + i), null).steps.length, 12, "at most twelve");
+    assert.equal(checklistFrom([], prev), null, "an empty list leaves the old one");
+    assert.equal(checklistFrom([3, ""], prev), null);
+  });
+
+  test("with the checklist on, the working model writes and ticks its own list in its normal replies with no separate planning call; off, the field is ignored", async () => {
+    const run = async (checklist) => {
+      const { root, p } = tinyRepo();
+      const fake = fakeClaude([
+        JSON.stringify({ action: "read", path: "a.txt", checklist: ["Read the file", "Report it"], note: "looking" }),
+        JSON.stringify({ action: "done", summary: "it says hello", steps_done: [1, 2] }),
+      ]);
+      try {
+        const r = await runTask(p, "what is in a.txt, and tell me", { claudeBin: fake.bin, boss: true, checklist, maxSteps: 6 });
+        const plans = readEvents(p, r.taskId).filter((e) => e.type === "plan");
+        return { plans, calls: fake.calls() };
+      } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+    };
+    const on = await run(true);
+    assert.equal(on.plans.length >= 2, true, "the list was written, then ticked");
+    assert.equal(on.plans[0].meta.by, "worker");
+    assert.deepEqual(on.plans[0].meta.steps.map((x) => x.text), ["Read the file", "Report it"]);
+    assert.deepEqual(on.plans.at(-1).meta.steps.map((x) => x.status), ["done", "done"]);
+    assert.ok(on.plans.every((e) => e.meta.by === "worker"), "no plan from a separate lead call: the first reply was the worker's own first action");
+    const off = await run(undefined);
+    assert.equal(off.plans.filter((e) => e.meta.by === "worker").length, 0, "a checklist field is ignored when the setting is off");
+  });
+
   test("agent --isolate runs on a folder with uncommitted changes (scheduled runs always use it); a plain run still refuses", () => {
     const { root } = tinyRepo();
     const fake = fakeClaude([JSON.stringify({ action: "done", summary: "ok" })]);

@@ -233,6 +233,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .plan ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
 .plan li { display: grid; grid-template-columns: 18px 1fr; gap: 8px; font-size: 13.5px; }
 .plan li .box { width: 15px; height: 15px; border-radius: 4px; border: 1.5px solid var(--line-2); margin-top: 3px; display: grid; place-items: center; font-size: 10px; color: var(--on-accent); }
+.plan.pin { position: sticky; top: 0; z-index: 3; }
+.plan li.now .box { border-color: var(--accent); }
+.plan li.now .tx { font-weight: 600; }
 .plan li.done .box { background: var(--ok); border-color: var(--ok); }
 .plan li.done .tx { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--line-2); }
 .plan .pf { font-size: 12px; color: var(--muted); margin-top: 8px; }
@@ -2186,14 +2189,17 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var steps = meta.steps || [], done = steps.filter(function (x) { return x.status === "done"; }).length;
     var n = clear(view.plan.node);
     var prog = el("span", { cls: "prog" }, el("i", { style: "width:" + (steps.length ? Math.round(done * 100 / steps.length) : 0) + "%" }));
-    n.appendChild(el("div", { cls: "ph" }, el("strong", { text: "Plan" }), el("span", { cls: "chip", text: meta.by || "lead", style: "color:" + tierColor(meta.by) }), prog, el("span", { text: done + "/" + steps.length })));
+    var own = meta.by === "worker";   // the working model's own checklist: no second model to name, and it stays in view while the task runs
+    view.plan.node.classList.toggle("pin", own);
+    n.appendChild(el("div", { cls: "ph" }, el("strong", { text: own ? "Checklist" : "Plan" }), own ? null : el("span", { cls: "chip", text: meta.by || "lead", style: "color:" + tierColor(meta.by) }), prog, el("span", { text: done + "/" + steps.length })));
     var ol = el("ol");
-    steps.forEach(function (x) { ol.appendChild(el("li", { cls: x.status === "done" ? "done" : "" }, el("span", { cls: "box", text: x.status === "done" ? "✓" : "" }), el("span", { cls: "tx" }, rich(x.text)))); });
+    var nowAt = own ? steps.findIndex(function (x) { return x.status !== "done"; }) : -1;   // the step being worked on
+    steps.forEach(function (x, i) { ol.appendChild(el("li", { cls: x.status === "done" ? "done" : i === nowAt ? "now" : "" }, el("span", { cls: "box", text: x.status === "done" ? "✓" : "" }), el("span", { cls: "tx" }, rich(x.text)))); });
     n.appendChild(ol);
     if (meta.files && meta.files.length) n.appendChild(el("div", { cls: "pf mono", text: "Likely files: " + meta.files.join(", ") }));
     if (meta.risks) n.appendChild(el("div", { cls: "pf" }, rich("Watch out: " + meta.risks)));
     var mini = $("planMini");
-    mini.textContent = "Plan " + done + "/" + steps.length; show(mini, true);
+    mini.textContent = (own ? "Checklist " : "Plan ") + done + "/" + steps.length; show(mini, true);
     mini.onclick = function () { view.plan.node.scrollIntoView({ behavior: "smooth", block: "start" }); };
   }
 

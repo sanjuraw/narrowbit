@@ -318,6 +318,29 @@ describe("app page with no folder open (a brand-new user)", () => {
     assert.equal(nb.view().pendingNew, false);
   });
 
+  test("the working model's checklist is pinned, named Checklist, shows which step is next and counts the ticked ones; the lead's plan keeps its model chip and does not pin", () => {
+    page.$("newBtn").click();
+    const nb = page.w.__nb;
+    const v = nb.view();
+    v.pendingNew = true; v.taskId = null; v.pendingRun = null;
+    const plan = (id, by, steps) => ({ type: "event", run: "run-cl", task: "rt-cl", event: { id, taskId: "rt-cl", at: new Date().toISOString(), actor: "model", type: "plan", summary: "plan", meta: { steps, files: [], by } } });
+    nb.stream(plan("e-cl-0", "worker", [{ text: "Add the screen", status: "done" }, { text: "Wire it up", status: "pending" }, { text: "Check it", status: "pending" }]));
+    nb.claim("run-cl");
+    const card = page.w.document.querySelector(".plan");
+    assert.ok(card.classList.contains("pin"), "pinned while the task runs");
+    assert.equal(card.querySelector(".ph strong").textContent, "Checklist");
+    assert.equal(card.querySelector(".ph .chip"), null, "no second model to name");
+    assert.deepEqual([...card.querySelectorAll("li")].map((li) => li.className), ["done", "now", ""], "the first step not done is the one being worked on");
+    assert.equal(page.$("planMini").textContent, "Checklist 1/3");
+    // the lead's plan is shown as before
+    nb.stream(plan("e-cl-1", "claude-opus", [{ text: "One", status: "pending" }]));
+    const lead = page.w.document.querySelector(".plan");
+    assert.ok(!lead.classList.contains("pin"));
+    assert.equal(lead.querySelector(".ph strong").textContent, "Plan");
+    assert.ok(lead.querySelector(".ph .chip"));
+    assert.equal(lead.querySelectorAll("li.now").length, 0);
+  });
+
   test("Check now in About shows that it checked", async () => {
     const btn = [...page.$("aboutInfo").querySelectorAll("button")].find((b) => b.textContent === "Check now");
     btn.click();
@@ -1083,6 +1106,7 @@ describe("app page with a folder open", () => {
     assert.ok(!page.visible(page.$("startNoFolder")), "nothing to leave once no folder is open");
     page.$("closeRepo").click();
   });
+
 });
 
 describe("layout rules that broke before (checked in the page's own CSS)", () => {
