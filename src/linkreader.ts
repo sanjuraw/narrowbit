@@ -30,21 +30,40 @@ const TIMEOUT_MS = 10_000;
 
 const blocked = new BlockList();
 for (const [net, prefix] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4]] as const) blocked.addSubnet(net, prefix, "ipv4");
-for (const [net, prefix] of [["::", 128], ["::1", 128], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8], ["2001:db8::", 32], ["100::", 64]] as const) blocked.addSubnet(net, prefix, "ipv6");
+for (const [net, prefix] of [["::", 128], ["::1", 128], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8], ["2001:db8::", 32], ["100::", 64], ["64:ff9b:1::", 48], ["2002::", 16], ["2001::", 32], ["fec0::", 10]] as const) blocked.addSubnet(net, prefix, "ipv6");
+
+/** The 16 bytes of an IPv6 address however it is written (compressed, uncompressed, with a dotted IPv4 at the end). */
+function ipv6Bytes(ip: string): number[] | null {
+  let text = ip.split("%")[0];
+  const dotted = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text);
+  if (dotted) text = text.slice(0, dotted.index) + ((+dotted[1] << 8) | +dotted[2]).toString(16) + ":" + ((+dotted[3] << 8) | +dotted[4]).toString(16);
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (fill < 0 || (halves.length === 1 && head.length !== 8)) return null;
+  const groups = [...head, ...Array(fill).fill("0"), ...tail];
+  const out: number[] = [];
+  for (const g of groups) { const n = parseInt(g, 16); if (!/^[0-9a-f]{1,4}$/.test(g) || Number.isNaN(n)) return null; out.push(n >> 8, n & 255); }
+  return out.length === 16 ? out : null;
+}
 
 /** An address on the public internet: not loopback, private, link-local, multicast or otherwise reserved, whatever its spelling. */
 export function isPublicAddress(address: string): boolean {
-  let ip = address.replace(/^\[|\]$/g, "").toLowerCase();
+  const ip = address.replace(/^\[|\]$/g, "").toLowerCase();
   const kind = isIP(ip);
   if (!kind) return false;
   if (kind === 6) {
-    // IPv4 written inside IPv6 (::ffff:127.0.0.1, ::ffff:7f00:1, 64:ff9b::7f00:1) is judged by the IPv4 inside it.
-    const m = /^(?:0{0,4}:){2,5}(?:ffff:)?(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/.exec(ip) ?? /^64:ff9b::(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/.exec(ip);
-    if (m) {
-      const hi = m[2] ? parseInt(m[2], 16) : 0, lo = m[3] ? parseInt(m[3], 16) : 0;
-      const v4 = m[1] ?? [hi >> 8, hi & 255, lo >> 8, lo & 255].join(".");
-      return isPublicAddress(v4);
-    }
+    const b = ipv6Bytes(ip);
+    if (!b) return false;
+    const zero = (from: number, to: number) => b.slice(from, to).every((x) => x === 0);
+    // An IPv4 address carried inside IPv6 is judged by the IPv4 inside it: ::a.b.c.d, ::ffff:a.b.c.d, ::ffff:0:a.b.c.d (translated)
+    // and 64:ff9b::a.b.c.d (NAT64), written in any form.
+    const mapped = zero(0, 10) && ((b[10] === 0 && b[11] === 0) || (b[10] === 255 && b[11] === 255));
+    const translated = zero(0, 8) && b[8] === 255 && b[9] === 255 && b[10] === 0 && b[11] === 0;
+    const nat64 = b[0] === 0 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b && zero(4, 12);
+    if (mapped || translated || nat64) return isPublicAddress(b.slice(12).join("."));
   }
   return !blocked.check(ip, kind === 4 ? "ipv4" : "ipv6");
 }

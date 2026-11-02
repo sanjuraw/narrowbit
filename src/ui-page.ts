@@ -984,7 +984,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     window.open("/?t=" + encodeURIComponent(T) + "&fresh=1&project=" + encodeURIComponent(S.root), "_blank", "noopener");
   };
   window.narrowbitNewWindow = function () { $("winBtn").onclick(); };   // the Mac app's Window > New Window
-  function openLink(u) { if (native) native.postMessage({ type: "openUrl", url: u }); else window.open(u, "_blank", "noopener"); }
+  function openLink(u) { if (!u || !/^https?:\/\//i.test(u)) return; if (native) native.postMessage({ type: "openUrl", url: u }); else window.open(u, "_blank", "noopener"); }
   function failing(p) { return p.checks.filter(function (c) { return c.state === "fail"; }); }
   function loadPr() {
     if (!prKey) { prInfo = null; renderPr(); return; }
@@ -2485,7 +2485,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     var held = view.pendingBuf || []; view.pendingBuf = null;
     held.forEach(function (h) { handleStream(h); });
   }
-  window.__nb = { stream: function (e) { handleStream(e); }, claim: claimRun, view: function () { return view; }, commitMessage: defaultCommitMessage };   // for the page tests
+  window.__nb = { stream: function (e) { handleStream(e); }, claim: claimRun, view: function () { return view; }, commitMessage: defaultCommitMessage, openLink: openLink };   // for the page tests
   function handleStream(ev) {
       if (ev.type === "start") { if (ev.continueTask) run.tasks[ev.continueTask] = true; renderComposer(); renderSessions(); return; }
       if (ev.type === "event") {

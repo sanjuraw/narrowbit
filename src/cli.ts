@@ -476,7 +476,8 @@ export async function main(argv: string[]): Promise<number> {
       }
       const g = gitState(root);
       // A follow-up (--continue) builds on the earlier request's uncommitted edits, so it skips this.
-      if (g.isRepo && (g.dirty.length || g.staged.length) && !args.flags.force && !strFlag(args, "continue")) {
+      // --isolate works in a separate copy, so uncommitted changes in the folder are no reason to stop (scheduled runs use it).
+      if (g.isRepo && (g.dirty.length || g.staged.length) && !args.flags.force && !args.flags.isolate && !strFlag(args, "continue")) {
         process.stderr.write(
           `narrowbit: working tree has uncommitted changes (${g.dirty.length + g.staged.length} file(s)) — commit or stash first, or pass --force to let the agent's edits mix with them.\n`,
         );

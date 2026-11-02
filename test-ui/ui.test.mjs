@@ -837,6 +837,17 @@ describe("app page with a folder open", () => {
     } finally { v.asks = before; }
   });
 
+  test("a link that is not http or https is never opened (a javascript: or file: address does nothing)", async () => {
+    const opened = [], old = page.w.open;
+    page.w.open = (u) => { opened.push(u); };
+    try {
+      for (const bad of ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,hi", "", undefined]) page.w.__nb.openLink(bad);
+      assert.deepEqual(opened, [], "nothing opened");
+      page.w.__nb.openLink("https://github.com/sanjuraw/narrowbit");
+      assert.deepEqual(opened, ["https://github.com/sanjuraw/narrowbit"], "an https link still opens");
+    } finally { page.w.open = old; }
+  });
+
   test("a commit that edits a hook file is paused with a clear message, and the button sends the acknowledgement", async () => {
     const doc = page.w.document;
     const commitBox = await page.until(() => doc.querySelector(".changes .commit input, .changes .commit textarea"), "the commit message box on the Changes card");

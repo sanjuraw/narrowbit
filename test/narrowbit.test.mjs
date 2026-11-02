@@ -1035,6 +1035,28 @@ describe("fifth Codex review: checkpoint hooks, symlinked protected paths and di
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  test("the Mac app's native bridge answers only Narrowbit's own main page, not pages framed in the Preview pane", () => {
+    // twelfth audit (NB-04): WebKit offers the bridge to framed pages too. This is a source check (the app itself needs a Mac window).
+    const swift = readFileSync(join(process.cwd(), "mac", "Sources", "Narrowbit", "main.swift"), "utf8");
+    const handler = swift.slice(swift.indexOf("func userContentController(_ controller: WKUserContentController, didReceive"));
+    assert.match(handler.slice(0, 900), /guard message\.frameInfo\.isMainFrame[^]*?securityOrigin\.host == base\.host[^]*?securityOrigin\.port == base\.port/);
+  });
+
+  test("agent --isolate runs on a folder with uncommitted changes (scheduled runs always use it); a plain run still refuses", () => {
+    const { root } = tinyRepo();
+    const fake = fakeClaude([JSON.stringify({ action: "done", summary: "ok" })]);
+    try {
+      nb(root, "init");
+      writeFileSync(join(root, "a.txt"), "changed but not committed\n");
+      let plain = "";
+      try { nb(root, "agent", "say hi", "--claude-bin", fake.bin, "--no-boss", "--max-steps", "3"); } catch (e) { plain = String(e.stderr); }
+      assert.match(plain, /uncommitted changes/, "control: without --isolate the dirty folder is refused: ");
+      let isolated = "";
+      try { nb(root, "agent", "say hi", "--isolate", "--claude-bin", fake.bin, "--no-boss", "--max-steps", "3"); } catch (e) { isolated = String(e.stderr); }
+      assert.doesNotMatch(isolated, /uncommitted changes/, "--isolate is not stopped by the dirty folder");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
   test("a symlink can't be used to edit Narrowbit's own config or ignore file", async () => {
     const { root, p } = tinyRepo();
     const cfgPath = join(root, ".narrowbit", "config.json");
@@ -4558,6 +4580,18 @@ describe("command permission mode 'Ask, except checks'", () => {
     assert.ok(!a("npm test", checks, "the agent changed package.json"), "after a script-defining file changed, even a check asks");
   });
 
+  test("the filter and the shell agree on quotes: a ' inside double quotes does not hide an expansion, and 2>&1 only counts at the end of a pipe stage", async () => {
+    const { allowedAsCheck: a } = await dist("approvals.js");
+    const checks = ["npm test --silent"];
+    // twelfth audit (NB-01, NB-02): the old regex stripped what looked like '...' across two quoted quote marks, so $HOME or a glob
+    // sat unquoted between them and the shell expanded it; and `2>&1` removed from the middle made `git 2>&1 diff` look like `git diff`
+    for (const c of [`cat "'" $HOME "'"`, `cat "'" * "'"`, `cat "'"$HOME"'"`, `cat "'" ~ "'"`, `cat "'" \${HOME} "'"`, `cat '"' $HOME '"'`, `cat "$HOME"`, `cat 'a' *`,
+      "git 2>&1 diff", "git 2>&1 status", "npx 2>&1 vitest run", "pnpm 2>&1 exec vitest", "cat a 2>&1 b"])
+      assert.ok(!a(c, checks), `asks: ${c}`);
+    for (const c of [`cat "it's" README.md`, `grep -n "a'b" a.txt`, "cat README.md 2>&1 | tail -5", "git diff 2>&1 | head -5", "git status 2>&1", "npx vitest run 2>&1", `cat '$HOME'`, `grep "a b" a.txt | tail -3`])
+      assert.ok(a(c, checks), `still allowed: ${c}`);
+  });
+
   test("in the runtime: a check runs without the approver and is logged; anything else still goes to the approver", async () => {
     const { root, p } = tinyRepo();
     const fake = fakeClaude([
@@ -6084,8 +6118,8 @@ describe("link reader: pages pasted into a message are read for the model, publi
 
   test("only public addresses count, whatever the spelling", async () => {
     const { isPublicAddress, checkUrl } = await lr();
-    for (const ok of ["8.8.8.8", "1.1.1.1", "140.82.112.3", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) assert.equal(isPublicAddress(ok), true, ok);
-    for (const no of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "::1", "::", "fe80::1", "fc00::1", "fd12:3456::1", "::ffff:127.0.0.1", "::ffff:7f00:1", "::ffff:10.0.0.1", "64:ff9b::7f00:1", "not an address"]) assert.equal(isPublicAddress(no), false, no);
+    for (const ok of ["8.8.8.8", "1.1.1.1", "140.82.112.3", "2606:4700:4700::1111", "::ffff:8.8.8.8", "64:ff9b::808:808", "2a00:1450:4001:81b::200e"]) assert.equal(isPublicAddress(ok), true, ok);
+    for (const no of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "::1", "::", "fe80::1", "fc00::1", "fd12:3456::1", "::ffff:127.0.0.1", "::ffff:7f00:1", "::ffff:10.0.0.1", "64:ff9b::7f00:1", "0:0:0:0:0:0:7f00:1", "0:0:0:0:0:0:127.0.0.1", "::ffff:0:127.0.0.1", "::ffff:0:7f00:1", "2002:7f00:1::1", "64:ff9b:1::7f00:1", "64:ff9b:0:0:0:0:7f00:1", "fec0::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "not an address"]) assert.equal(isPublicAddress(no), false, no);
     for (const bad of ["http://localhost/", "http://127.0.0.1/", "http://2130706433/", "http://0x7f.0.0.1/", "http://017700000001/", "http://[::1]/", "http://[::ffff:127.0.0.1]/", "http://10.0.0.1/x", "http://169.254.169.254/latest/meta-data", "http://192.168.0.1/", "http://user:pw@example.com/", "ftp://example.com/", "file:///etc/passwd", "javascript:alert(1)", "https://example.com:8443/", "http://intranet/", "http://printer.local/", "http://db.internal/", "http://a.localhost/", "not a url"]) assert.ok("error" in checkUrl(bad), bad);
     for (const good of ["https://example.com/a?b=1#c", "http://example.org/", "https://github.com/morluto/rea", "https://sub.example.co.uk:443/x"]) assert.ok("url" in checkUrl(good), good);
   });

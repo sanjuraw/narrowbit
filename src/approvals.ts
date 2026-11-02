@@ -206,6 +206,27 @@ function execTool(a: string[], root?: string): boolean {
   return !!tool && ["vitest", "jest", "mocha", "ava", "tap", "eslint", "tsc"].includes(tool) && TOOLS[tool](a.slice(1), root);
 }
 
+/** True when the shell would expand something in `part`: `$` or a backtick or a backslash outside single quotes, an unquoted glob
+ * character, or an unquoted `~` at the start of a word. Walks the text with the same quote rules as the shell (a `'` inside double
+ * quotes is an ordinary character), so it cannot disagree with `shellWords` about what is quoted. */
+function hasExpansion(part: string): boolean {
+  let quote: string | null = null;
+  let atWordStart = true;
+  for (const ch of part) {
+    if (quote === "'") { if (ch === "'") quote = null; continue; }
+    if (quote === '"') {
+      if (ch === '"') quote = null;
+      else if (ch === "$" || ch === "`" || ch === "\\") return true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; atWordStart = false; continue; }
+    if (ch === "$" || ch === "`" || ch === "\\" || "*?[]{}()".includes(ch)) return true;
+    if (ch === "~" && atWordStart) return true;
+    atWordStart = ch === " " || ch === "\t";
+  }
+  return false;
+}
+
 /** Splits at the `|` characters the shell treats as pipes (not those inside quotes). Null when a quote is left open. */
 function splitPipes(cmd: string): string[] | null {
   const parts: string[] = [];
@@ -228,18 +249,19 @@ export function allowedAsCheck(command: string, checks: readonly string[], warni
   // feed, NBSP, line and paragraph separators, byte-order mark …) is part of a word for sh but would be trimmed or split by JavaScript,
   // so the path that was checked would not be the path that is opened.
   if (/[^\x20-\x7e\t\u00a1-\u2027\u202a-\u205e\u2060-\ufefe\uff00-\u{10ffff}]/u.test(command) || /[\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]/.test(command)) return false;
-  const cmd = command.replace(/^[ \t]+|[ \t]+$/g, "").replace(/[ \t]+2>&1(?=[ \t]|$)/g, "");
-  if (!cmd || /[;&`\n<>]|\$\(|\|\|/.test(cmd)) return false;
-  const parts = splitPipes(cmd);
-  if (!parts || parts.some((p) => !p)) return false;
+  const cmd = command.replace(/^[ \t]+|[ \t]+$/g, "");
+  if (!cmd || /\|\|/.test(cmd)) return false;
+  // `2>&1` is allowed only as the last words of a pipe stage. Stripped everywhere it would let `git 2>&1 diff` validate as
+  // `git diff` while the hardening, which looks for `git diff` as written, never applied to what the shell runs.
+  const stages = splitPipes(cmd);
+  if (!stages) return false;
+  const parts = stages.map((p) => p.replace(/[ \t]+2>&1$/, "").replace(/^[ \t]+|[ \t]+$/g, ""));
+  if (parts.some((p) => !p || /[;&`\n<>]|\$\(/.test(p))) return false;
   const [head, ...rest] = parts;
   const configured = checks.some((c) => c.replace(/^[ \t]+|[ \t]+$/g, "").replace(/[ \t]+2>&1(?=[ \t]|$)/g, "") === head);
   const check = (part: string, filter: boolean): boolean => {
     // Expansions are refused as the shell would perform them: an unquoted glob, variable or `~`, a `$` or backtick inside double quotes.
-    const noSingle = part.replace(/'[^']*'/g, "''");
-    for (const dq of noSingle.match(/"[^"]*"/g) ?? []) if (/[$`\\]/.test(dq)) return false;
-    if (/[*?\[\]{}()$\\]/.test(noSingle.replace(/"[^"]*"/g, '""'))) return false;
-    if (/(^|[ \t])~/.test(noSingle.replace(/"[^"]*"/g, '""'))) return false;
+    if (hasExpansion(part)) return false;
     const words = shellWords(part);
     if (!words || !words.length) return false;
     const [prog, ...args] = words;

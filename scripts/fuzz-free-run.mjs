@@ -68,6 +68,9 @@ const gen = () => {
   let c = one();
   if (rnd() < 0.25) c += " | " + one();
   if (rnd() < 0.05) c += " | " + one();
+  // twelfth audit: `2>&1` in the middle (it hid `git 2>&1 diff` from the hardening) and a quote mark inside double quotes around an expansion
+  if (rnd() < 0.05) c = c.replace(/^(\S+)/, "$1 2>&1");
+  if (rnd() < 0.05) c += pick([` "'" $HOME "'"`, ` "'" * "'"`, ` "'"$HOME"'"`, ` '"' ~ '"'`]);
   if (rnd() < 0.1) c += pick([" 2>&1", " 2>&1 | tail -5", " >out", " &", " ;", " && ls", " ||ls", " <a.txt", " # c", "\n"]);
   return c;
 };

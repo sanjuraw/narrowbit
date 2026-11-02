@@ -141,6 +141,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
+        // Only Narrowbit's own page may use this bridge: WebKit also offers it to pages framed inside it (the Preview pane
+        // shows whatever app is running on localhost), and those must not be able to open windows or copy to the clipboard.
+        guard message.frameInfo.isMainFrame, let base = serverURL,
+              message.frameInfo.securityOrigin.host == base.host,
+              message.frameInfo.securityOrigin.port == base.port else { return }
         switch type {
         case "newWindow":
             openNewWindow(project: body["project"] as? String)
