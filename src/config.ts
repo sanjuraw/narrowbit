@@ -202,7 +202,7 @@ export function loadConfig(p: Paths): NarrowbitConfig {
   // and what notes are read, so they only count once the user has accepted them (trust.ts); until then they are
   // dropped here, which covers every entry point (CLI, app, MCP) without each having to remember to check.
   const risks = repoConfigRisks(raw);
-  if (risks.length && !isTrusted(p.root, risks)) {
+  if (risks.length && !isTrusted(dirname(p.nb), risks)) {   // the project folder, also when p.root is an isolated task's copy of it
     cfg.memoryDirs = [];
     cfg.hooks = undefined;
     if (cfg.agent?.endpoints) cfg.agent = { ...cfg.agent, endpoints: undefined };

@@ -459,7 +459,8 @@ export async function main(argv: string[]): Promise<number> {
         if (!json) out(line);
       };
       if (!requireTrust(root, args)) return 2;
-      let text = pos.join(" ");
+      // Words after a bare `--` are task text whatever they start with (a scheduled task may begin with "--").
+      let text = [...pos, ...args.rest].join(" ");
       if (!text && !args.flags.skill) {
         process.stderr.write('usage: narrowbit agent "<task>" [--skill <name>] [--provider <name>] [--model X | --explore X --execute X --escalate X] [--effort medium] [--max-steps N] [--force] [--dry-run] [--json]\n');
         return 2;

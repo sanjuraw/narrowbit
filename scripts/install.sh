@@ -18,7 +18,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --check) CHECK=1 ;;
     --yes) YES=1 ;;
-    --dir) DIR="$2"; shift ;;
+    --dir) [ $# -ge 2 ] || { echo "--dir needs a folder" >&2; exit 2; }; DIR="$2"; shift ;;
     --skip-link) LINK=0 ;;
     --skip-app) APP=0 ;;
     -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -82,7 +82,7 @@ fi
 
 say "Getting Narrowbit into $DIR"
 if [ -d "$DIR/.git" ]; then
-  git -C "$DIR" pull --ff-only || { echo "  Couldn't update the existing copy (local changes?). Fix or move $DIR and re-run." >&2; exit 1; }
+  git -C "$DIR" -c core.hooksPath=/dev/null -c core.fsmonitor=false pull --ff-only || { echo "  Couldn't update the existing copy (local changes?). Fix or move $DIR and re-run." >&2; exit 1; }
 else
   if ! GIT_TERMINAL_PROMPT=0 git clone "$REPO_URL" "$DIR"; then
     cat >&2 <<EOF

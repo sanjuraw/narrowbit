@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { loadConfig, type AgentConfig, type Paths } from "./config.js";
 import { parseMentions, renderMentions, resolveMentions } from "./mentions.js";
 import { checkpointNow } from "./checkpoints.js";
-import { capOutput, runCommand } from "./compress.js";
+import { capOutput, hideSecretDiffs, runCommand } from "./compress.js";
 import { getConnector, listConnectors } from "./connectors.js";
 import { indexRepo, openStore } from "./indexer.js";
 import { ensureIsolated } from "./isolate.js";
@@ -319,7 +319,7 @@ export function capSummary(text: string, capTokens = 800): string {
 /** Refuse any path that would escape the repo root. */
 /** Files that define what a build/test command runs: edit one, and `npm test` / `pytest` / `make` now runs
  * something the user never saw when they approved that command text. */
-const SCRIPT_FILES = new Set(["package.json", "pyproject.toml", "setup.py", "setup.cfg", "tox.ini", "noxfile.py", "conftest.py", "pytest.ini", "makefile", "gnumakefile", "justfile", "taskfile.yml", "taskfile.yaml", "rakefile", "cargo.toml", "build.rs", ".npmrc", "deno.json", "deno.jsonc", "bunfig.toml"]);
+const SCRIPT_FILES = new Set(["package.json", "pyproject.toml", "setup.py", "setup.cfg", "tox.ini", "noxfile.py", "conftest.py", "pytest.ini", ".pytest.ini", "mypy.ini", ".mypy.ini", "sitecustomize.py", "usercustomize.py", "pytest.py", "mypy.py", "unittest.py", "makefile", "gnumakefile", "justfile", "taskfile.yml", "taskfile.yaml", "rakefile", "cargo.toml", "build.rs", ".npmrc", "deno.json", "deno.jsonc", "bunfig.toml"]);
 
 // Tool configuration that a check loads and runs (test runner, bundler, linter, formatter, task runner, git hook manager, make includes).
 const SCRIPT_FILE_PATTERN = /^(?:(?:vitest|vite|jest|webpack|rollup|babel|eslint|prettier|playwright|karma|cypress|tsup|esbuild|mocha|ava|nx|turbo|gulpfile|gruntfile|metro|next|nuxt|svelte|astro|stylelint|commitlint|lint-staged|swc|tailwind|postcss|lefthook|remix|vitest\.workspace|jest\.setup|vitest\.setup)(?:\.config)?\.(?:c|m)?(?:js|ts|json|ya?ml|toml)|\.(?:yarnrc(?:\.ya?ml)?|mocharc(?:\.[\w]+)?|babelrc(?:\.[\w]+)?|eslintrc(?:\.[\w]+)?|prettierrc(?:\.[\w]+)?|huskyrc|lintstagedrc(?:\.[\w]+)?|pre-commit-config\.ya?ml|envrc)|gemfile|build\.gradle(?:\.kts)?|pom\.xml|cmakelists\.txt|dockerfile|docker-compose\.ya?ml|.+\.(?:mk|cmake|gradle))$/i;
@@ -332,10 +332,11 @@ export function isScriptFile(base: string): boolean {
 export function scriptWarning(command: string, edited: Iterable<string>): string | undefined {
   const hits: string[] = [];
   // Named as a whole path word, not a substring: an edit to test.js must not flag `node latest.js`.
-  const named = (word: string) => word.length > 2 && new RegExp(`(^|[\\s/'"=])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s'";&|)])`).test(command);
+  const named = (word: string) => word.length >= 2 && new RegExp(`(^|[\\s/'"=])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s'";&|)])`).test(command);
   for (const f of edited) {
     const base = f.split("/").pop() ?? f;
-    if (isScriptFile(base) || named(f) || named(base)) hits.push(f);
+    // cargo runs the programs its config names (a runner, a rustc wrapper) on `cargo test` and `cargo check`
+    if (isScriptFile(base) || /(^|\/)\.cargo\/config(\.toml)?$/.test(f) || named(f) || named(base)) hits.push(f);
   }
   if (!hits.length) return undefined;
   return `The agent edited ${hits.slice(0, 4).join(", ")}${hits.length > 4 ? ` and ${hits.length - 4} more` : ""} during this task, which can change what this command actually runs — check the diff before allowing it.`;
@@ -1408,7 +1409,7 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
         return text;
       }
-      if (abs && isGitConfigInclude(p.root, abs)) {
+      if (abs && isGitConfigInclude(p.root, abs, realOfAbs !== null ? resolve(p.root, realOfAbs) : null)) {
         const text = `edit ${path}: refused — this repository's git config includes that file, so git would run any program named in it`;
         appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
         return text;
@@ -1430,7 +1431,8 @@ async function executeAction(p: Paths, taskId: string, d: Decision, approve?: Ru
       } else {
         // A file with more than one hard link shares its data with every other name for it — possibly one outside the
         // project (a backup, a key file) — and writing in place would change that too.
-        const st = lstatSync(abs);
+        // stat, not lstat: reached through a link inside the project, the file written is the one the link points to.
+        const st = statSync(abs);
         if (st.isFile() && st.nlink > 1) {
           const text = `edit ${path}: refused — this file has ${st.nlink} hard links, so changing it would also change the other name(s) for it, which may be outside this project. Copy it to a new file (a plain copy has one link) and edit that, or ask the user.`;
           appendEvent(p, taskId, { actor: "system", type: "tool_result", summary: text, meta: { path } });
@@ -1756,6 +1758,7 @@ async function leadReview(
   let diff = sh("git", ["diff", "HEAD", "--", ".", ":(exclude).narrowbit"], ctx.p.root).stdout;
   const untracked = untrackedFiles(ctx.p).filter((f) => !ctx.preexisting.has(f) && f !== ".narrowbitignore");
   for (const f of untracked.slice(0, 10)) {
+    if (isSecretFile(f)) continue;   // a new .env the agent made is not shown to the reviewing model, as `read` would not show it
     const abs = safeAbsPath(ctx.p, f);
     if (!abs || !existsSync(abs)) continue;
     const body = readFileSync(abs, "utf8").split("\n").slice(0, 150).map((l) => `+${l}`).join("\n");
@@ -1770,7 +1773,7 @@ async function leadReview(
     plan ? `Plan:\n${plan.steps.map((x, i) => `${i + 1}. ${x.text}`).join("\n")}` : "",
     `Worker's summary: ${workerSummary}`,
     lastVerify ? `Last verification: ${capSummary(lastVerify.summary, 400)}` : "Last verification: none run",
-    `Diff:\n${redact(diff) || "(no changes)"}`,
+    `Diff:\n${redact(hideSecretDiffs(diff)) || "(no changes)"}`,
     "Respond with the verdict JSON.",
   ]
     .filter(Boolean)

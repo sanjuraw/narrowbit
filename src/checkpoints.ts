@@ -306,6 +306,8 @@ export function planDiscard(root: string, start: string, end: string, opts: Disc
 
 export function discardTask(root: string, start: string, end: string, opts: DiscardOptions = {}): DiscardPlan & { ok: boolean; message: string; movedTo?: string } {
   const plan = planDiscard(root, start, end, opts);
+  // Restoring files runs the repository's git filters (checkout-index smudges), so an untrusted folder is left alone.
+  if (untrustedReason(root)) return { ...plan, ok: false, message: "nothing was changed: this folder's git settings haven't been trusted (open it in the app or run narrowbit agent --trust)." };
   const unsafe = rewindTrashUnsafe(root);
   if (unsafe && (plan.remove.length || plan.restore.length)) return { ...plan, ok: false, message: `nothing was changed: ${unsafe}` };
   let movedTo: string | undefined;

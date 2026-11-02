@@ -225,8 +225,16 @@ export function describeRisks(risks: GitRisk[]): string {
 /** The one check every entry point uses before running git in a folder: null if fine to open, else why not. */
 export function untrustedReason(root: string): { risks: GitRisk[]; message: string } | null {
   const risks = [...gitConfigRisks(root), ...repoConfigRisksAt(root), ...shippedRisks(root)];
-  if (isTrusted(root, risks)) return null;
-  return { risks, message: untrustedMessage(root, risks) };
+  const key = trustedRoot(root);
+  if (isTrusted(key, risks)) return null;
+  return { risks, message: untrustedMessage(key, risks) };
+}
+
+/** What the user trusted is the project folder: an isolated task's separate copy (`<project>/.narrowbit/worktrees/<id>`) is
+ * the same project, so a trust decision made for the folder holds for its copy instead of silently not applying. */
+export function trustedRoot(root: string): string {
+  const m = /^(.*)[\\/]\.narrowbit[\\/]worktrees[\\/][^\\/]+$/.exec(root);
+  return m ? m[1] : root;
 }
 
 /**

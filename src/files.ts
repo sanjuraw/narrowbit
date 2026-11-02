@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, lstatSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { DEFAULT_IGNORE, type Paths } from "./config.js";
-import { realRel, sh, stateText } from "./util.js";
+import { isSecretFile, realRel, sh, stateText } from "./util.js";
 
 export const CODE_EXT = /\.(?:[cm]?[jt]sx?|d\.ts)$/;
 export const DOC_EXT = /\.(?:md|mdx)$/i;
@@ -113,7 +113,7 @@ export function listFiles(p: Paths): string[] {
   };
   const ownState = (f: string) => /^(\.narrowbit|\.git)(\/|$)/i.test(f);
   return [...new Set(files)]
-    .filter((f) => !ownState(f) && !ig.ignores(f) && existsSync(join(p.root, f)))
+    .filter((f) => !ownState(f) && !ig.ignores(f) && !isSecretFile(f) && existsSync(join(p.root, f)))   // the ignore patterns are case-sensitive; .ENV, ID_RSA, id_ecdsa, env.yaml must not be indexed or mentioned either
     .filter((f) => {
       try {
         // lstat, not stat: a symlink is never indexed. Following one would let the index (and so symbol lookup and

@@ -66,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         } else {
             // The shell couldn't be read in time: a login shell still gets ~/.zprofile's PATH.
             p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            p.arguments = ["-lc", "exec \(bin) ui --app"]
+            p.arguments = ["-lc", "exec \"$0\" ui --app", bin]   // the path is an argument, not shell text: a space or a $ in it stays part of the name
             env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         }
         // Tells the server this window relaunches it on exit code 75, so a self-update can restart it.
@@ -157,10 +157,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             panel.prompt = "Open"
             panel.message = "Choose a repository for Narrowbit to work in"
             let host: NSWindow = message.webView?.window ?? window
-            panel.beginSheetModal(for: host) { [weak self] resp in
+            let asker: WKWebView = message.webView ?? web   // the window that asked gets the answer, not always the first one
+            panel.beginSheetModal(for: host) { resp in
                 guard resp == .OK, let path = panel.url?.path,
                       let data = try? JSONEncoder().encode(path), let arg = String(data: data, encoding: .utf8) else { return }
-                self?.web.evaluateJavaScript("window.narrowbitFolderPicked(\(arg))")
+                asker.evaluateJavaScript("window.narrowbitFolderPicked(\(arg))")
             }
         case "openUrl":
             // Sign-in pages for connectors open in the user's own browser, never inside this window.

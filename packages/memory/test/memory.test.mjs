@@ -118,6 +118,14 @@ describe("branching a conversation", () => {
       assert.equal(api.readEvidence(p, r.taskId, handle.id)?.includes("the whole file"), true, "evidence the log points at came along");
       assert.equal(api.readEvents(p, t).length, 6, "the original is untouched");
 
+      // a link planted in the evidence folder is not copied into the branch
+      const outside = join(root, "outside.txt"); writeFileSync(outside, "SECRET");
+      symlinkSync(outside, join(api.taskDir(p, t), "evidence", "planted"));
+      const r2 = api.forkTask(p, t, second.id);
+      const evDir = join(api.taskDir(p, r2.taskId), "evidence");
+      assert.ok(!readdirSync(evDir).includes("planted"), "the link stayed behind");
+      assert.ok(readdirSync(evDir).length >= 1, "the evidence itself came along");
+
       assert.match(api.forkTask(p, t, first.id).error, /first message/);
       assert.match(api.forkTask(p, t, "nope").error, /isn't in this conversation/);
       assert.match(api.forkTask(p, t, api.readEvents(p, t)[3].id).error, /one of your messages/);

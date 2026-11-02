@@ -1,7 +1,7 @@
 import { test, describe, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, realpathSync, lstatSync, statSync, readdirSync, copyFileSync, utimesSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, symlinkSync, linkSync, realpathSync, lstatSync, statSync, readdirSync, copyFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve, isAbsolute, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1040,6 +1040,85 @@ describe("fifth Codex review: checkpoint hooks, symlinked protected paths and di
     const swift = readFileSync(join(process.cwd(), "mac", "Sources", "Narrowbit", "main.swift"), "utf8");
     const handler = swift.slice(swift.indexOf("func userContentController(_ controller: WKUserContentController, didReceive"));
     assert.match(handler.slice(0, 900), /guard message\.frameInfo\.isMainFrame[^]*?securityOrigin\.host == base\.host[^]*?securityOrigin\.port == base\.port/);
+    // NB-13: the fallback launch passes the program path as an argument (not text for the shell), and a folder picked in one window answers that window
+    assert.match(swift, /"exec \\"\$0\\" ui --app", bin\]/);
+    assert.match(handler, /let asker: WKWebView = message\.webView \?\? web[^]*?asker\.evaluateJavaScript\("window\.narrowbitFolderPicked/);
+  });
+
+  test("task text after a bare -- is the task even when it starts with -- (scheduled runs pass it that way)", () => {
+    const { root } = tinyRepo();
+    try {
+      nb(root, "init");
+      writeFileSync(join(root, "a.txt"), "changed but not committed\n");
+      let err = "";
+      try { nb(root, "agent", "--max-steps", "3", "--", "--force please tidy up"); } catch (e) { err = String(e.stderr); }
+      assert.match(err, /uncommitted changes/, "the words were read as the task (not as --force, which would have skipped this check, nor as nothing)");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("config files tools load and run are flagged when the agent edits them (mypy/pytest ini, python shadow modules, .cargo/config, short script names), and the per-worktree git config's includes are protected", async () => {
+    const { isScriptFile, scriptWarning } = await dist("runtime.js");
+    const { isGitConfigInclude } = await dist("util.js");
+    // twelfth audit (NB-10)
+    for (const f of ["mypy.ini", ".mypy.ini", ".pytest.ini", "sitecustomize.py", "usercustomize.py", "pytest.py", "mypy.py", "unittest.py"]) assert.ok(isScriptFile(f), f);
+    assert.ok(scriptWarning("cargo test", [".cargo/config.toml"]), "cargo config names a runner and a rustc wrapper");
+    assert.ok(scriptWarning("cargo test", [".cargo/config"]));
+    assert.ok(scriptWarning("sh ci", ["ci"]), "a two-letter script name");
+    assert.equal(scriptWarning("node latest.js", ["test.js"]), undefined, "still a whole-word match, not a substring");
+    const { root } = tinyRepo();
+    try {
+      const g = (...a) => execFileSync("git", a, { cwd: root, stdio: "ignore" });
+      g("config", "extensions.worktreeConfig", "true");
+      g("config", "--worktree", "include.path", "../extra.cfg");
+      assert.ok(isGitConfigInclude(root, join(root, "extra.cfg")), "a file named by an include in config.worktree, not created yet");
+      assert.ok(!isGitConfigInclude(root, join(root, "other.cfg")));
+      if (process.platform === "darwin") assert.ok(isGitConfigInclude(root, join(root, "EXTRA.CFG")), "case-insensitive volume");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("secret files are not indexed or attached by @-mention under any spelling of their name (.ENV, ID_RSA, id_ecdsa, env.yaml)", async () => {
+    const { listFiles } = await dist("files.js");
+    const { resolveMentions } = await dist("mentions.js");
+    const { root, p } = tinyRepo();
+    try {
+      // twelfth audit (NB-03): the ignore patterns are case-sensitive and do not list every key-file name
+      for (const f of [".ENV", "ID_RSA", "CREDENTIALS.JSON", "id_ecdsa", "env.yaml", "CERT.PEM", "notes.txt"]) writeFileSync(join(root, f), "SECRETVAL\n");
+      execFileSync("git", ["add", "-A"], { cwd: root });
+      const files = listFiles(p);
+      for (const f of [".ENV", "ID_RSA", "CREDENTIALS.JSON", "id_ecdsa", "env.yaml", "CERT.PEM"]) assert.ok(!files.includes(f), `${f} is not listed`);
+      assert.ok(files.includes("notes.txt") && files.includes("a.txt"), "ordinary files are");
+      const m = resolveMentions(p, [".ENV", "id_ecdsa", "notes.txt"]);
+      assert.equal(m[0].content, null); assert.equal(m[1].content, null);
+      assert.match(m[2].content, /SECRETVAL/, "control: a normal file is attached");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("OAuth sign-in: an address written any way as loopback, unspecified or link-local is not 'public', and the server address is checked before it is asked anything", async () => {
+    const { hostKind, discover } = await dist("oauth.js");
+    // twelfth audit (NB-05)
+    for (const h of ["[::]", "0:0:0:0:0:0:7f00:1", "[::ffff:0:127.0.0.1]", "2002:7f00:1::1", "127.0.0.1", "10.0.0.5", "localhost", "[::1]"]) assert.equal(hostKind(h), "local", h);
+    for (const h of ["169.254.169.254", "[::ffff:169.254.169.254]", "[::ffff:a9fe:a9fe]", "[fe80::1]"]) assert.equal(hostKind(h), "link-local", h);
+    for (const h of ["8.8.8.8", "example.com", "[2606:4700:4700::1111]"]) assert.equal(hostKind(h), "public", h);
+    await assert.rejects(discover("http://mcp.example.com/mcp"), /plain http to a public host/, "refused before any request is made");
+  });
+
+  test("git blame does not run the repository's textconv program, as a free-run check or in Narrowbit's own git calls", async () => {
+    const { hardenGitCommand, gitArgs } = await dist("util.js");
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "nb-blame-")));
+    try {
+      const g = (...a) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root, stdio: "ignore" });
+      g("init", "-q"); writeFileSync(join(root, "a.txt"), "hello\n"); writeFileSync(join(root, ".gitattributes"), "*.txt diff=x\n");
+      g("add", "-A"); g("commit", "-qm", "i");
+      writeFileSync(join(root, "tc.sh"), `#!/bin/sh\ntouch ${root}/MARKER\ncat "$1"\n`, { mode: 0o755 });
+      g("config", "diff.x.textconv", join(root, "tc.sh"));
+      execFileSync("sh", ["-c", "git blame a.txt"], { cwd: root, stdio: "ignore" });
+      assert.ok(existsSync(join(root, "MARKER")), "control: plain git blame does run it, so the test is live");
+      rmSync(join(root, "MARKER"));
+      execFileSync("sh", ["-c", hardenGitCommand("git blame a.txt")], { cwd: root, stdio: "ignore" });
+      assert.ok(!existsSync(join(root, "MARKER")), "the hardened free-run command did not");
+      execFileSync("git", gitArgs(root, ["blame", "a.txt"]), { cwd: root, stdio: "ignore" });
+      assert.ok(!existsSync(join(root, "MARKER")), "nor did Narrowbit's own call");
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   test("agent --isolate runs on a folder with uncommitted changes (scheduled runs always use it); a plain run still refuses", () => {
@@ -1055,6 +1134,23 @@ describe("fifth Codex review: checkpoint hooks, symlinked protected paths and di
       try { nb(root, "agent", "say hi", "--isolate", "--claude-bin", fake.bin, "--no-boss", "--max-steps", "3"); } catch (e) { isolated = String(e.stderr); }
       assert.doesNotMatch(isolated, /uncommitted changes/, "--isolate is not stopped by the dirty folder");
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
+  });
+
+  test("an edit through a link inside the project is refused when the file it points to has another hard link (possibly outside)", async () => {
+    const { root, p } = tinyRepo();
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-hl-")));
+    // twelfth audit (NB-03): the hard-link check looked at the link itself, which is never a regular file
+    linkSync(join(root, "a.txt"), join(outside, "backup.txt"));
+    symlinkSync("a.txt", join(root, "alias.txt"));
+    const fake = fakeClaude([
+      JSON.stringify({ action: "edit", path: "alias.txt", old: "hello", new: "changed" }),
+      JSON.stringify({ action: "done", summary: "done" }),
+    ]);
+    try {
+      await runTask(p, "tidy", { claudeBin: fake.bin, boss: false, maxSteps: 6 });
+      assert.equal(readFileSync(join(outside, "backup.txt"), "utf8"), "hello\n", "the other name for the file is unchanged");
+      assert.equal(readFileSync(join(root, "a.txt"), "utf8"), "hello\n");
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); rmSync(fake.dir, { recursive: true, force: true }); }
   });
 
   test("a symlink can't be used to edit Narrowbit's own config or ignore file", async () => {
@@ -2319,6 +2415,11 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 7000
       assert.ok(calls[0].some((x) => x.startsWith("model_instructions_file=")), "our rules replace Codex's base instructions");
       assert.ok(!calls[0].some((x) => x.includes("RULES")), "…instead of being pasted into the prompt");
       assert.ok(calls[1].some((x) => x.startsWith("model_instructions_file=")), "and stay the same on resumed calls");
+      // twelfth audit (NB-07): a message that starts with "-" (a bulleted list, "--help me") must reach Codex as the prompt, not as a flag
+      await callCodex({ cwd: dir, prompt: "- fix the title", systemPrompt: "RULES", model: "gpt-6-luna", role: "t" });
+      const all = readFileSync(join(dir, "args.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      for (const c of all) assert.equal(c[c.length - 2], "--", "the prompt follows a bare --, with or without images");
+      assert.equal(all[2][all[2].length - 1], "- fix the title");
     } finally { delete process.env.NARROWBIT_CODEX; rmSync(dir, { recursive: true, force: true }); }
   });
 });
@@ -3312,6 +3413,41 @@ describe("eleventh audit: a repo's own config can't redirect keys or read outsid
         assert.equal(ep.baseUrl, "https://openrouter.ai/api/v1", "the real endpoint is used");
         assert.notEqual(ep.apiKey, "canary-SECRET-123", "an environment variable named by the repo is not read as the key");
         assert.ok(!JSON.stringify(openMemory(p).load()).includes("NB-DIARY-SECRET-5521"), "notes outside the repo are not read");
+      } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+    });
+  });
+
+  test("an isolated task's copy shares the project's trust, Apply never brings a .narrowbit/ folder over, and Discard leaves an untrusted folder alone", async () => {
+    await withHome(async () => {
+      const { loadConfig } = await dist("config.js");
+      const { untrustedReason, trustRepo } = await dist("trust.js");
+      const { ensureIsolated, applyIsolated } = await dist("isolate.js");
+      const { discardTask } = await dist("checkpoints.js");
+      const { root, p } = tinyRepo();
+      const outside = realpathSync(mkdtempSync(join(tmpdir(), "nb-diary-")));
+      try {
+        // twelfth audit (NB-08, NB-09): trust is the project folder's, and its isolated copy lives inside it
+        hostileConfig(root, outside);
+        trustRepo(root, untrustedReason(root).risks);
+        const m = ensureIsolated(p, "rt-trust-1");
+        assert.equal(untrustedReason(m.dir), null, "the copy is not asked about again");
+        assert.equal(loadConfig({ ...p, root: m.dir }).agent.endpoints.openrouter.baseUrl, "https://evil.invalid/v1/{FAKE_URL_VAR}", "accepted settings still apply in the copy");
+        // a command run in the copy writes a .narrowbit/ folder: Apply must not carry it into the real one
+        const real = readFileSync(join(root, ".narrowbit", "config.json"), "utf8");
+        mkdirSync(join(m.dir, ".narrowbit"), { recursive: true });
+        writeFileSync(join(m.dir, ".narrowbit", "config.json"), '{"version":99}');
+        writeFileSync(join(m.dir, ".narrowbitignore"), "!*\n");
+        writeFileSync(join(m.dir, "a.txt"), "the agent's work\n");
+        const r = applyIsolated(p, "rt-trust-1");
+        assert.ok(r.ok && r.files === 1, "only a.txt came over: " + r.message);
+        assert.equal(readFileSync(join(root, ".narrowbit", "config.json"), "utf8"), real, "the real settings are untouched");
+        assert.ok(!existsSync(join(root, ".narrowbitignore")));
+        // a folder whose git settings are not trusted is not written to by Discard
+        execFileSync("git", ["config", "filter.x.clean", "cat"], { cwd: root });
+        const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+        const d = discardTask(root, head, head);
+        assert.equal(d.ok, false);
+        assert.match(d.message, /haven't been trusted/);
       } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
     });
   });
@@ -6398,6 +6534,10 @@ describe("planning chat: a read-only copy of a linked repository, explored with 
     writeFileSync(join(src, "docs", "design.md"), "# design\n");
     writeFileSync(join(src, "main.py"), "print('hi')\n");
     symlinkSync("/etc/hosts", join(src, "sneaky"));
+    // settings the agent CLIs load from the folder they run in (twelfth audit, NB-11)
+    mkdirSync(join(src, ".codex")); writeFileSync(join(src, ".codex", "config.toml"), "[mcp_servers.x]\ncommand = \"touch\"\n");
+    mkdirSync(join(src, ".gemini")); writeFileSync(join(src, ".gemini", "settings.json"), "{}");
+    writeFileSync(join(src, ".mcp.json"), "{}");
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], { cwd: src });
     execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"], { cwd: src });
     return src;
@@ -6413,6 +6553,8 @@ describe("planning chat: a read-only copy of a linked repository, explored with 
       assert.equal(readFileSync(join(a.dir, "docs", "design.md"), "utf8"), "# design\n");
       assert.ok(!existsSync(join(a.dir, ".git")), "no .git folder");
       assert.ok(!existsSync(join(a.dir, "sneaky")) && !readdirSync(a.dir).includes("sneaky"), "the link to a file outside is gone");
+      for (const f of [".codex", ".gemini", ".mcp.json"]) assert.ok(!existsSync(join(a.dir, f)), `${f} is removed: the CLIs would load it as their own settings`);
+      assert.ok(existsSync(join(a.dir, "main.py")), "ordinary files stay");
       writeFileSync(join(a.dir, "marker"), "x");
       const b = await copyRepo("o", "r", { url: src, root });
       assert.equal(b.dir, a.dir); assert.ok(existsSync(join(a.dir, "marker")), "a fresh copy is reused, not cloned again");

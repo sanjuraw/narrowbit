@@ -49,22 +49,28 @@ function ipv6Bytes(ip: string): number[] | null {
   return out.length === 16 ? out : null;
 }
 
+/** An IPv4 address carried inside IPv6 (::a.b.c.d, ::ffff:a.b.c.d, ::ffff:0:a.b.c.d translated, 64:ff9b::a.b.c.d NAT64), written in any
+ * form, as plain dotted IPv4; any other address comes back as it was given. */
+export function unwrapIPv4(address: string): string {
+  const ip = address.replace(/^\[|\]$/g, "").toLowerCase();
+  if (isIP(ip) !== 6) return ip;
+  const b = ipv6Bytes(ip);
+  if (!b) return ip;
+  const zero = (from: number, to: number) => b.slice(from, to).every((x) => x === 0);
+  const mapped = zero(0, 10) && ((b[10] === 0 && b[11] === 0) || (b[10] === 255 && b[11] === 255));
+  const translated = zero(0, 8) && b[8] === 255 && b[9] === 255 && b[10] === 0 && b[11] === 0;
+  const nat64 = b[0] === 0 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b && zero(4, 12);
+  return mapped || translated || nat64 ? b.slice(12).join(".") : ip;
+}
+
 /** An address on the public internet: not loopback, private, link-local, multicast or otherwise reserved, whatever its spelling. */
 export function isPublicAddress(address: string): boolean {
   const ip = address.replace(/^\[|\]$/g, "").toLowerCase();
   const kind = isIP(ip);
   if (!kind) return false;
-  if (kind === 6) {
-    const b = ipv6Bytes(ip);
-    if (!b) return false;
-    const zero = (from: number, to: number) => b.slice(from, to).every((x) => x === 0);
-    // An IPv4 address carried inside IPv6 is judged by the IPv4 inside it: ::a.b.c.d, ::ffff:a.b.c.d, ::ffff:0:a.b.c.d (translated)
-    // and 64:ff9b::a.b.c.d (NAT64), written in any form.
-    const mapped = zero(0, 10) && ((b[10] === 0 && b[11] === 0) || (b[10] === 255 && b[11] === 255));
-    const translated = zero(0, 8) && b[8] === 255 && b[9] === 255 && b[10] === 0 && b[11] === 0;
-    const nat64 = b[0] === 0 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b && zero(4, 12);
-    if (mapped || translated || nat64) return isPublicAddress(b.slice(12).join("."));
-  }
+  if (kind === 6 && !ipv6Bytes(ip)) return false;
+  const inner = unwrapIPv4(ip);
+  if (inner !== ip) return isPublicAddress(inner);
   return !blocked.check(ip, kind === 4 ? "ipv4" : "ipv6");
 }
 

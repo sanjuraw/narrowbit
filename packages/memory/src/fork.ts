@@ -1,4 +1,4 @@
-import { cpSync, existsSync } from "node:fs";
+import { cpSync, existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { appendEvent, ensureTaskDir, readEvents, taskDir } from "./events.js";
 import type { MemoryPaths } from "./paths.js";
@@ -24,7 +24,8 @@ export function forkTask(p: MemoryPaths, taskId: string, eventId: string): { tas
   const newId = `rt-${shortId()}`;
   ensureTaskDir(p, newId);
   const src = join(taskDir(p, taskId), "evidence");
-  if (existsSync(src)) cpSync(src, join(taskDir(p, newId), "evidence"), { recursive: true });
+  // A link inside evidence/ is not evidence (readEvidence refuses links): leave it behind rather than copy where it points.
+  if (existsSync(src)) cpSync(src, join(taskDir(p, newId), "evidence"), { recursive: true, filter: (f) => !lstatSync(f).isSymbolicLink() });
   let copied = 0;
   for (const e of events.slice(0, idx)) {
     const meta = e.meta ? { ...e.meta } : undefined;

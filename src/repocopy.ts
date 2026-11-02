@@ -18,6 +18,8 @@ const KEEP_MS = 3 * 24 * 3600_000;
 
 export const reposRoot = (): string => join(homedir(), ".narrowbit", "drafts", "repos");
 
+const AGENT_SETTINGS = new Set([".codex", ".claude", ".gemini", ".agents", ".mcp.json"]);
+
 /** Removes symbolic links and measures what is left; returns an error text when the copy is too big. */
 function strip(dir: string): string | null {
   let bytes = 0;
@@ -25,6 +27,8 @@ function strip(dir: string): string | null {
   const walk = (d: string): string | null => {
     for (const e of readdirSync(d, { withFileTypes: true })) {
       const f = join(d, e.name);
+      // Settings the agent CLIs load from the folder they run in (MCP servers, hooks): a linked repository is not trusted to set them.
+      if (d === dir && AGENT_SETTINGS.has(e.name)) { rmSync(f, { recursive: true, force: true }); continue; }
       if (e.isSymbolicLink()) { unlinkSync(f); continue; }
       if (e.isDirectory()) { const bad = walk(f); if (bad) return bad; continue; }
       if (!e.isFile()) { unlinkSync(f); continue; }

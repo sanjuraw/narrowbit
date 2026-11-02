@@ -218,7 +218,8 @@ async function applyUpdateNow(): Promise<UpdateNotes> {
     const reset = git(["reset", "--hard", oldHead]);
     if (reset.code !== 0 || git(["rev-parse", "HEAD"]).out !== oldHead) problems.push("restoring the previous code failed");
     else {
-      if (changedDeps) {
+      // Same condition as the update itself: with node_modules missing the build below cannot work either.
+      if (changedDeps || !existsSync(join(INSTALL_ROOT, "node_modules"))) {
         const inst = await exec("npm", ["install", "--no-audit", "--no-fund"], 300_000);
         if (inst.code !== 0) problems.push("reinstalling the previous dependencies failed");
       }

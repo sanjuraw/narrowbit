@@ -80,16 +80,16 @@ export function callCodex(opts: ModelCallOptions): Promise<ModelCallResult> {
   if (opts.sessionId && opts.resume) {
     instr = instructionsFor.get(opts.sessionId);
     if (lean && instr) modelFlags.push("-c", `model_instructions_file=${JSON.stringify(instr)}`);
-    args = ["exec", "resume", opts.sessionId, "--json", "--skip-git-repo-check", ...modelFlags, ...imageFlags, ...(imageFlags.length ? ["--"] : []), prompt];
+    args = ["exec", "resume", opts.sessionId, "--json", "--skip-git-repo-check", ...modelFlags, ...imageFlags, "--", prompt];
   } else if (lean && opts.systemPrompt !== undefined) {
     instr = instructionsFile(opts.systemPrompt);
     // Lean mode has Codex's own shell and file tools switched off, so its sandbox grants it nothing — but the model reads
     // the sandbox policy and, told "read-only", refused to make the edit (7 of 40 Hono tasks ended "blocked: the workspace
     // is mounted read-only"). Narrowbit applies every edit itself; say the workspace is writable so the model plans edits.
-    args = ["exec", "--json", "--skip-git-repo-check", "-s", "workspace-write", ...modelFlags, "-c", `model_instructions_file=${JSON.stringify(instr)}`, ...imageFlags, ...(imageFlags.length ? ["--"] : []), prompt];
+    args = ["exec", "--json", "--skip-git-repo-check", "-s", "workspace-write", ...modelFlags, "-c", `model_instructions_file=${JSON.stringify(instr)}`, ...imageFlags, "--", prompt];
   } else {
     const promptText = opts.systemPrompt !== undefined ? `${opts.systemPrompt}\n\n${prompt}` : prompt;
-    args = ["exec", "--json", "--skip-git-repo-check", "-s", "read-only", ...modelFlags, ...imageFlags, ...(imageFlags.length ? ["--"] : []), promptText];
+    args = ["exec", "--json", "--skip-git-repo-check", "-s", "read-only", ...modelFlags, ...imageFlags, "--", promptText];
   }
 
   return new Promise((resolve) => {

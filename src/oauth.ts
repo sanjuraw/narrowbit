@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { isIP } from "node:net";
 import { join } from "node:path";
+import { isPublicAddress, unwrapIPv4 } from "./linkreader.js";
 
 /**
  * OAuth 2.1 sign-in for remote MCP servers (Linear, Slack, Notion, Atlassian…): discovery of the
@@ -101,14 +103,13 @@ interface AsMeta {
  * sending you: never a link-local/metadata address (169.254.x.x, fe80::), and a loopback/private one only when the MCP
  * server you configured is itself local or private. Anything over plain http must be local too.
  */
-function hostKind(host: string): "link-local" | "local" | "public" {
+export function hostKind(host: string): "link-local" | "local" | "public" {
   const h = host.replace(/^\[|\]$/g, "").toLowerCase();
-  // An IPv4 address written as IPv6 (::ffff:127.0.0.1, which URL normalises to ::ffff:7f00:1) is judged by the IPv4 inside it.
-  const mapped = /^(?:0{0,4}:){2,5}(?:ffff:)?(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/.exec(h);
-  if (mapped) {
-    const v4 = mapped[1] ?? [parseInt(mapped[2], 16) >> 8, parseInt(mapped[2], 16) & 255, parseInt(mapped[3], 16) >> 8, parseInt(mapped[3], 16) & 255].join(".");
-    return hostKind(v4);
-  }
+  // An address written as numbers, in any spelling (::ffff:127.0.0.1, 0:0:0:0:0:0:7f00:1, [::]): the IPv4 inside an IPv6 one counts, and
+  // anything the shared check calls non-public is at least local. Link-local ones are told apart because they are never allowed.
+  const v = unwrapIPv4(h);
+  if (/^169\.254\./.test(v) || /^fe[89ab][0-9a-f]:/.test(v)) return "link-local";
+  if (isIP(v) && !isPublicAddress(v)) return "local";
   if (/^169\.254\./.test(h) || /^fe[89ab][0-9a-f]:/.test(h)) return "link-local";
   if (h === "localhost" || h.endsWith(".localhost") || h === "::1" || /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h) || /^f[cd][0-9a-f]{2}:/.test(h) || /^0\./.test(h)) return "local";
   return "public";
@@ -134,6 +135,7 @@ function assertSafeEndpoint(value: unknown, what: string, mcpUrl: string): strin
 
 /** Finds the authorization server for an MCP server URL (RFC 9728 protected-resource metadata, then RFC 8414). */
 export async function discover(mcpUrl: string): Promise<AsMeta> {
+  assertSafeEndpoint(mcpUrl, "the server address", mcpUrl);   // before anything is requested from it
   const u = new URL(mcpUrl);
   let issuer = u.origin;
   try {

@@ -11,7 +11,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "mac/.build/release/Narrowbit" "$APP/Contents/MacOS/Narrowbit"
 # Build AppIcon.icns from the single 1024x1024 source (mac/Resources/icon.png) — iconset needs
 # every size named explicitly; macOS applies the rounded-square mask/shadow itself at display time.
-ICONSET=$(mktemp -d)/AppIcon.iconset
+SCRATCH=$(mktemp -d)
+trap 'rm -rf "$SCRATCH"' EXIT
+ICONSET="$SCRATCH/AppIcon.iconset"
 mkdir -p "$ICONSET"
 for size in 16 32 128 256 512; do
   sips -z $size $size mac/Resources/icon.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null

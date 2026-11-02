@@ -128,7 +128,7 @@ export function runSchedule(s: Schedule): Promise<RunOutcome> {
   return new Promise((resolve) => {
     const env = { ...process.env };
     for (const k of ["CLAUDE_CODE_ENTRYPOINT", "CLAUDECODE", "CLAUDE_CODE_HOST_SESSION_ID", "CLAUDE_CODE_DESKTOP_APP_VERSION", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_EAGER_FLUSH"]) delete env[k];
-    const child = spawn(process.execPath, [bin, "agent", s.task, "--isolate", "--allow-checks", "--max-steps", "25"], { cwd: s.root, env, stdio: ["ignore", fd, fd] });
+    const child = spawn(process.execPath, [bin, "agent", "--isolate", "--allow-checks", "--max-steps", "25", "--", s.task], { cwd: s.root, env, stdio: ["ignore", fd, fd] });
     const timer = setTimeout(() => child.kill("SIGTERM"), 30 * 60_000);
     child.on("error", () => { clearTimeout(timer); closeSync(fd); resolve({ outcome: "could not start" }); });
     child.on("close", (code) => {

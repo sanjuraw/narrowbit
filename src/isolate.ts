@@ -109,7 +109,7 @@ export function ensureIsolated(p: Paths, taskId: string): Marker {
       /* not fatal */
     }
   }
-  const stage = sh("git", ["add", "-A", "--", ".", ":(exclude)node_modules"], dir);
+  const stage = sh("git", ["add", "-A", "--", ".", ":(exclude)node_modules", ":(exclude).narrowbit", ":(exclude).narrowbitignore"], dir);
   if (stage.code !== 0) abandon(`couldn't stage the copy (${lastLine(stage)})`);
   const commit = sh("git", [...GIT, ...NO_HOOKS, "commit", "-q", "--allow-empty", "--no-verify", "-m", "narrowbit snapshot"], dir);
   if (commit.code !== 0) abandon(`couldn't record the copy's starting point (${lastLine(commit)})`);
@@ -124,7 +124,7 @@ export function ensureIsolated(p: Paths, taskId: string): Marker {
  * patch when staging or diffing fails (an index.lock, say): "no changes" would let the caller delete the copy and lose
  * the agent's work. */
 export function isolatedPatch(m: Marker): string {
-  const add = sh("git", ["add", "-A", "--", ".", ":(exclude)node_modules"], m.dir);
+  const add = sh("git", ["add", "-A", "--", ".", ":(exclude)node_modules", ":(exclude).narrowbit", ":(exclude).narrowbitignore"], m.dir);
   if (add.code !== 0) throw new Error(`couldn't read the separate copy's changes (${add.stderr.trim().split("\n").pop() || "git add failed"}) — nothing was applied and the copy is kept`);
   const diff = sh("git", ["diff", "--cached", "--binary", m.snapshot], m.dir);
   if (diff.code !== 0) throw new Error(`couldn't read the separate copy's changes (${diff.stderr.trim().split("\n").pop() || "git diff failed"}) — nothing was applied and the copy is kept`);

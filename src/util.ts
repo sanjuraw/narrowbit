@@ -60,7 +60,7 @@ function existsSyncOrLink(p: string): boolean {
  * (git-lfs, git-crypt), so those are handled by asking before opening a repo that defines them (trust.ts).
  */
 export function gitArgs(root: string, args: string[], opts: { hooks?: boolean } = {}): string[] {
-  const rest = args[0] === "diff" ? ["diff", "--no-ext-diff", "--no-textconv", ...args.slice(1)] : args;
+  const rest = args[0] === "diff" ? ["diff", "--no-ext-diff", "--no-textconv", ...args.slice(1)] : args[0] === "blame" ? ["blame", "--no-textconv", ...args.slice(1)] : args;
   // Repository hooks (post-index-change runs on a plain `git status` that refreshes the index; others on add, checkout, commit)
   // are programs the repository carries. Narrowbit's own bookkeeping never runs them; only a commit or push the user asked for does.
   return ["-c", `safe.directory=${root}`, "-c", "core.fsmonitor=false", ...(opts.hooks ? [] : ["-c", "core.hooksPath=/dev/null"]), ...rest];
@@ -100,17 +100,20 @@ export function gitConfigIncludeFiles(root: string): string[] {
   const gd = sh("git", ["rev-parse", "--absolute-git-dir"], root);
   if (gd.code !== 0) return [];
   const gitDir = gd.stdout.trim();
-  const direct = sh("git", ["config", "--local", "--get-regexp", "^include(if\\..*)?\\.path$"], root);
-  for (const line of direct.stdout.split("\n")) {
-    const value = line.replace(/^\S+\s+/, "").trim();
-    if (!value) continue;
-    out.add(value.startsWith("~/") ? join(homedir(), value.slice(2)) : isAbsolute(value) ? value : join(gitDir, value));
-  }
-  // Includes of includes (each exists, or it wouldn't have been read).
-  const all = sh("git", ["config", "--local", "--includes", "--list", "--show-origin"], root);
-  for (const line of all.stdout.split("\n")) {
-    const m = /^file:(\S.*?)\t/.exec(line);
-    if (m && resolve(m[1]!) !== resolve(gitDir, "config")) out.add(resolve(m[1]!));
+  // The repository's own config and, when it uses one, the per-worktree config (--worktree fails harmlessly when it is not in use).
+  for (const scope of ["--local", "--worktree"]) {
+    const direct = sh("git", ["config", scope, "--get-regexp", "^include(if\\..*)?\\.path$"], root);
+    for (const line of direct.stdout.split("\n")) {
+      const value = line.replace(/^\S+\s+/, "").trim();
+      if (!value) continue;
+      out.add(value.startsWith("~/") ? join(homedir(), value.slice(2)) : isAbsolute(value) ? value : join(gitDir, value));
+    }
+    // Includes of includes (each exists, or it wouldn't have been read).
+    const all = sh("git", ["config", scope, "--includes", "--list", "--show-origin"], root);
+    for (const line of all.stdout.split("\n")) {
+      const m = /^file:(\S.*?)\t/.exec(line);
+      if (m && resolve(m[1]!) !== resolve(gitDir, "config") && resolve(m[1]!) !== resolve(gitDir, "config.worktree")) out.add(resolve(m[1]!));
+    }
   }
   return [...out].map((f) => resolve(f));
 }
@@ -126,8 +129,10 @@ export function isGitConfigInclude(root: string, abs: string, realAbs?: string |
       return f;
     }
   };
-  const mine = new Set([resolve(abs), real(abs), ...(realAbs ? [resolve(realAbs)] : [])]);
-  return targets.some((t) => mine.has(t) || mine.has(real(t)));
+  // macOS and Windows volumes ignore case: EXTRA.CFG is the file extra.cfg, also when it does not exist yet.
+  const fold = (f: string) => (process.platform === "darwin" || process.platform === "win32" ? f.toLowerCase() : f);
+  const mine = new Set([resolve(abs), real(abs), ...(realAbs ? [resolve(realAbs)] : [])].map(fold));
+  return targets.some((t) => mine.has(fold(t)) || mine.has(fold(real(t))));
 }
 
 /** Shows control characters and text-direction overrides as visible escapes, so a command can't use them to look like
@@ -295,6 +300,8 @@ export function hardenGitCommand(command: string): string {
   return command
     .replace(/^(\s*)git(\s+)/, (_m, lead, sp) => `${lead}git -c core.fsmonitor=false${sp}`)
     .replace(/^(\s*git -c core\.fsmonitor=false\s+(?:diff|log|show))(?=\s|$)/, "$1 --no-ext-diff --no-textconv")
+    // blame converts file contents with the repository's textconv program too, and takes only --no-textconv of the two
+    .replace(/^(\s*git -c core\.fsmonitor=false\s+blame)(?=\s|$)/, "$1 --no-textconv")
     // A command that only reads (status refreshes the index, which can run the repository's post-index-change hook) runs without hooks;
     // commit, push, checkout and the like keep them, as they would in a terminal.
     .replace(/^(\s*git -c core\.fsmonitor=false)(\s+(?:status|diff|log|show|branch|rev-parse|ls-files|blame|grep|describe|shortlog|rev-list|ls-tree|cat-file|diff-tree|diff-index)(?:\s|$))/, "$1 -c core.hooksPath=/dev/null$2");
