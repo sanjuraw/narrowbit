@@ -31,8 +31,6 @@ export interface NarrowbitConfig {
   agent?: AgentConfig;
   /** Commands of your own that run after each applied edit and when a task ends; see hooks.ts. A shipped one runs only once accepted. */
   hooks?: { afterEdit?: string; afterTask?: string };
-  /** The working model keeps its own checklist for tasks with several parts (see CHECKLIST_INSTRUCTIONS in runtime.ts). Off by default. */
-  checklist?: boolean;
 }
 
 export interface AgentConfig {
@@ -54,6 +52,8 @@ export interface AgentConfig {
   reviewOnly?: boolean;
   /** Ask the user to approve the lead's plan (or ask for changes) before work starts. Needs `boss` on. Default off. */
   planApproval?: boolean;
+  /** The working model keeps its own checklist for tasks with several parts (CHECKLIST_INSTRUCTIONS in runtime.ts); replaces the lead's planning call. Off by default. */
+  checklist?: boolean;
   /** Pin the model's context window (tokens) — what automatic compaction at 95% is measured against. Normally discovered. */
   contextWindow?: number;
 }

@@ -495,7 +495,7 @@ export function startUi(opts: UiOptions) {
       const ga = globalAgent();
       let selection;
       try { selection = resolveSelection(ga); } catch { selection = resolveSelection(undefined); }
-      return { root: null, missingRoot, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? false, reviewOnly: !!ga?.reviewOnly, planApproval: !!ga?.planApproval, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: mergedHistory(null) };
+      return { root: null, missingRoot, recent: loadRecent(), version: readVersion(), selection, providers: buildProviders(ga), phases: PHASES, efforts: EFFORT_LEVELS, lead: ga?.boss ?? false, reviewOnly: !!ga?.reviewOnly, planApproval: !!ga?.planApproval, checklist: !!ga?.checklist, fallback: ga?.fallback ?? "", scout: ga?.scout ?? "", connectors: listConnectors().map(publicConnector), skills: [], history: mergedHistory(null) };
     }
     const p = paths(cur());
     const initialized = existsSync(p.db);
@@ -545,6 +545,7 @@ export function startUi(opts: UiOptions) {
       scout: effAgent(cfg)?.scout ?? "",
       reviewOnly: !!effAgent(cfg)?.reviewOnly,
       planApproval: !!effAgent(cfg)?.planApproval,
+      checklist: !!effAgent(cfg)?.checklist,
       history: [...(initialized ? taskHistory(p, 40, { project: basename(cur()), root: cur() }) : []), ...mergedHistory(cur())]
         .sort((a, b) => b.last.localeCompare(a.last))
         .slice(0, 40),
@@ -578,6 +579,7 @@ export function startUi(opts: UiOptions) {
     const lead = effAgent(cfg)?.boss ?? false;
     const reviewOnly = !!effAgent(cfg)?.reviewOnly;
     const planApproval = !!effAgent(cfg)?.planApproval;
+    const checklist = !!effAgent(cfg)?.checklist;
     const thisRun: Run = {
       id: randomBytes(4).toString("hex"),
       win: win().id,
@@ -604,6 +606,7 @@ export function startUi(opts: UiOptions) {
       boss: lead,
       reviewOnly,
       planApproval,
+      checklist,
       continueTask: continueTask ?? undefined,
       readLinks: true,
       attachments,
@@ -941,7 +944,7 @@ export function startUi(opts: UiOptions) {
             if (m) slots[phase] = m;
           }
           models[provider as ProviderName] = slots;
-          const next = { ...base, provider, effort, models, ...(typeof body.lead === "boolean" ? { boss: body.lead } : {}), ...(typeof body.reviewOnly === "boolean" ? { reviewOnly: body.reviewOnly } : {}), ...(typeof body.planApproval === "boolean" ? { planApproval: body.planApproval } : {}) } as AgentConfig;
+          const next = { ...base, provider, effort, models, ...(typeof body.lead === "boolean" ? { boss: body.lead } : {}), ...(typeof body.reviewOnly === "boolean" ? { reviewOnly: body.reviewOnly } : {}), ...(typeof body.planApproval === "boolean" ? { planApproval: body.planApproval } : {}), ...(typeof body.checklist === "boolean" ? { checklist: body.checklist } : {}) } as AgentConfig;
           if (typeof body.fallback === "string") {
             if (body.fallback && isProvider(body.fallback) && body.fallback !== provider) next.fallback = body.fallback;
             else delete next.fallback;
@@ -957,7 +960,7 @@ export function startUi(opts: UiOptions) {
           }
           // Also remembered globally so the next repo (or the next launch with no folder) starts here.
           mkdirSync(join(homedir(), ".narrowbit"), { recursive: true, mode: 0o700 });
-          writeFileSync(GLOBAL_AGENT, JSON.stringify({ provider, effort, models, boss: next.boss, reviewOnly: next.reviewOnly, planApproval: next.planApproval, fallback: next.fallback, scout: next.scout }, null, 2) + "\n", { mode: 0o600 });
+          writeFileSync(GLOBAL_AGENT, JSON.stringify({ provider, effort, models, boss: next.boss, reviewOnly: next.reviewOnly, planApproval: next.planApproval, checklist: next.checklist, fallback: next.fallback, scout: next.scout }, null, 2) + "\n", { mode: 0o600 });
           return json(res, 200, state());
         }
         case "/api/skills": {

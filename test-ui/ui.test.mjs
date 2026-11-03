@@ -217,6 +217,19 @@ describe("app page with no folder open (a brand-new user)", () => {
     await page.until(() => page.$("planApprovalChk").disabled, "plan-approval to disable once lead mode is off");
   });
 
+  test("Keep a checklist is a switch in Behaviour, off by default, saved for the repository and kept when the state comes back from the server", async () => {
+    if (!page.$("drawer") || page.$("drawer").classList.contains("hidden")) page.$("settingsBtn").click();
+    assert.equal(page.$("checklistChk").checked, false, "off by default");
+    page.$("savedMsg").textContent = "";
+    page.$("checklistChk").click();
+    await page.until(() => /Saved for this repository/.test(page.$("savedMsg").textContent), "the setting to be saved");
+    assert.equal(page.$("checklistChk").checked, true, "still on after the server's answer was applied");
+    page.$("savedMsg").textContent = "";
+    page.$("checklistChk").click();
+    await page.until(() => /Saved for this repository/.test(page.$("savedMsg").textContent), "the setting to be saved again");
+    assert.equal(page.$("checklistChk").checked, false, "and off again");
+  });
+
   test("a mode label (Solo by default) shows in Behaviour and the composer chip, and follows Lead mode", async () => {
     if (!page.$("drawer") || page.$("drawer").classList.contains("hidden")) page.$("settingsBtn").click();
     await page.until(() => !page.$("drawer").classList.contains("hidden"), "the drawer to open");

@@ -628,6 +628,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     <div class="sgroup">
       <label class="trow"><span class="tt"><strong>Lead mode</strong><span class="impact cost">costs 25-57% more</span><small>Model 3 writes a plan before work starts and reviews the diff before it's reported done. Two extra calls to your strongest model per task.</small></span><span class="switch"><input type="checkbox" id="leadChk"><i></i></span></label>
       <div class="sindent">
+        <label class="trow sub"><span class="tt">Keep a checklist<span class="impact cost">costs a little more</span><small>For bigger jobs the model writes a short list of steps, shows it pinned at the top and ticks them off, instead of a separate planning step.</small></span><span class="switch"><input type="checkbox" id="checklistChk"><i></i></span></label>
         <label class="trow sub"><span class="tt">Approve plan first<span class="impact neutral">no change</span><small>Show you the plan before work starts — approve it, or ask for changes (one round). Needs Lead mode on.</small></span><span class="switch"><input type="checkbox" id="planApprovalChk"><i></i></span></label>
         <label class="trow sub"><span class="tt">Review only<span class="impact cost">costs the most</span><small>Skip the plan call; still review the diff before "done" — tested worse than everything else here. Off while Lead mode is on.</small></span><span class="switch"><input type="checkbox" id="reviewOnlyChk"><i></i></span></label>
       </div>
@@ -1545,6 +1546,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     $("reviewOnlyChk").checked = !!S.reviewOnly;
     $("reviewOnlyChk").disabled = S.lead;
     $("reviewOnlyChk").closest(".trow").classList.toggle("dim", S.lead);
+    $("checklistChk").checked = !!S.checklist;
     $("planApprovalChk").checked = !!S.planApproval;
     $("planApprovalChk").disabled = !S.lead;
     $("planApprovalChk").closest(".trow").classList.toggle("dim", !S.lead);
@@ -1629,6 +1631,7 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   function setReviewOnly(on) { var P = S.providers[draft.provider]; saveModels(P.tiers, { reviewOnly: on }); }
   $("reviewOnlyChk").onchange = function () { setReviewOnly($("reviewOnlyChk").checked); };
   function setPlanApproval(on) { var P = S.providers[draft.provider]; saveModels(P.tiers, { planApproval: on }); }
+  $("checklistChk").onchange = function () { var P = S.providers[draft.provider]; saveModels(P.tiers, { checklist: $("checklistChk").checked }); };
   $("planApprovalChk").onchange = function () { setPlanApproval($("planApprovalChk").checked); };
   $("leadChk").onchange = function () { setLead($("leadChk").checked); };
   $("leadTog").onchange = function () { setLead($("leadTog").checked); };

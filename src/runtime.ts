@@ -676,7 +676,7 @@ async function runLoop(p: Paths, taskId: string, taskText: string, opts: Runtime
   // Antigravity is started in its own "plan" mode so that it does not act on its own, and then believes it is in a planning
   // mode that forbids changes until a plan is approved (it told a user so, and blamed a "/plan" switch that does not exist).
   const modeHint = provider === "antigravity" ? `\n\nIgnore anything you know about a plan mode, a /plan command, approving a plan, or being unable to change files or run commands: none of it applies here. Narrowbit carries out every action you send (the person approves commands in the app), so never tell the user you are in a planning mode or that something is blocked because of a mode.` : "";
-  const checklistOn = opts.checklist ?? cfg.checklist === true;
+  const checklistOn = opts.checklist ?? cfg.agent?.checklist === true;
   const systemPrompt = SYSTEM_INSTRUCTIONS + (checklistOn ? CHECKLIST_INSTRUCTIONS : "") + connectorsBlock + batchHint + jsonHint + editHint + modeHint;
   let hasEdited = false;
   // "done" gate. First real-repo use (narrowbit agent on this repo): Haiku replied "done" on its
