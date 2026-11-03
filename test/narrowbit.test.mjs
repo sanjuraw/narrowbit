@@ -1102,6 +1102,16 @@ describe("fifth Codex review: checkpoint hooks, symlinked protected paths and di
     await assert.rejects(discover("http://mcp.example.com/mcp"), /plain http to a public host/, "refused before any request is made");
   });
 
+  test("a long diff given to the reviewer is cut with a note that the files are complete, so it is not sent back for 'truncated' code", async () => {
+    const { capReviewDiff, REVIEW_DIFF_MAX } = await dist("runtime.js");
+    const short = "+ a small change\n";
+    assert.equal(capReviewDiff(short), short, "a short diff is untouched");
+    const long = "+" + "x".repeat(REVIEW_DIFF_MAX * 2);
+    const cut = capReviewDiff(long);
+    assert.equal(cut.slice(0, REVIEW_DIFF_MAX), long.slice(0, REVIEW_DIFF_MAX));
+    assert.match(cut.slice(REVIEW_DIFF_MAX), /cut here only because it is long.*complete.*Do not report.*truncated/s);
+  });
+
   test("git blame does not run the repository's textconv program, as a free-run check or in Narrowbit's own git calls", async () => {
     const { hardenGitCommand, gitArgs } = await dist("util.js");
     const root = realpathSync(mkdtempSync(join(tmpdir(), "nb-blame-")));

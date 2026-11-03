@@ -157,7 +157,7 @@ plan, include "steps_done":[<numbers>] on the action where you finish those step
 /** Added to the instructions when the working model keeps its own checklist (RuntimeOptions.checklist). */
 export const CHECKLIST_INSTRUCTIONS = `
 
-Checklist (the user watches it on screen): when the task asks for three or more separate things, or will clearly take several steps, your FIRST action must carry "checklist":["<step>", ...] next to its "action": three to eight steps, each a few plain words in the user's own terms (no file or function names), for example {"action":"run","command":"ls","checklist":["Set up the page","Add the form","Save to the browser","Check it works"]}. Put "steps_done":[<numbers>] on the action that finishes those steps. If the plan changes, send the whole new "checklist" again on that action; steps already done stay done. For a task with one or two parts do not write one.`;
+Checklist (the user watches it on screen): when the task asks for three or more separate things, or will clearly take several steps, your FIRST action must carry "checklist":["<step>", ...] next to its "action": three to eight steps, each a few plain words in the user's own terms (no file or function names), for example {"action":"run","command":"ls","checklist":["Set up the page","Add the form","Save to the browser","Check it works"]}. Put "steps_done":[<numbers>] on the action that finishes those steps. If the plan changes, send the whole new "checklist" again on that action; steps already done stay done. Work through the list in order, one step at a time: do the work of one step (for a build, one file or one feature per edit), then tick it with "steps_done" on that same action, and only then start the next. Do not write the whole result in one go, and do not leave all the ticking to the final reply: every action that finishes a step carries its "steps_done". For a task with one or two parts do not write a checklist.`;
 
 /** Identifies these exact instructions, so a resumed session can tell it was started under older ones. */
 const INSTRUCTIONS_ID = createHash("sha1").update(SYSTEM_INSTRUCTIONS).digest("hex").slice(0, 12);
@@ -171,6 +171,14 @@ Respond with EXACTLY ONE JSON object, no prose, no markdown fences:
 const LEAD_REVIEW_INSTRUCTIONS = `You are the lead engineer reviewing a cheaper model's work before it is reported to the user as done. Judge only whether the diff correctly and completely does the task, without breaking anything or editing what the task said not to touch. Don't ask for style changes, extra tests or refactors the task didn't ask for — the bar is "correct and complete", not "how you would have written it".
 Respond with EXACTLY ONE JSON object, no prose:
 {"verdict":"approve"} or {"verdict":"revise","feedback":"<specific: what is wrong or missing, and where>"}`;
+
+/** The review sees at most this much of the diff. It says so plainly: a reviewer shown a file that simply stops at the limit reported "script.js is
+ * truncated" and sent the worker back to fix a file that was complete, twice (a bill-splitter run took 10 steps for that). */
+export const REVIEW_DIFF_MAX = 16_000;
+export function capReviewDiff(diff: string): string {
+  if (diff.length <= REVIEW_DIFF_MAX) return diff;
+  return diff.slice(0, REVIEW_DIFF_MAX) + "\n\n[NOTE TO THE REVIEWER: this diff was cut here only because it is long. The files themselves are complete. Do not report anything that ends at this point as truncated or incomplete; judge what you can see, and approve unless it is wrong.]";
+}
 
 const SCOUT_INSTRUCTIONS = `You are a research assistant on a coding task. You cannot change anything. Another engineer will do the work using only your report, so it must be complete and short.
 Each turn reply with one JSON action, or a JSON array of up to ${MAX_BATCH_ACTIONS} independent ones: {"action":"read","path":"<file>","start":1,"end":80}, {"action":"grep","pattern":"<regex>","glob":"<optional glob>"}, {"action":"search","query":"<words>"}. Nothing else is allowed.
@@ -1797,8 +1805,7 @@ async function leadReview(
     const body = readFileSync(abs, "utf8").split("\n").slice(0, 150).map((l) => `+${l}`).join("\n");
     diff += `\n--- /dev/null\n+++ b/${f} (new file)\n${body}`;
   }
-  const MAX = 16_000;
-  if (diff.length > MAX) diff = diff.slice(0, MAX) + "\n… (diff truncated)";
+  diff = capReviewDiff(diff);
   const lastVerify = fold(ctx.taskId, readEvents(ctx.p, ctx.taskId)).lastVerify;
   const prompt = [
     `Task: ${goal}`,
